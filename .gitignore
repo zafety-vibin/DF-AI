@@ -1,0 +1,43 @@
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+/dist/
+
+# Go build artifacts
+vendor/
+
+# C++ build artifacts
+/dfhack-plugin/build/
+/dfhack-plugin/bin/
+/dfhack-plugin/obj/
+*.o
+*.a
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Test artifacts
+/coverage/
+*.prof
