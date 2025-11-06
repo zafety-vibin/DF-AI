@@ -38,8 +38,13 @@ constexpr uint8_t RESYNC_INCONSISTENCY = 0x01;
 constexpr uint8_t RESYNC_RECONNECT = 0x02;
 constexpr uint8_t RESYNC_PERIODIC = 0x03;
 
+// Heartbeat timing (milliseconds)
+constexpr uint32_t HEARTBEAT_INTERVAL_MS = 10000;
+constexpr uint32_t HEARTBEAT_TIMEOUT_MS = 15000;
+
 // Shared helper functions (implemented in tile_extractor.cpp)
 #include <vector>
 void write_uint16_be(std::vector<uint8_t> &buf, uint16_t value);
 void write_int16_be(std::vector<uint8_t> &buf, int16_t value);
 void write_uint32_be(std::vector<uint8_t> &buf, uint32_t value);
+void write_uint64_be(std::vector<uint8_t> &buf, uint64_t value);

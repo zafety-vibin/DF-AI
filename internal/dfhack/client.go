@@ -13,17 +13,36 @@ import (
 	"github.com/df-ai/orchestrator/internal/protocol"
 )
 
+// SessionMetrics tracks connection statistics
+type SessionMetrics struct {
+	ConnectionTime    time.Time
+	MessagesSent      uint64
+	MessagesReceived  uint64
+	BytesSent         uint64
+	BytesReceived     uint64
+	ErrorCount        uint64
+	LastError         error
+	LastErrorTime     time.Time
+	HeartbeatsSent    uint64
+	HeartbeatsReceived uint64
+}
+
 // Client is the high-level interface for communicating with DFHack
 type Client struct {
-	logger     *logging.Logger
-	listener   net.Listener
-	conn         *protocol.Connection
-	port         uint16
-	mu           sync.RWMutex
-	fullStateCh  chan *protocol.FullStateMessage
-	tileUpdateCh chan *protocol.TileUpdateMessage
-	stopCh       chan struct{}
-	wg           sync.WaitGroup
+	logger           *logging.Logger
+	listener         net.Listener
+	conn             *protocol.Connection
+	port             uint16
+	mu               sync.RWMutex
+	fullStateCh      chan *protocol.FullStateMessage
+	tileUpdateCh     chan *protocol.TileUpdateMessage
+	stopCh           chan struct{}
+	wg               sync.WaitGroup
+	heartbeatSeq     uint8
+	lastHeartbeatAck time.Time
+	heartbeatMu      sync.Mutex
+	metrics          SessionMetrics
+	metricsMu        sync.Mutex
 }
 
 // NewClient creates a new DFHack client
@@ -112,6 +131,13 @@ func (c *Client) handleConnection(tcpConn net.Conn) {
 	c.conn = protocolConn
 	c.mu.Unlock()
 
+	// Initialize session metrics
+	c.metricsMu.Lock()
+	c.metrics = SessionMetrics{
+		ConnectionTime: time.Now(),
+	}
+	c.metricsMu.Unlock()
+
 	// Perform handshake
 	if err := c.performHandshake(protocolConn); err != nil {
 		c.logger.Error("handshake failed", err)
@@ -130,6 +156,9 @@ func (c *Client) handleConnection(tcpConn net.Conn) {
 	} else {
 		c.logger.Info("sent resync request", logging.Field{Key: "reason", Value: "initial_connection"})
 	}
+
+	// Start heartbeat sender
+	c.startHeartbeat(protocolConn)
 
 	// Start message handling loop
 	c.wg.Add(1)
@@ -194,8 +223,18 @@ func (c *Client) messageLoop(conn *protocol.Connection) {
 		msg, err := conn.Receive()
 		if err != nil {
 			c.logger.Error("receive error", err)
+			c.metricsMu.Lock()
+			c.metrics.ErrorCount++
+			c.metrics.LastError = err
+			c.metrics.LastErrorTime = time.Now()
+			c.metricsMu.Unlock()
 			return
 		}
+
+		// Track received message
+		c.metricsMu.Lock()
+		c.metrics.MessagesReceived++
+		c.metricsMu.Unlock()
 
 		// Debug: log every message received
 		c.logger.Info("messageLoop received message",
@@ -227,6 +266,15 @@ func (c *Client) messageLoop(conn *protocol.Connection) {
 			default:
 				c.logger.Warn("tile update channel full, dropping message")
 			}
+
+		case *protocol.HeartbeatMessage:
+			// Echo heartbeat back with incremented sequence
+			c.handleHeartbeat(conn, m)
+
+		case *protocol.DisconnectMessage:
+			c.logger.Info("received disconnect",
+				logging.Field{Key: "reason", Value: m.Reason})
+			return
 
 		default:
 			c.logger.Warn("unhandled message type",
@@ -273,8 +321,116 @@ func (c *Client) IsConnected() bool {
 	return c.conn != nil && c.conn.State() == protocol.StateConnected
 }
 
+// handleHeartbeat processes incoming heartbeat from plugin and echoes it back
+func (c *Client) handleHeartbeat(conn *protocol.Connection, hb *protocol.HeartbeatMessage) {
+	// Update last ack time
+	c.heartbeatMu.Lock()
+	c.lastHeartbeatAck = time.Now()
+	c.heartbeatMu.Unlock()
+
+	// Track heartbeat received
+	c.metricsMu.Lock()
+	c.metrics.HeartbeatsReceived++
+	c.metricsMu.Unlock()
+
+	// Calculate round-trip time
+	now := uint64(time.Now().UnixMilli())
+	rtt := now - hb.Timestamp
+
+	c.logger.Debug("received heartbeat echo",
+		logging.Field{Key: "sequence", Value: hb.Sequence},
+		logging.Field{Key: "timestamp", Value: hb.Timestamp},
+		logging.Field{Key: "rtt_ms", Value: rtt})
+}
+
+// startHeartbeat begins sending periodic heartbeats to the plugin
+func (c *Client) startHeartbeat(conn *protocol.Connection) {
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		// Initialize heartbeat timestamp
+		c.heartbeatMu.Lock()
+		c.lastHeartbeatAck = time.Now()
+		c.heartbeatMu.Unlock()
+
+		for {
+			select {
+			case <-c.stopCh:
+				return
+			case <-ticker.C:
+				// Send heartbeat
+				c.heartbeatMu.Lock()
+				c.heartbeatSeq++
+				seq := c.heartbeatSeq
+				c.heartbeatMu.Unlock()
+
+				hb := &protocol.HeartbeatMessage{
+					Timestamp: uint64(time.Now().UnixMilli()),
+					Sequence:  seq,
+				}
+
+				if err := conn.Send(hb); err != nil {
+					c.logger.Error("failed to send heartbeat", err)
+					c.metricsMu.Lock()
+					c.metrics.ErrorCount++
+					c.metrics.LastError = err
+					c.metrics.LastErrorTime = time.Now()
+					c.metricsMu.Unlock()
+					continue
+				}
+
+				// Track sent heartbeat
+				c.metricsMu.Lock()
+				c.metrics.MessagesSent++
+				c.metrics.HeartbeatsSent++
+				c.metricsMu.Unlock()
+
+				c.logger.Debug("sent heartbeat",
+					logging.Field{Key: "sequence", Value: seq})
+
+				// Check for timeout (no ack in 15 seconds)
+				c.heartbeatMu.Lock()
+				timeSinceAck := time.Since(c.lastHeartbeatAck)
+				c.heartbeatMu.Unlock()
+
+				if timeSinceAck > 15*time.Second {
+					c.logger.Warn("heartbeat timeout detected",
+						logging.Field{Key: "time_since_ack", Value: timeSinceAck.String()})
+					// Connection is considered dead
+					conn.Close()
+					return
+				}
+			}
+		}
+	}()
+}
+
+// GetSessionMetrics returns current session statistics
+func (c *Client) GetSessionMetrics() SessionMetrics {
+	c.metricsMu.Lock()
+	defer c.metricsMu.Unlock()
+	return c.metrics
+}
+
 // Stop gracefully shuts down the client
 func (c *Client) Stop() error {
+	// Log session metrics before shutdown
+	metrics := c.GetSessionMetrics()
+	if !metrics.ConnectionTime.IsZero() {
+		duration := time.Since(metrics.ConnectionTime)
+		c.logger.Info("session summary",
+			logging.Field{Key: "duration", Value: duration.String()},
+			logging.Field{Key: "messages_sent", Value: metrics.MessagesSent},
+			logging.Field{Key: "messages_received", Value: metrics.MessagesReceived},
+			logging.Field{Key: "bytes_sent", Value: metrics.BytesSent},
+			logging.Field{Key: "bytes_received", Value: metrics.BytesReceived},
+			logging.Field{Key: "errors", Value: metrics.ErrorCount})
+	}
+
 	close(c.stopCh)
 
 	c.mu.Lock()

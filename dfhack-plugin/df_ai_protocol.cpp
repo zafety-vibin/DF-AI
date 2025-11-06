@@ -18,6 +18,8 @@
 #include <memory>
 #include <vector>
 #include <cstring>
+#include <chrono>
+#include <thread>
 
 using namespace DFHack;
 
@@ -30,9 +32,14 @@ static std::string g_server_host = "localhost";
 static uint16_t g_server_port = 5001;
 static uint32_t g_connection_id = 0;
 static bool g_connected = false;
+static uint64_t g_last_heartbeat_ms = 0;  // Last time we received heartbeat from server
+static uint32_t g_reconnect_delay_ms = 1000;  // Current reconnection backoff delay
+static std::unique_ptr<std::thread> g_message_thread;  // Background message handler
+static bool g_stop_message_loop = false;  // Signal to stop message thread
 
 // Forward declarations
 bool connect_to_server(color_ostream &out);
+bool connect_with_retry(color_ostream &out, int max_attempts);
 void disconnect_from_server();
 bool send_handshake(color_ostream &out);
 bool receive_handshake(color_ostream &out);
@@ -40,9 +47,18 @@ void message_receive_loop(color_ostream &out);
 bool receive_message(std::vector<uint8_t> &msg_out, uint8_t &type_out);
 bool send_full_state(color_ostream &out);
 bool send_tile_update(color_ostream &out, const std::vector<uint8_t> &tiles);
+bool send_heartbeat_echo(color_ostream &out, uint64_t timestamp, uint8_t sequence);
 
 // Helper: Read exactly n bytes from socket
 bool read_exact(uint8_t *buffer, size_t n);
+
+// Helper: Get current time in milliseconds
+uint64_t get_time_ms()
+{
+    auto now = std::chrono::system_clock::now();
+    auto duration = now.time_since_epoch();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+}
 
 // External functions from other files
 extern std::vector<uint8_t> extract_full_map_state();
@@ -75,6 +91,29 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
         },
         false,
         "Usage: ai-disconnect\nDisconnects from the Go orchestrator server."
+    ));
+
+    commands.push_back(PluginCommand(
+        "ai-reconnect",
+        "Reconnect with exponential backoff retry",
+        [](color_ostream &out, std::vector<std::string> &params) -> command_result {
+            // Parse max attempts from params (default 5)
+            int max_attempts = 5;
+            if (params.size() > 0) {
+                max_attempts = std::atoi(params[0].c_str());
+                if (max_attempts < 1 || max_attempts > 10) {
+                    out.printerr("Invalid max attempts: %d (must be 1-10)\n", max_attempts);
+                    return CR_WRONG_USAGE;
+                }
+            }
+
+            if (connect_with_retry(out, max_attempts)) {
+                return CR_OK;
+            }
+            return CR_FAILURE;
+        },
+        false,
+        "Usage: ai-reconnect [max_attempts]\nAttempts to reconnect with exponential backoff (1s, 2s, 4s, 8s, 16s, max 30s).\nDefault max attempts: 5"
     ));
 
     commands.push_back(PluginCommand(
@@ -240,18 +279,83 @@ bool connect_to_server(color_ostream &out)
     }
 
     g_connected = true;
+    g_reconnect_delay_ms = 1000;  // Reset backoff on successful connection
     out.print("Handshake complete - connected successfully\n");
 
-    // Start message receive loop in background
-    // Note: In a real implementation, this would be a separate thread
-    // For now, we'll handle messages synchronously when commands are called
+    // Start message receive loop in background thread
+    g_stop_message_loop = false;
+    g_message_thread = std::make_unique<std::thread>([]() {
+        // Use Core console for thread-safe output
+        auto &console = Core::getInstance().getConsole();
+        message_receive_loop(console);
+    });
 
     return true;
+}
+
+// Connect with exponential backoff retry logic
+bool connect_with_retry(color_ostream &out, int max_attempts = 5)
+{
+    for (int attempt = 1; attempt <= max_attempts; attempt++) {
+        out.print("Connection attempt %d/%d (delay: %dms)...\n",
+                  attempt, max_attempts, g_reconnect_delay_ms);
+
+        if (connect_to_server(out)) {
+            return true;
+        }
+
+        if (attempt < max_attempts) {
+            // Wait before retry
+            std::this_thread::sleep_for(std::chrono::milliseconds(g_reconnect_delay_ms));
+
+            // Exponential backoff: double delay, cap at 30 seconds
+            g_reconnect_delay_ms = g_reconnect_delay_ms * 2;
+            if (g_reconnect_delay_ms > 30000) {
+                g_reconnect_delay_ms = 30000;
+            }
+        }
+    }
+
+    out.printerr("Failed to connect after %d attempts\n", max_attempts);
+    return false;
 }
 
 // Disconnect from server
 void disconnect_from_server()
 {
+    // Stop message thread first
+    g_stop_message_loop = true;
+    if (g_message_thread && g_message_thread->joinable()) {
+        g_message_thread->join();
+        g_message_thread.reset();
+    }
+
+    if (g_socket && g_connected) {
+        // Send graceful DISCONNECT message (best effort)
+        std::vector<uint8_t> message;
+        message.reserve(7);
+
+        // Length placeholder
+        message.resize(4, 0);
+
+        // Version and type
+        message.push_back(PROTOCOL_VERSION);
+        message.push_back(MSG_TYPE_DISCONNECT);
+
+        // Payload: [1: Reason]
+        message.push_back(REASON_PLUGIN_UNLOAD);
+
+        // Fill length
+        uint32_t length = message.size();
+        message[0] = (length >> 24) & 0xFF;
+        message[1] = (length >> 16) & 0xFF;
+        message[2] = (length >> 8) & 0xFF;
+        message[3] = length & 0xFF;
+
+        // Send (ignore errors, we're shutting down anyway)
+        g_socket->Send(message.data(), message.size());
+    }
+
     if (g_socket) {
         g_socket->Close();
         g_socket.reset();
@@ -503,10 +607,53 @@ bool send_tile_update(color_ostream &out, const std::vector<uint8_t> &tiles)
     return true;
 }
 
+// Send heartbeat echo back to server
+bool send_heartbeat_echo(color_ostream &out, uint64_t timestamp, uint8_t sequence)
+{
+    if (!g_connected || !g_socket) {
+        out.printerr("Not connected\n");
+        return false;
+    }
+
+    // Build HEARTBEAT message: [4:Length][1:Ver][1:Type][8:Timestamp][1:Sequence]
+    std::vector<uint8_t> message;
+    message.reserve(15);
+
+    // Length placeholder
+    message.resize(4, 0);
+
+    // Version and type
+    message.push_back(PROTOCOL_VERSION);
+    message.push_back(MSG_TYPE_HEARTBEAT);
+
+    // Payload: [8: Timestamp][1: Sequence]
+    write_uint64_be(message, timestamp);
+    message.push_back(sequence);
+
+    // Fill length
+    uint32_t length = message.size();
+    message[0] = (length >> 24) & 0xFF;
+    message[1] = (length >> 16) & 0xFF;
+    message[2] = (length >> 8) & 0xFF;
+    message[3] = length & 0xFF;
+
+    // Send
+    int32_t sent = g_socket->Send(message.data(), message.size());
+    if (sent != (int32_t)message.size()) {
+        out.printerr("Failed to send heartbeat echo: sent %d/%d bytes\n", sent, (int)message.size());
+        return false;
+    }
+
+    return true;
+}
+
 // Message receive loop - handle incoming messages from server
 void message_receive_loop(color_ostream &out)
 {
-    while (g_connected && g_socket && g_socket->IsSocketValid()) {
+    // Initialize heartbeat timestamp on connection
+    g_last_heartbeat_ms = get_time_ms();
+
+    while (!g_stop_message_loop && g_connected && g_socket && g_socket->IsSocketValid()) {
         std::vector<uint8_t> payload;
         uint8_t msg_type;
 
@@ -514,7 +661,17 @@ void message_receive_loop(color_ostream &out)
         g_socket->SetReceiveTimeout(1, 0);  // 1 second
 
         if (!receive_message(payload, msg_type)) {
-            // Timeout or error
+            // Timeout or error - check for heartbeat timeout
+            if (g_last_heartbeat_ms > 0) {
+                uint64_t now = get_time_ms();
+                uint64_t elapsed = now - g_last_heartbeat_ms;
+
+                if (elapsed > HEARTBEAT_TIMEOUT_MS) {
+                    out.printerr("Heartbeat timeout detected (%llu ms since last heartbeat)\n", elapsed);
+                    disconnect_from_server();
+                    return;
+                }
+            }
             continue;
         }
 
@@ -528,8 +685,26 @@ void message_receive_loop(color_ostream &out)
                 break;
 
             case MSG_TYPE_HEARTBEAT:
-                // TODO: Echo heartbeat back (User Story 3)
-                out.print("Received HEARTBEAT (US3 - not yet implemented)\n");
+                // Parse heartbeat: [8: timestamp] [1: sequence]
+                if (payload.size() >= 9) {
+                    uint64_t timestamp = ((uint64_t)payload[0] << 56) |
+                                        ((uint64_t)payload[1] << 48) |
+                                        ((uint64_t)payload[2] << 40) |
+                                        ((uint64_t)payload[3] << 32) |
+                                        ((uint64_t)payload[4] << 24) |
+                                        ((uint64_t)payload[5] << 16) |
+                                        ((uint64_t)payload[6] << 8) |
+                                        ((uint64_t)payload[7]);
+                    uint8_t sequence = payload[8];
+
+                    // Update last heartbeat time
+                    g_last_heartbeat_ms = get_time_ms();
+
+                    // Echo heartbeat back
+                    if (!send_heartbeat_echo(out, timestamp, sequence)) {
+                        out.printerr("Failed to echo heartbeat\n");
+                    }
+                }
                 break;
 
             case MSG_TYPE_DISCONNECT:

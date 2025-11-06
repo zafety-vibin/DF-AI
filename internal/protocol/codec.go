@@ -58,6 +58,18 @@ func SerializeMessage(msg Message) ([]byte, error) {
 		if err := serializeTileUpdate(&buf, m); err != nil {
 			return nil, err
 		}
+	case *HeartbeatMessage:
+		if err := serializeHeartbeat(&buf, m); err != nil {
+			return nil, err
+		}
+	case *DisconnectMessage:
+		if err := serializeDisconnect(&buf, m); err != nil {
+			return nil, err
+		}
+	case *ErrorMessage:
+		if err := serializeError(&buf, m); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unknown message type: %T", msg)
 	}
@@ -108,6 +120,12 @@ func DeserializeMessage(data []byte) (Message, error) {
 		msg, err = deserializeResyncRequest(payload)
 	case MessageTypeTileUpdate:
 		msg, err = deserializeTileUpdate(payload)
+	case MessageTypeHeartbeat:
+		msg, err = deserializeHeartbeat(payload)
+	case MessageTypeDisconnect:
+		msg, err = deserializeDisconnect(payload)
+	case MessageTypeError:
+		msg, err = deserializeError(payload)
 	default:
 		return nil, fmt.Errorf("%w: 0x%02X", ErrInvalidMessageType, msgType)
 	}
@@ -407,5 +425,143 @@ func (m *TileUpdateMessage) Deserialize(data []byte) error {
 		return fmt.Errorf("expected TileUpdateMessage, got %T", msg)
 	}
 	*m = *t
+	return nil
+}
+
+// serializeHeartbeat encodes HeartbeatMessage payload
+func serializeHeartbeat(w io.Writer, msg *HeartbeatMessage) error {
+	// [8: Timestamp] [1: Sequence]
+	if err := binary.Write(w, binary.BigEndian, msg.Timestamp); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, msg.Sequence); err != nil {
+		return err
+	}
+	return nil
+}
+
+// deserializeHeartbeat decodes HeartbeatMessage payload
+func deserializeHeartbeat(payload []byte) (Message, error) {
+	if len(payload) < 9 {
+		return nil, fmt.Errorf("heartbeat payload too short: got %d, expected 9", len(payload))
+	}
+
+	msg := &HeartbeatMessage{
+		Timestamp: binary.BigEndian.Uint64(payload[0:8]),
+		Sequence:  payload[8],
+	}
+
+	return msg, nil
+}
+
+func (m *HeartbeatMessage) Serialize() ([]byte, error) {
+	return SerializeMessage(m)
+}
+
+func (m *HeartbeatMessage) Deserialize(data []byte) error {
+	msg, err := DeserializeMessage(data)
+	if err != nil {
+		return err
+	}
+	h, ok := msg.(*HeartbeatMessage)
+	if !ok {
+		return fmt.Errorf("expected HeartbeatMessage, got %T", msg)
+	}
+	*m = *h
+	return nil
+}
+
+// serializeDisconnect encodes DisconnectMessage payload
+func serializeDisconnect(w io.Writer, msg *DisconnectMessage) error {
+	// [1: Reason]
+	if err := binary.Write(w, binary.BigEndian, msg.Reason); err != nil {
+		return err
+	}
+	return nil
+}
+
+// deserializeDisconnect decodes DisconnectMessage payload
+func deserializeDisconnect(payload []byte) (Message, error) {
+	if len(payload) < 1 {
+		return nil, fmt.Errorf("disconnect payload too short: got %d, expected 1", len(payload))
+	}
+
+	msg := &DisconnectMessage{
+		Reason: payload[0],
+	}
+
+	return msg, nil
+}
+
+func (m *DisconnectMessage) Serialize() ([]byte, error) {
+	return SerializeMessage(m)
+}
+
+func (m *DisconnectMessage) Deserialize(data []byte) error {
+	msg, err := DeserializeMessage(data)
+	if err != nil {
+		return err
+	}
+	d, ok := msg.(*DisconnectMessage)
+	if !ok {
+		return fmt.Errorf("expected DisconnectMessage, got %T", msg)
+	}
+	*m = *d
+	return nil
+}
+
+// serializeError encodes ErrorMessage payload
+func serializeError(w io.Writer, msg *ErrorMessage) error {
+	// [2: Code] [2: Message Length] [N: Message UTF-8]
+	if err := binary.Write(w, binary.BigEndian, msg.Code); err != nil {
+		return err
+	}
+	msgBytes := []byte(msg.Message)
+	if err := binary.Write(w, binary.BigEndian, uint16(len(msgBytes))); err != nil {
+		return err
+	}
+	if len(msgBytes) > 0 {
+		if _, err := w.Write(msgBytes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deserializeError decodes ErrorMessage payload
+func deserializeError(payload []byte) (Message, error) {
+	if len(payload) < 4 {
+		return nil, fmt.Errorf("error payload too short: got %d, expected at least 4", len(payload))
+	}
+
+	code := binary.BigEndian.Uint16(payload[0:2])
+	msgLen := binary.BigEndian.Uint16(payload[2:4])
+
+	if len(payload) < 4+int(msgLen) {
+		return nil, fmt.Errorf("error payload truncated: got %d, expected %d", len(payload), 4+msgLen)
+	}
+
+	msg := &ErrorMessage{
+		Code:    code,
+		Message: string(payload[4 : 4+msgLen]),
+	}
+
+	return msg, nil
+}
+
+func (m *ErrorMessage) Serialize() ([]byte, error) {
+	return SerializeMessage(m)
+}
+
+func (m *ErrorMessage) Deserialize(data []byte) error {
+	msg, err := DeserializeMessage(data)
+	if err != nil {
+		return err
+	}
+	e, ok := msg.(*ErrorMessage)
+	if !ok {
+		return fmt.Errorf("expected ErrorMessage, got %T", msg)
+	}
+	*m = *e
 	return nil
 }

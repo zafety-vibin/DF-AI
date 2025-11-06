@@ -98,17 +98,17 @@
 
 ### Implementation for User Story 2
 
-- [ ] T038 [P] [US2] Implement TileUpdateMessage struct in internal/protocol/message.go (Count uint32, Tiles []TileState)
-- [ ] T039 [US2] Implement binary codec for TileUpdateMessage in internal/protocol/codec.go with batching support
-- [ ] T040 [US2] Implement SubscribeTileUpdates() method in internal/dfhack/client.go returning channel for TileUpdateMessage
-- [ ] T041 [US2] Add message routing logic in internal/dfhack/client.go to distribute incoming messages to appropriate channels
-- [ ] T042 [US2] Implement tile change polling in dfhack-plugin/tile_extractor.cpp (scan blocks periodically, detect changes)
-- [ ] T043 [US2] Implement tile change detection logic in dfhack-plugin/tile_extractor.cpp (compare current state to cached state)
-- [ ] T044 [US2] Implement tile update batching in dfhack-plugin/tile_extractor.cpp (collect changes, batch up to 1000 tiles)
-- [ ] T045 [US2] Implement C++ TILE_UPDATE message serialization in dfhack-plugin/protocol.h
-- [ ] T046 [US2] Implement C++ TILE_UPDATE message transmission in dfhack-plugin/df_ai_protocol.cpp (send batched updates)
-- [ ] T047 [US2] Add polling timer to dfhack-plugin/df_ai_protocol.cpp (configurable poll_interval_ms, default 1000ms)
-- [ ] T048 [US2] Add tile update processing to cmd/df-orchestrator/main.go (subscribe to updates, log received changes)
+- [x] T038 [P] [US2] Implement TileUpdateMessage struct in internal/protocol/message.go (Count uint32, Tiles []TileState)
+- [x] T039 [US2] Implement binary codec for TileUpdateMessage in internal/protocol/codec.go with batching support
+- [x] T040 [US2] Implement SubscribeTileUpdates() method in internal/dfhack/client.go returning channel for TileUpdateMessage
+- [x] T041 [US2] Add message routing logic in internal/dfhack/client.go to distribute incoming messages to appropriate channels
+- [x] T042 [US2] Implement tile change polling in dfhack-plugin/tile_extractor.cpp (scan blocks periodically, detect changes)
+- [x] T043 [US2] Implement tile change detection logic in dfhack-plugin/tile_extractor.cpp (compare current state to cached state)
+- [x] T044 [US2] Implement tile update batching in dfhack-plugin/tile_extractor.cpp (collect changes, batch up to 1000 tiles)
+- [x] T045 [US2] Implement C++ TILE_UPDATE message serialization in dfhack-plugin/protocol.h
+- [x] T046 [US2] Implement C++ TILE_UPDATE message transmission in dfhack-plugin/df_ai_protocol.cpp (send batched updates)
+- [x] T047 [US2] Add polling timer to dfhack-plugin/df_ai_protocol.cpp (configurable poll_interval_ms, default 1000ms)
+- [x] T048 [US2] Add tile update processing to cmd/df-orchestrator/main.go (subscribe to updates, log received changes)
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently - Go server receives both initial state and incremental updates
 
@@ -122,21 +122,21 @@
 
 ### Implementation for User Story 3
 
-- [ ] T049 [P] [US3] Implement HeartbeatMessage struct in internal/protocol/message.go (Timestamp uint64, Sequence uint8)
-- [ ] T050 [P] [US3] Implement DisconnectMessage struct in internal/protocol/message.go (Reason uint8)
-- [ ] T051 [US3] Implement binary codec for HeartbeatMessage in internal/protocol/codec.go
-- [ ] T052 [US3] Implement binary codec for DisconnectMessage in internal/protocol/codec.go
-- [ ] T053 [US3] Implement heartbeat sender in internal/dfhack/client.go (send HEARTBEAT every 10s with timestamp and sequence)
-- [ ] T054 [US3] Implement heartbeat echo responder in internal/dfhack/client.go (receive HEARTBEAT, increment sequence, echo back)
-- [ ] T055 [US3] Implement heartbeat timeout detection in internal/dfhack/client.go (mark connection dead if no response within 5s)
-- [ ] T056 [US3] Implement Connection.Close() method in internal/protocol/connection.go (send DISCONNECT, flush, close socket)
-- [ ] T057 [US3] Implement reconnection logic in dfhack-plugin/df_ai_protocol.cpp with exponential backoff (1s, 2s, 4s, 8s, 16s, max 30s)
-- [ ] T058 [US3] Implement connection state monitoring in dfhack-plugin/df_ai_protocol.cpp (detect TCP errors, timeouts)
-- [ ] T059 [US3] Implement C++ heartbeat echo logic in dfhack-plugin/df_ai_protocol.cpp (receive, increment, send back)
-- [ ] T060 [US3] Implement C++ heartbeat timeout detection in dfhack-plugin/df_ai_protocol.cpp (disconnect if no heartbeat for 15s)
-- [ ] T061 [US3] Implement automatic resync on reconnection in internal/dfhack/client.go (send RESYNC_REQUEST with reason=0x02)
-- [ ] T062 [US3] Add graceful shutdown handling to cmd/df-orchestrator/main.go (send DISCONNECT on SIGINT/SIGTERM)
-- [ ] T063 [US3] Add graceful shutdown handling to dfhack-plugin/df_ai_protocol.cpp (plugin_disable sends DISCONNECT)
+- [x] T049 [P] [US3] Implement HeartbeatMessage struct in internal/protocol/message.go (Timestamp uint64, Sequence uint8)
+- [x] T050 [P] [US3] Implement DisconnectMessage struct in internal/protocol/message.go (Reason uint8)
+- [x] T051 [US3] Implement binary codec for HeartbeatMessage in internal/protocol/codec.go
+- [x] T052 [US3] Implement binary codec for DisconnectMessage in internal/protocol/codec.go
+- [x] T053 [US3] Implement heartbeat sender in internal/dfhack/client.go (send HEARTBEAT every 10s with timestamp and sequence)
+- [x] T054 [US3] Implement heartbeat echo responder in internal/dfhack/client.go (receive HEARTBEAT, increment sequence, echo back)
+- [x] T055 [US3] Implement heartbeat timeout detection in internal/dfhack/client.go (mark connection dead if no response within 5s)
+- [x] T056 [US3] Implement Connection.Close() method in internal/protocol/connection.go (send DISCONNECT, flush, close socket)
+- [x] T057 [US3] Implement reconnection logic in dfhack-plugin/df_ai_protocol.cpp with exponential backoff (1s, 2s, 4s, 8s, 16s, max 30s)
+- [x] T058 [US3] Implement connection state monitoring in dfhack-plugin/df_ai_protocol.cpp (detect TCP errors, timeouts)
+- [x] T059 [US3] Implement C++ heartbeat echo logic in dfhack-plugin/df_ai_protocol.cpp (receive, increment, send back)
+- [x] T060 [US3] Implement C++ heartbeat timeout detection in dfhack-plugin/df_ai_protocol.cpp (disconnect if no heartbeat for 15s)
+- [x] T061 [US3] Implement automatic resync on reconnection in internal/dfhack/client.go (send RESYNC_REQUEST with reason=0x02)
+- [x] T062 [US3] Add graceful shutdown handling to cmd/df-orchestrator/main.go (send DISCONNECT on SIGINT/SIGTERM)
+- [x] T063 [US3] Add graceful shutdown handling to dfhack-plugin/df_ai_protocol.cpp (plugin_disable sends DISCONNECT)
 
 **Checkpoint**: All user stories should now be independently functional - System survives connection failures and reconnects automatically
 
@@ -150,19 +150,19 @@
 
 ### Implementation for User Story 4
 
-- [ ] T064 [P] [US4] Implement ErrorMessage struct in internal/protocol/message.go (Code uint16, Message string)
-- [ ] T065 [US4] Implement binary codec for ErrorMessage in internal/protocol/codec.go with UTF-8 string encoding
-- [ ] T066 [US4] Add connection event logging to internal/protocol/connection.go (connection_opened, connection_closed)
-- [ ] T067 [US4] Add message event logging to internal/protocol/connection.go (message_sent, message_received with type, size, duration)
-- [ ] T068 [US4] Add error event logging to internal/protocol/connection.go (error_occurred with error code and context)
-- [ ] T069 [US4] Add heartbeat event logging to internal/dfhack/client.go (heartbeat round-trip time tracking)
-- [ ] T070 [US4] Add resync event logging to internal/dfhack/client.go (resync_triggered with reason, duration, tile count)
-- [ ] T071 [US4] Implement SessionMetrics tracking in internal/dfhack/client.go (messages sent/received, bytes, errors, timestamps)
-- [ ] T072 [US4] Implement GetSessionMetrics() method in internal/dfhack/client.go returning current session statistics
-- [ ] T073 [US4] Add comprehensive logging to dfhack-plugin/df_ai_protocol.cpp (all protocol events with timestamps)
-- [ ] T074 [US4] Implement log file output in dfhack-plugin/df_ai_protocol.cpp (write to df_ai_protocol.log in DF folder)
-- [ ] T075 [US4] Add performance metrics logging to dfhack-plugin/tile_extractor.cpp (tile extraction time, serialization time)
-- [ ] T076 [US4] Create plugin config file config/df_ai_protocol.yaml with server_host, server_port, poll_interval_ms, log_level
+- [x] T064 [P] [US4] Implement ErrorMessage struct in internal/protocol/message.go (Code uint16, Message string)
+- [x] T065 [US4] Implement binary codec for ErrorMessage in internal/protocol/codec.go with UTF-8 string encoding
+- [x] T066 [US4] Add connection event logging to internal/protocol/connection.go (connection_opened, connection_closed)
+- [x] T067 [US4] Add message event logging to internal/protocol/connection.go (message_sent, message_received with type, size, duration)
+- [x] T068 [US4] Add error event logging to internal/protocol/connection.go (error_occurred with error code and context)
+- [x] T069 [US4] Add heartbeat event logging to internal/dfhack/client.go (heartbeat round-trip time tracking)
+- [x] T070 [US4] Add resync event logging to internal/dfhack/client.go (resync_triggered with reason, duration, tile count)
+- [x] T071 [US4] Implement SessionMetrics tracking in internal/dfhack/client.go (messages sent/received, bytes, errors, timestamps)
+- [x] T072 [US4] Implement GetSessionMetrics() method in internal/dfhack/client.go returning current session statistics
+- [x] T073 [US4] Add comprehensive logging to dfhack-plugin/df_ai_protocol.cpp (all protocol events with timestamps)
+- [x] T074 [US4] Implement log file output in dfhack-plugin/df_ai_protocol.cpp (write to df_ai_protocol.log in DF folder)
+- [x] T075 [US4] Add performance metrics logging to dfhack-plugin/tile_extractor.cpp (tile extraction time, serialization time)
+- [x] T076 [US4] Create plugin config file config/df_ai_protocol.yaml with server_host, server_port, poll_interval_ms, log_level
 
 **Checkpoint**: All user stories should now be independently functional with comprehensive logging for debugging
 

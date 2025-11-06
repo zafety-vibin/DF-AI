@@ -178,6 +178,14 @@ func (c *Connection) Close() error {
 	defer c.mu.Unlock()
 
 	if c.conn != nil {
+		// Send graceful disconnect message (best effort, ignore errors)
+		disconnectMsg := &DisconnectMessage{
+			Reason: ReasonNormalShutdown,
+		}
+		if data, err := SerializeMessage(disconnectMsg); err == nil {
+			_, _ = c.conn.Write(data)
+		}
+
 		err := c.conn.Close()
 		c.conn = nil
 		c.state = StateDisconnected

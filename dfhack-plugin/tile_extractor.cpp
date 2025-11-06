@@ -34,6 +34,18 @@ void write_uint32_be(std::vector<uint8_t> &buf, uint32_t value) {
     buf.push_back(value & 0xFF);
 }
 
+// Helper to serialize uint64 big-endian
+void write_uint64_be(std::vector<uint8_t> &buf, uint64_t value) {
+    buf.push_back((value >> 56) & 0xFF);
+    buf.push_back((value >> 48) & 0xFF);
+    buf.push_back((value >> 40) & 0xFF);
+    buf.push_back((value >> 32) & 0xFF);
+    buf.push_back((value >> 24) & 0xFF);
+    buf.push_back((value >> 16) & 0xFF);
+    buf.push_back((value >> 8) & 0xFF);
+    buf.push_back(value & 0xFF);
+}
+
 // Extract full map state as binary tile array
 // Returns binary data ready to be embedded in FULL_STATE message
 // Format: for each tile (Z, Y, X order): [2: X] [2: Y] [2: Z] [2: TileType] [1: Flags]

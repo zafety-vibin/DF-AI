@@ -157,3 +157,61 @@ func (m *TileUpdateMessage) Validate() error {
 	// No maximum - we can handle full map updates if needed
 	return nil
 }
+
+// HeartbeatMessage is used to detect connection liveness
+type HeartbeatMessage struct {
+	Timestamp uint64 // Unix timestamp in milliseconds
+	Sequence  uint8  // Incrementing sequence number for echo tracking
+}
+
+func (m *HeartbeatMessage) Type() uint8 { return MessageTypeHeartbeat }
+
+func (m *HeartbeatMessage) Validate() error {
+	// Heartbeat messages are always valid - no constraints
+	return nil
+}
+
+// DisconnectMessage signals intentional connection closure
+type DisconnectMessage struct {
+	Reason uint8
+}
+
+func (m *DisconnectMessage) Type() uint8 { return MessageTypeDisconnect }
+
+func (m *DisconnectMessage) Validate() error {
+	// Reason codes 0x00-0x03 are valid
+	if m.Reason > 0x03 {
+		return fmt.Errorf("invalid disconnect reason: 0x%02X", m.Reason)
+	}
+	return nil
+}
+
+// Disconnect reason constants
+const (
+	ReasonNormalShutdown  uint8 = 0x00
+	ReasonPluginUnload    uint8 = 0x01
+	ReasonServerShutdown  uint8 = 0x02
+	ReasonRestart         uint8 = 0x03
+)
+
+// ErrorMessage signals protocol errors
+type ErrorMessage struct {
+	Code    uint16
+	Message string
+}
+
+func (m *ErrorMessage) Type() uint8 { return MessageTypeError }
+
+func (m *ErrorMessage) Validate() error {
+	// All error codes are valid
+	// Message can be any string (including empty)
+	return nil
+}
+
+// Error code constants
+const (
+	ErrUnknownType      uint16 = 0x0001
+	ErrInvalidPayload   uint16 = 0x0002
+	ErrVersionMismatch_ uint16 = 0x0003
+	ErrInternal         uint16 = 0x0004
+)
