@@ -1,5 +1,5 @@
 # DF AI Orchestrator Configuration
-# Feature: 001-binary-protocol
+# Feature: 002-foundation-infrastructure
 
 # Network settings
 listen_port: 5001
@@ -10,7 +10,7 @@ write_timeout: 10s
 
 # Protocol settings
 heartbeat_interval: 10s
-heartbeat_timeout: 5s
+heartbeat_timeout: 15s
 max_message_size: 104857600  # 100 MB (for large forts)
 
 # Reconnection settings

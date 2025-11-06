@@ -80,11 +80,32 @@ func (cm *ConfigManager) Watch(ctx context.Context) {
 					return
 				}
 
-				// Only reload on Write events
-				if event.Op&fsnotify.Write == fsnotify.Write {
-					cm.logger.Info("config file modified, reloading",
-						logging.Field{Key: "file", Value: event.Name})
+				// Handle different editor write patterns:
+				// - Write: Direct file modification
+				// - Remove/Rename: Safe write (VS Code, many editors)
+				shouldReload := false
 
+				if event.Op&fsnotify.Write == fsnotify.Write {
+					shouldReload = true
+					cm.logger.Info("config file modified (write), reloading",
+						logging.Field{Key: "file", Value: event.Name})
+				}
+
+				// Many editors use "safe write": write temp, delete original, rename temp
+				// This triggers Remove or Rename events
+				if event.Op&fsnotify.Remove == fsnotify.Remove || event.Op&fsnotify.Rename == fsnotify.Rename {
+					shouldReload = true
+					cm.logger.Info("config file modified (safe write), reloading",
+						logging.Field{Key: "file", Value: event.Name},
+						logging.Field{Key: "operation", Value: event.Op.String()})
+
+					// Re-add watch since file was removed/renamed and recreated
+					// Ignore errors - if file doesn't exist yet, next event will trigger
+					cm.watcher.Remove(cm.configPath)
+					cm.watcher.Add(cm.configPath)
+				}
+
+				if shouldReload {
 					// Load new config
 					newCfg, err := Load(cm.configPath)
 					if err != nil {
