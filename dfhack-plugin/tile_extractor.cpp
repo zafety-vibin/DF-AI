@@ -15,13 +15,21 @@ using namespace DFHack;
 using namespace df::enums;
 
 // Helper to serialize uint16 big-endian
-static void write_uint16_be(std::vector<uint8_t> &buf, uint16_t value) {
+void write_uint16_be(std::vector<uint8_t> &buf, uint16_t value) {
     buf.push_back((value >> 8) & 0xFF);
     buf.push_back(value & 0xFF);
 }
 
 // Helper to serialize int16 big-endian
-static void write_int16_be(std::vector<uint8_t> &buf, int16_t value) {
+void write_int16_be(std::vector<uint8_t> &buf, int16_t value) {
+    buf.push_back((value >> 8) & 0xFF);
+    buf.push_back(value & 0xFF);
+}
+
+// Helper to serialize uint32 big-endian
+void write_uint32_be(std::vector<uint8_t> &buf, uint32_t value) {
+    buf.push_back((value >> 24) & 0xFF);
+    buf.push_back((value >> 16) & 0xFF);
     buf.push_back((value >> 8) & 0xFF);
     buf.push_back(value & 0xFF);
 }
@@ -64,15 +72,17 @@ std::vector<uint8_t> extract_full_map_state()
                 uint8_t flags = 0;
 
                 // Check if tile is hidden (not yet discovered)
-                df::map_block *block = map_cache.BlockAt(pos);
+                MapExtras::Block *block = map_cache.BlockAt(pos);
                 if (block) {
                     // Calculate position within block
                     int block_x = x & 15;
                     int block_y = y & 15;
-                    int block_idx = block_x + (block_y * 16);
+
+                    // Get raw block for designation access
+                    df::map_block *raw_block = block->getRaw();
 
                     // Check designation flags
-                    df::tile_designation des = block->designation[block_idx];
+                    df::tile_designation des = raw_block->designation[block_x][block_y];
 
                     if (des.bits.hidden) {
                         flags |= 0x01;  // FLAG_HIDDEN

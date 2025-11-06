@@ -54,6 +54,10 @@ func SerializeMessage(msg Message) ([]byte, error) {
 		if err := serializeResyncRequest(&buf, m); err != nil {
 			return nil, err
 		}
+	case *TileUpdateMessage:
+		if err := serializeTileUpdate(&buf, m); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unknown message type: %T", msg)
 	}
@@ -102,6 +106,8 @@ func DeserializeMessage(data []byte) (Message, error) {
 		msg, err = deserializeFullState(payload)
 	case MessageTypeResyncRequest:
 		msg, err = deserializeResyncRequest(payload)
+	case MessageTypeTileUpdate:
+		msg, err = deserializeTileUpdate(payload)
 	default:
 		return nil, fmt.Errorf("%w: 0x%02X", ErrInvalidMessageType, msgType)
 	}
@@ -247,6 +253,49 @@ func deserializeResyncRequest(data []byte) (*ResyncRequestMessage, error) {
 	}, nil
 }
 
+// serializeTileUpdate encodes TileUpdateMessage payload
+func serializeTileUpdate(w io.Writer, msg *TileUpdateMessage) error {
+	// [4: Count] [N: Tile Array]
+	if err := binary.Write(w, binary.BigEndian, msg.Count); err != nil {
+		return err
+	}
+
+	// Serialize tiles
+	for i := range msg.Tiles {
+		if err := serializeTileState(w, &msg.Tiles[i]); err != nil {
+			return fmt.Errorf("tile %d: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+// deserializeTileUpdate decodes TileUpdateMessage payload
+func deserializeTileUpdate(data []byte) (*TileUpdateMessage, error) {
+	if len(data) < 4 {
+		return nil, errors.New("tile update payload too short")
+	}
+
+	msg := &TileUpdateMessage{}
+	buf := bytes.NewReader(data)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.Count); err != nil {
+		return nil, err
+	}
+
+	// Deserialize tiles
+	msg.Tiles = make([]TileState, msg.Count)
+	for i := uint32(0); i < msg.Count; i++ {
+		tile, err := deserializeTileState(buf)
+		if err != nil {
+			return nil, fmt.Errorf("tile %d: %w", i, err)
+		}
+		msg.Tiles[i] = *tile
+	}
+
+	return msg, nil
+}
+
 // serializeTileState encodes a single TileState (9 bytes)
 // [2: X] [2: Y] [2: Z] [2: TileType] [1: Flags]
 func serializeTileState(w io.Writer, tile *TileState) error {
@@ -341,5 +390,22 @@ func (m *ResyncRequestMessage) Deserialize(data []byte) error {
 		return fmt.Errorf("expected ResyncRequestMessage, got %T", msg)
 	}
 	*m = *r
+	return nil
+}
+
+func (m *TileUpdateMessage) Serialize() ([]byte, error) {
+	return SerializeMessage(m)
+}
+
+func (m *TileUpdateMessage) Deserialize(data []byte) error {
+	msg, err := DeserializeMessage(data)
+	if err != nil {
+		return err
+	}
+	t, ok := msg.(*TileUpdateMessage)
+	if !ok {
+		return fmt.Errorf("expected TileUpdateMessage, got %T", msg)
+	}
+	*m = *t
 	return nil
 }

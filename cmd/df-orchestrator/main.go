@@ -96,9 +96,26 @@ func main() {
 			}
 		}
 
-		// Subscribe to tile updates (US2 feature - not yet implemented)
-		// updates := client.SubscribeTileUpdates()
-		// Will be enabled in User Story 2
+		// Subscribe to tile updates
+		updates := client.SubscribeTileUpdates()
+		go func() {
+			for update := range updates {
+				logger.Info("tile update received",
+					logging.Field{Key: "changed_tiles", Value: update.Count})
+
+				// Log first few tiles for debugging
+				if update.Count > 0 && update.Count <= 10 {
+					for i, tile := range update.Tiles {
+						logger.Debug("tile changed",
+							logging.Field{Key: "index", Value: i},
+							logging.Field{Key: "x", Value: tile.X},
+							logging.Field{Key: "y", Value: tile.Y},
+							logging.Field{Key: "z", Value: tile.Z},
+							logging.Field{Key: "type", Value: tile.TileType})
+					}
+				}
+			}
+		}()
 	} else {
 		logger.Warn("plugin not connected yet")
 	}

@@ -138,3 +138,22 @@ const (
 	ReasonReconnect     uint8 = 0x02
 	ReasonPeriodic      uint8 = 0x03
 )
+
+// TileUpdateMessage contains incremental tile changes
+type TileUpdateMessage struct {
+	Count uint32
+	Tiles []TileState
+}
+
+func (m *TileUpdateMessage) Type() uint8 { return MessageTypeTileUpdate }
+
+func (m *TileUpdateMessage) Validate() error {
+	if uint32(len(m.Tiles)) != m.Count {
+		return fmt.Errorf("tile count mismatch: Count=%d, len(Tiles)=%d", m.Count, len(m.Tiles))
+	}
+	if m.Count == 0 {
+		return errors.New("tile update must have at least one tile")
+	}
+	// No maximum - we can handle full map updates if needed
+	return nil
+}

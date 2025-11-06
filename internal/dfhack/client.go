@@ -17,21 +17,22 @@ import (
 type Client struct {
 	logger     *logging.Logger
 	listener   net.Listener
-	conn        *protocol.Connection
-	port        uint16
-	mu          sync.RWMutex
-	fullStateCh chan *protocol.FullStateMessage
-	// tileUpdateCh will be added in User Story 2
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	conn         *protocol.Connection
+	port         uint16
+	mu           sync.RWMutex
+	fullStateCh  chan *protocol.FullStateMessage
+	tileUpdateCh chan *protocol.TileUpdateMessage
+	stopCh       chan struct{}
+	wg           sync.WaitGroup
 }
 
 // NewClient creates a new DFHack client
 func NewClient(logger *logging.Logger) *Client {
 	return &Client{
-		logger:      logger,
-		fullStateCh: make(chan *protocol.FullStateMessage, 1),
-		stopCh:      make(chan struct{}),
+		logger:       logger,
+		fullStateCh:  make(chan *protocol.FullStateMessage, 1),
+		tileUpdateCh: make(chan *protocol.TileUpdateMessage, 100),
+		stopCh:       make(chan struct{}),
 	}
 }
 
@@ -196,6 +197,10 @@ func (c *Client) messageLoop(conn *protocol.Connection) {
 			return
 		}
 
+		// Debug: log every message received
+		c.logger.Info("messageLoop received message",
+			logging.Field{Key: "type", Value: fmt.Sprintf("0x%02X", msg.Type())})
+
 		// Route message to appropriate handler
 		switch m := msg.(type) {
 		case *protocol.FullStateMessage:
@@ -205,11 +210,22 @@ func (c *Client) messageLoop(conn *protocol.Connection) {
 				logging.Field{Key: "depth", Value: m.Depth},
 				logging.Field{Key: "tiles", Value: len(m.Tiles)})
 
-			// Send to full state channel (non-blocking)
+				// Send to full state channel (non-blocking)
 			select {
 			case c.fullStateCh <- m:
 			default:
 				c.logger.Warn("full state channel full, dropping message")
+			}
+
+		case *protocol.TileUpdateMessage:
+			c.logger.Info("received tile update",
+				logging.Field{Key: "changed_tiles", Value: m.Count})
+
+			// Send to tile update channel (non-blocking)
+			select {
+			case c.tileUpdateCh <- m:
+			default:
+				c.logger.Warn("tile update channel full, dropping message")
 			}
 
 		default:
@@ -246,10 +262,8 @@ func (c *Client) RequestFullState(reason uint8) (<-chan *protocol.FullStateMessa
 }
 
 // SubscribeTileUpdates returns channel for incremental tile updates
-// Will be implemented in User Story 2
-func (c *Client) SubscribeTileUpdates() interface{} {
-	// TODO: Implement in US2
-	return nil
+func (c *Client) SubscribeTileUpdates() <-chan *protocol.TileUpdateMessage {
+	return c.tileUpdateCh
 }
 
 // IsConnected returns true if connection is active

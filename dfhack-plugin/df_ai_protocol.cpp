@@ -39,14 +39,15 @@ bool receive_handshake(color_ostream &out);
 void message_receive_loop(color_ostream &out);
 bool receive_message(std::vector<uint8_t> &msg_out, uint8_t &type_out);
 bool send_full_state(color_ostream &out);
-std::vector<uint8_t> extract_full_map_state();
+bool send_tile_update(color_ostream &out, const std::vector<uint8_t> &tiles);
 
 // Helper: Read exactly n bytes from socket
 bool read_exact(uint8_t *buffer, size_t n);
-// Helper: Write uint16 big-endian
-void write_uint16_be(std::vector<uint8_t> &buf, uint16_t value);
-// Helper: Write uint32 big-endian
-void write_uint32_be(std::vector<uint8_t> &buf, uint32_t value);
+
+// External functions from other files
+extern std::vector<uint8_t> extract_full_map_state();
+extern bool get_map_dimensions(int32_t &width, int32_t &height, int32_t &depth);
+extern std::vector<uint8_t> detect_tile_changes();
 
 // Plugin initialization
 DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginCommand> &commands)
@@ -132,6 +133,35 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
         "Usage: ai-listen\nChecks for incoming messages from the server."
     ));
 
+    commands.push_back(PluginCommand(
+        "ai-check-updates",
+        "Check for and send tile changes",
+        [](color_ostream &out, std::vector<std::string> &params) -> command_result {
+            if (!g_connected) {
+                out.printerr("Not connected - use 'ai-connect' first\n");
+                return CR_FAILURE;
+            }
+
+            out.print("Scanning for tile changes...\n");
+            std::vector<uint8_t> changes = detect_tile_changes();
+
+            if (changes.empty()) {
+                out.print("No changes detected\n");
+                return CR_OK;
+            }
+
+            uint32_t count = changes.size() / 9;
+            out.print("Found %d changed tiles\n", count);
+
+            if (send_tile_update(out, changes)) {
+                return CR_OK;
+            }
+            return CR_FAILURE;
+        },
+        false,
+        "Usage: ai-check-updates\nDetects changed tiles and sends TILE_UPDATE to server."
+    ));
+
     out.print("DF AI Protocol plugin initialized\n");
     out.print("Use 'ai-connect' to connect to Go orchestrator\n");
 
@@ -186,6 +216,9 @@ bool connect_to_server(color_ostream &out)
         g_socket.reset();
         return false;
     }
+
+    // Disable Nagle's algorithm for immediate sending
+    g_socket->DisableNagleAlgoritm();
 
     out.print("TCP connection established\n");
 
@@ -410,6 +443,66 @@ bool send_full_state(color_ostream &out)
     return true;
 }
 
+// Send tile update message (US2)
+bool send_tile_update(color_ostream &out, const std::vector<uint8_t> &tiles)
+{
+    if (!g_connected || !g_socket) {
+        out.printerr("Not connected\n");
+        return false;
+    }
+
+    uint32_t tile_count = tiles.size() / 9;
+    if (tile_count == 0) {
+        out.print("No changed tiles to send\n");
+        return true;
+    }
+
+    // Build TILE_UPDATE message: [4:Length][1:Ver][1:Type][4:Count][N:Tiles]
+    std::vector<uint8_t> message;
+    message.reserve(10 + tiles.size());
+
+    // Length placeholder
+    message.resize(4, 0);
+
+    // Version and type
+    message.push_back(PROTOCOL_VERSION);
+    message.push_back(MSG_TYPE_TILE_UPDATE);
+
+    // Payload: [4: Count][N: Tiles]
+    write_uint32_be(message, tile_count);
+    message.insert(message.end(), tiles.begin(), tiles.end());
+
+    // Fill length
+    uint32_t length = message.size();
+    message[0] = (length >> 24) & 0xFF;
+    message[1] = (length >> 16) & 0xFF;
+    message[2] = (length >> 8) & 0xFF;
+    message[3] = length & 0xFF;
+
+    // Debug: print first 20 bytes of message
+    out.print("DEBUG: Message header: ");
+    for (size_t i = 0; i < (message.size() < 20 ? message.size() : 20); i++) {
+        out.print("%02X ", message[i]);
+    }
+    out.print("\n");
+
+    // Send
+    int32_t sent = g_socket->Send(message.data(), message.size());
+    if (sent != (int32_t)message.size()) {
+        out.printerr("Failed to send tile update: sent %d/%d bytes\n", sent, (int)message.size());
+        return false;
+    }
+
+    // Force flush to ensure data is transmitted
+    if (!g_socket->IsSocketValid()) {
+        out.printerr("Socket became invalid after send!\n");
+        return false;
+    }
+
+    out.print("Sent TILE_UPDATE (%d tiles, %d bytes)\n", tile_count, (int)message.size());
+    return true;
+}
+
 // Message receive loop - handle incoming messages from server
 void message_receive_loop(color_ostream &out)
 {
@@ -474,23 +567,9 @@ bool read_exact(uint8_t *buffer, size_t n)
     return true;
 }
 
-// Helper: Write uint16 big-endian
-void write_uint16_be(std::vector<uint8_t> &buf, uint16_t value)
-{
-    buf.push_back((value >> 8) & 0xFF);
-    buf.push_back(value & 0xFF);
-}
-
-// Helper: Write uint32 big-endian
-void write_uint32_be(std::vector<uint8_t> &buf, uint32_t value)
-{
-    buf.push_back((value >> 24) & 0xFF);
-    buf.push_back((value >> 16) & 0xFF);
-    buf.push_back((value >> 8) & 0xFF);
-    buf.push_back(value & 0xFF);
-}
-
 // Extract full map state
 // Implemented in tile_extractor.cpp
 extern std::vector<uint8_t> extract_full_map_state();
 extern bool get_map_dimensions(int32_t &width, int32_t &height, int32_t &depth);
+// Implemented in tile_updates.cpp
+extern std::vector<uint8_t> detect_tile_changes();
