@@ -19,5 +19,10 @@ reconnect_max_delay: 30s
 reconnect_backoff_factor: 2.0
 
 # Logging
-log_level: debug     # debug, info, warn, error
+log_level: info      # debug, info, warn, error
 log_format: json     # json or text
+
+# Topology overlay compression
+topology_compression_mode: full  # full, active_z_levels, custom_bounds
+topology_center_z: 0             # For active_z_levels mode
+topology_z_radius: 3             # ±3 levels from center

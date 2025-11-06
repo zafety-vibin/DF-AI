@@ -29,6 +29,11 @@ type Config struct {
 	// Logging settings
 	LogLevel  string `yaml:"log_level"`  // debug, info, warn, error
 	LogFormat string `yaml:"log_format"` // json, text
+
+	// Topology overlay compression settings
+	TopologyCompressionMode string `yaml:"topology_compression_mode"` // full, active_z_levels, custom_bounds
+	TopologyCenterZ         uint16 `yaml:"topology_center_z"`
+	TopologyZRadius         uint16 `yaml:"topology_z_radius"`
 }
 
 // Load reads and parses the configuration file
@@ -87,5 +92,11 @@ func (c *Config) setDefaults() {
 	}
 	if c.LogFormat == "" {
 		c.LogFormat = "json"
+	}
+	if c.TopologyCompressionMode == "" {
+		c.TopologyCompressionMode = "full"
+	}
+	if c.TopologyZRadius == 0 {
+		c.TopologyZRadius = 3
 	}
 }

@@ -4,6 +4,7 @@ Auto-generated from all feature plans. Last updated: 2025-11-05
 
 ## Active Technologies
 - Filesystem (config files), in-memory (metrics, health state) (002-foundation-infrastructure)
+- In-memory bit array (~870 KB), no disk persistence (003-topology-graph-layer)
 
 - Go 1.21+ (server), C++17 (DFHack plugin) (001-binary-protocol)
 
@@ -23,6 +24,7 @@ tests/
 Go 1.21+ (server), C++17 (DFHack plugin): Follow standard conventions
 
 ## Recent Changes
+- 003-topology-graph-layer: Added Go 1.21+
 - 002-foundation-infrastructure: Added Go 1.21+
 
 - 001-binary-protocol: Added Go 1.21+ (server), C++17 (DFHack plugin)

@@ -14,7 +14,12 @@ import (
 	"github.com/df-ai/orchestrator/internal/http"
 	"github.com/df-ai/orchestrator/internal/logging"
 	"github.com/df-ai/orchestrator/internal/protocol"
+	"github.com/df-ai/orchestrator/internal/topology"
 	"golang.org/x/sync/errgroup"
+)
+
+var (
+	topologyOverlay *topology.TopologyOverlay
 )
 
 var (
@@ -112,6 +117,49 @@ func main() {
 					logging.Field{Key: "height", Value: state.Height},
 					logging.Field{Key: "depth", Value: state.Depth},
 					logging.Field{Key: "tiles", Value: len(state.Tiles)})
+
+				// Build topology overlay
+				topologyOverlay = topology.NewTopologyOverlay(state.Width, state.Height, state.Depth)
+				if topologyOverlay == nil {
+					logger.Error("failed to create topology overlay", fmt.Errorf("invalid dimensions"))
+				} else {
+					buildStart := time.Now()
+					if err := topologyOverlay.BuildFromTiles(state.Tiles); err != nil {
+						logger.Error("failed to build topology overlay", err)
+					} else {
+						buildDuration := time.Since(buildStart)
+						logger.Info("topology overlay built",
+							logging.Field{Key: "memory_kb", Value: topologyOverlay.GetMemoryUsage() / 1024},
+							logging.Field{Key: "open_pct", Value: topologyOverlay.GetOpenPercentage()},
+							logging.Field{Key: "build_ms", Value: buildDuration.Milliseconds()})
+
+						// Test compression
+						compConfig := topology.CompressionConfig{
+							Mode:    cfg.TopologyCompressionMode,
+							CenterZ: cfg.TopologyCenterZ,
+							ZRadius: cfg.TopologyZRadius,
+						}
+
+						compressed, err := topologyOverlay.Compress(compConfig)
+						if err != nil {
+							logger.Error("topology compression failed", err)
+						} else {
+							logger.Info("topology compressed",
+								logging.Field{Key: "mode", Value: compressed.Mode},
+								logging.Field{Key: "compressed_kb", Value: compressed.GetSize() / 1024},
+								logging.Field{Key: "ratio", Value: compressed.GetRatio()},
+								logging.Field{Key: "z_levels", Value: len(compressed.ZLevelsIncluded)})
+
+							// Validate round-trip
+							if err := compressed.Validate(topologyOverlay); err != nil {
+								logger.Error("topology compression validation failed", err)
+							} else {
+								logger.Info("topology compression validated (lossless round-trip)")
+							}
+						}
+					}
+				}
+
 			case <-time.After(10 * time.Second):
 				logger.Warn("timeout waiting for full state")
 			}
