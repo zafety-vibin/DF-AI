@@ -1,0 +1,268 @@
+openapi: 3.0.3
+info:
+  title: DF AI Orchestrator Monitoring API
+  description: |
+    HTTP monitoring endpoints for the Dwarf Fortress AI Orchestrator.
+
+    This API provides health checks, readiness probes, and operational metrics
+    for monitoring systems (Prometheus, Kubernetes, load balancers).
+
+    **Note**: This is a read-only monitoring API. Configuration changes are
+    made via YAML file, not HTTP endpoints.
+  version: 1.0.0
+  contact:
+    name: DF AI Orchestrator
+servers:
+  - url: http://localhost:8080
+    description: Local development server (default HTTP port)
+
+paths:
+  /health:
+    get:
+      summary: Health check endpoint
+      description: |
+        Returns the current health status of the orchestrator.
+
+        - Returns 200 if server is running (even if degraded)
+        - Status "healthy": All systems operational, DFHack connected
+        - Status "degraded": Server running but DFHack disconnected or stale heartbeat
+        - Status "unhealthy": Critical failure (config load error)
+      operationId: getHealth
+      tags:
+        - Monitoring
+      responses:
+        '200':
+          description: Health status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              examples:
+                healthy:
+                  summary: Healthy system with active DFHack connection
+                  value:
+                    status: healthy
+                    uptime_seconds: 3600
+                    dfhack_connected: true
+                    dfhack_connection_time: "2025-11-06T10:30:00Z"
+                    last_heartbeat: "2025-11-06T11:29:55Z"
+                    timestamp: "2025-11-06T11:30:00Z"
+                degraded:
+                  summary: Degraded system (DFHack disconnected)
+                  value:
+                    status: degraded
+                    uptime_seconds: 1800
+                    dfhack_connected: false
+                    dfhack_connection_time: null
+                    last_heartbeat: null
+                    timestamp: "2025-11-06T11:30:00Z"
+
+  /ready:
+    get:
+      summary: Readiness check endpoint
+      description: |
+        Returns whether the server is ready to accept requests.
+
+        - Returns 200 if fully initialized and ready
+        - Returns 503 if still initializing or degraded
+
+        Use this for Kubernetes readiness probes and load balancer health checks.
+      operationId: getReadiness
+      tags:
+        - Monitoring
+      responses:
+        '200':
+          description: Server is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessStatus'
+              example:
+                ready: true
+                checks:
+                  config_loaded: true
+                  tcp_listener: true
+                  http_server: true
+                  logger: true
+        '503':
+          description: Server is not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessStatus'
+              example:
+                ready: false
+                checks:
+                  config_loaded: true
+                  tcp_listener: false
+                  http_server: true
+                  logger: true
+                message: "TCP listener failed to start on port 5001"
+
+  /metrics:
+    get:
+      summary: Operational metrics endpoint
+      description: |
+        Returns operational metrics for monitoring and alerting.
+
+        Includes:
+        - Server uptime
+        - DFHack connection status
+        - Message counts (sent/received)
+        - Error counts
+        - Heartbeat statistics
+        - Config reload count
+        - HTTP request count
+
+        **Note**: This returns JSON format. Prometheus exposition format
+        is a future enhancement.
+      operationId: getMetrics
+      tags:
+        - Monitoring
+      responses:
+        '200':
+          description: Metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsSnapshot'
+              example:
+                server_uptime_seconds: 3600
+                dfhack_connected: true
+                session:
+                  connection_time: "2025-11-06T10:30:00Z"
+                  messages_sent: 150
+                  messages_received: 148
+                  error_count: 2
+                  heartbeats_sent: 360
+                  heartbeats_received: 360
+                config_reloads: 3
+                http_requests: 1250
+                timestamp: "2025-11-06T11:30:00Z"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      required:
+        - status
+        - uptime_seconds
+        - dfhack_connected
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          description: Overall system health
+        uptime_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Server uptime in seconds
+        dfhack_connected:
+          type: boolean
+          description: Whether DFHack connection is active
+        dfhack_connection_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: When DFHack connection was established (null if disconnected)
+        last_heartbeat:
+          type: string
+          format: date-time
+          nullable: true
+          description: Last heartbeat received from DFHack (null if never connected)
+        timestamp:
+          type: string
+          format: date-time
+          description: When this status snapshot was captured
+
+    ReadinessStatus:
+      type: object
+      required:
+        - ready
+        - checks
+      properties:
+        ready:
+          type: boolean
+          description: True if server is fully initialized
+        checks:
+          type: object
+          additionalProperties:
+            type: boolean
+          description: Individual readiness checks (config_loaded, tcp_listener, http_server, logger)
+          example:
+            config_loaded: true
+            tcp_listener: true
+            http_server: true
+            logger: true
+        message:
+          type: string
+          description: Human-readable reason if not ready (omitted if ready)
+
+    MetricsSnapshot:
+      type: object
+      required:
+        - server_uptime_seconds
+        - dfhack_connected
+        - timestamp
+      properties:
+        server_uptime_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total server uptime
+        dfhack_connected:
+          type: boolean
+          description: Current DFHack connection status
+        session:
+          $ref: '#/components/schemas/SessionMetrics'
+        config_reloads:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Number of successful config reloads
+        http_requests:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total HTTP requests received
+        timestamp:
+          type: string
+          format: date-time
+          description: When metrics were captured
+
+    SessionMetrics:
+      type: object
+      description: DFHack session statistics
+      properties:
+        connection_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: When session started (null if never connected)
+        messages_sent:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total protocol messages sent to DFHack
+        messages_received:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total protocol messages received from DFHack
+        error_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Number of errors encountered
+        heartbeats_sent:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Number of heartbeat messages sent
+        heartbeats_received:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Number of heartbeat echoes received

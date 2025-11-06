@@ -10,9 +10,11 @@ import (
 // Config holds the orchestrator server configuration
 type Config struct {
 	// Network settings
-	ListenPort   uint16        `yaml:"listen_port"`
-	ReadTimeout  time.Duration `yaml:"read_timeout"`
-	WriteTimeout time.Duration `yaml:"write_timeout"`
+	ListenPort    uint16        `yaml:"listen_port"`
+	HttpPort      uint16        `yaml:"http_port"`
+	EnableHttpApi bool          `yaml:"enable_http_api"`
+	ReadTimeout   time.Duration `yaml:"read_timeout"`
+	WriteTimeout  time.Duration `yaml:"write_timeout"`
 
 	// Protocol settings
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
@@ -52,6 +54,10 @@ func (c *Config) setDefaults() {
 	if c.ListenPort == 0 {
 		c.ListenPort = 5001
 	}
+	if c.HttpPort == 0 {
+		c.HttpPort = 8080
+	}
+	// EnableHttpApi defaults to true (no check needed, false is default)
 	if c.ReadTimeout == 0 {
 		c.ReadTimeout = 30 * time.Second
 	}

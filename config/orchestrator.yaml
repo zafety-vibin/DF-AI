@@ -3,6 +3,8 @@
 
 # Network settings
 listen_port: 5001
+http_port: 8081
+enable_http_api: true
 read_timeout: 30s
 write_timeout: 10s
 
@@ -17,5 +19,5 @@ reconnect_max_delay: 30s
 reconnect_backoff_factor: 2.0
 
 # Logging
-log_level: info      # debug, info, warn, error
+log_level: debug     # debug, info, warn, error
 log_format: json     # json or text
