@@ -43,6 +43,7 @@ type Client struct {
 	heartbeatMu      sync.Mutex
 	metrics          SessionMetrics
 	metricsMu        sync.Mutex
+	onFullState      func(*protocol.FullStateMessage) // Callback for FULL_STATE messages
 }
 
 // NewClient creates a new DFHack client
@@ -249,11 +250,16 @@ func (c *Client) messageLoop(conn *protocol.Connection) {
 				logging.Field{Key: "depth", Value: m.Depth},
 				logging.Field{Key: "tiles", Value: len(m.Tiles)})
 
-				// Send to full state channel (non-blocking)
+			// Send to full state channel (non-blocking)
 			select {
 			case c.fullStateCh <- m:
 			default:
 				c.logger.Warn("full state channel full, dropping message")
+			}
+
+			// Build topology overlay (callback to be set by main.go)
+			if c.onFullState != nil {
+				c.onFullState(m)
 			}
 
 		case *protocol.TileUpdateMessage:
@@ -414,6 +420,11 @@ func (c *Client) GetSessionMetrics() SessionMetrics {
 	c.metricsMu.Lock()
 	defer c.metricsMu.Unlock()
 	return c.metrics
+}
+
+// SetOnFullState sets callback for FULL_STATE messages
+func (c *Client) SetOnFullState(callback func(*protocol.FullStateMessage)) {
+	c.onFullState = callback
 }
 
 // Stop gracefully shuts down the client

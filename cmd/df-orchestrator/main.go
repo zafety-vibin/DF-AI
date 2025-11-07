@@ -75,6 +75,54 @@ func main() {
 	// Create DFHack client
 	client := dfhack.NewClient(logger)
 
+	// Set up topology overlay callback
+	client.SetOnFullState(func(state *protocol.FullStateMessage) {
+		// Build topology overlay
+		topologyOverlay = topology.NewTopologyOverlay(state.Width, state.Height, state.Depth)
+		if topologyOverlay == nil {
+			logger.Error("failed to create topology overlay", fmt.Errorf("invalid dimensions"))
+			return
+		}
+
+		buildStart := time.Now()
+		if err := topologyOverlay.BuildFromTiles(state.Tiles); err != nil {
+			logger.Error("failed to build topology overlay", err)
+			return
+		}
+
+		buildDuration := time.Since(buildStart)
+		logger.Info("topology overlay built",
+			logging.Field{Key: "memory_kb", Value: topologyOverlay.GetMemoryUsage() / 1024},
+			logging.Field{Key: "open_pct", Value: topologyOverlay.GetOpenPercentage()},
+			logging.Field{Key: "build_ms", Value: buildDuration.Milliseconds()})
+
+		// Test compression
+		compConfig := topology.CompressionConfig{
+			Mode:    cfg.TopologyCompressionMode,
+			CenterZ: cfg.TopologyCenterZ,
+			ZRadius: cfg.TopologyZRadius,
+		}
+
+		compressed, err := topologyOverlay.Compress(compConfig)
+		if err != nil {
+			logger.Error("topology compression failed", err)
+			return
+		}
+
+		logger.Info("topology compressed",
+			logging.Field{Key: "mode", Value: compressed.Mode},
+			logging.Field{Key: "compressed_kb", Value: compressed.GetSize() / 1024},
+			logging.Field{Key: "ratio", Value: compressed.GetRatio()},
+			logging.Field{Key: "z_levels", Value: len(compressed.ZLevelsIncluded)})
+
+		// Validate round-trip
+		if err := compressed.Validate(topologyOverlay); err != nil {
+			logger.Error("topology compression validation failed", err)
+		} else {
+			logger.Info("topology compression validated (lossless round-trip)")
+		}
+	})
+
 	// Start client (begins listening for plugin connections)
 	if err := client.Start(ctx, cfg.ListenPort); err != nil {
 		logger.Error("failed to start client", err)
@@ -92,102 +140,22 @@ func main() {
 	}
 
 	logger.Info("waiting for DFHack plugin to connect...")
+	logger.Info("topology overlay will build automatically when FULL_STATE received")
 
 	// Set up signal handling for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	// Wait for connection and request initial state
-	// In a real implementation, we'd wait for connection event
-	// For now, we'll just wait a bit and request full state
-	time.Sleep(2 * time.Second)
+	// Subscribe to tile updates (for future use)
+	updates := client.SubscribeTileUpdates()
+	go func() {
+		for update := range updates {
+			logger.Info("tile update received",
+				logging.Field{Key: "changed_tiles", Value: update.Count})
 
-	if client.IsConnected() {
-		stateCh, err := client.RequestFullState(protocol.ReasonManual)
-		if err != nil {
-			logger.Error("failed to request full state", err)
-		} else {
-			logger.Info("requested full state from plugin")
-
-			// Wait for full state with timeout
-			select {
-			case state := <-stateCh:
-				logger.Info("received full state",
-					logging.Field{Key: "width", Value: state.Width},
-					logging.Field{Key: "height", Value: state.Height},
-					logging.Field{Key: "depth", Value: state.Depth},
-					logging.Field{Key: "tiles", Value: len(state.Tiles)})
-
-				// Build topology overlay
-				topologyOverlay = topology.NewTopologyOverlay(state.Width, state.Height, state.Depth)
-				if topologyOverlay == nil {
-					logger.Error("failed to create topology overlay", fmt.Errorf("invalid dimensions"))
-				} else {
-					buildStart := time.Now()
-					if err := topologyOverlay.BuildFromTiles(state.Tiles); err != nil {
-						logger.Error("failed to build topology overlay", err)
-					} else {
-						buildDuration := time.Since(buildStart)
-						logger.Info("topology overlay built",
-							logging.Field{Key: "memory_kb", Value: topologyOverlay.GetMemoryUsage() / 1024},
-							logging.Field{Key: "open_pct", Value: topologyOverlay.GetOpenPercentage()},
-							logging.Field{Key: "build_ms", Value: buildDuration.Milliseconds()})
-
-						// Test compression
-						compConfig := topology.CompressionConfig{
-							Mode:    cfg.TopologyCompressionMode,
-							CenterZ: cfg.TopologyCenterZ,
-							ZRadius: cfg.TopologyZRadius,
-						}
-
-						compressed, err := topologyOverlay.Compress(compConfig)
-						if err != nil {
-							logger.Error("topology compression failed", err)
-						} else {
-							logger.Info("topology compressed",
-								logging.Field{Key: "mode", Value: compressed.Mode},
-								logging.Field{Key: "compressed_kb", Value: compressed.GetSize() / 1024},
-								logging.Field{Key: "ratio", Value: compressed.GetRatio()},
-								logging.Field{Key: "z_levels", Value: len(compressed.ZLevelsIncluded)})
-
-							// Validate round-trip
-							if err := compressed.Validate(topologyOverlay); err != nil {
-								logger.Error("topology compression validation failed", err)
-							} else {
-								logger.Info("topology compression validated (lossless round-trip)")
-							}
-						}
-					}
-				}
-
-			case <-time.After(10 * time.Second):
-				logger.Warn("timeout waiting for full state")
-			}
+			// Future: Update topology overlay incrementally (Feature 5)
 		}
-
-		// Subscribe to tile updates
-		updates := client.SubscribeTileUpdates()
-		go func() {
-			for update := range updates {
-				logger.Info("tile update received",
-					logging.Field{Key: "changed_tiles", Value: update.Count})
-
-				// Log first few tiles for debugging
-				if update.Count > 0 && update.Count <= 10 {
-					for i, tile := range update.Tiles {
-						logger.Debug("tile changed",
-							logging.Field{Key: "index", Value: i},
-							logging.Field{Key: "x", Value: tile.X},
-							logging.Field{Key: "y", Value: tile.Y},
-							logging.Field{Key: "z", Value: tile.Z},
-							logging.Field{Key: "type", Value: tile.TileType})
-					}
-				}
-			}
-		}()
-	} else {
-		logger.Warn("plugin not connected yet")
-	}
+	}()
 
 	// Wait for shutdown signal
 	sig := <-sigCh
