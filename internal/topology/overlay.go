@@ -110,3 +110,52 @@ func (t *TopologyOverlay) GetOpenPercentage() float64 {
 func (t *TopologyOverlay) GetBuildTime() time.Time {
 	return t.buildTime
 }
+
+// SetTile updates the open/closed state for a single tile
+// Thread-safe: Acquires write lock
+// Used for incremental updates from TILE_UPDATE messages
+func (t *TopologyOverlay) SetTile(x, y, z int16, isOpen bool) error {
+	// Bounds validation
+	if x < 0 || x >= int16(t.width) {
+		return fmt.Errorf("x coordinate out of bounds: %d (valid: 0-%d)", x, t.width-1)
+	}
+	if y < 0 || y >= int16(t.height) {
+		return fmt.Errorf("y coordinate out of bounds: %d (valid: 0-%d)", y, t.height-1)
+	}
+	if z < 0 || z >= int16(t.depth) {
+		return fmt.Errorf("z coordinate out of bounds: %d (valid: 0-%d)", z, t.depth-1)
+	}
+
+	// Calculate bit index
+	bitIndex := uint32(z)*uint32(t.width)*uint32(t.height) +
+		uint32(y)*uint32(t.width) +
+		uint32(x)
+
+	byteIndex := bitIndex / 8
+	bitOffset := bitIndex % 8
+
+	// Update bit with write lock
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Get current state
+	wasOpen := (t.data[byteIndex] >> bitOffset) & 1
+
+	if isOpen {
+		// Set bit to 1
+		t.data[byteIndex] |= (1 << bitOffset)
+		if wasOpen == 0 {
+			// Tile changed from closed to open
+			t.openTileCount++
+		}
+	} else {
+		// Clear bit to 0
+		t.data[byteIndex] &^= (1 << bitOffset)
+		if wasOpen == 1 {
+			// Tile changed from open to closed
+			t.openTileCount--
+		}
+	}
+
+	return nil
+}

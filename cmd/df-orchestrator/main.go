@@ -146,14 +146,34 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	// Subscribe to tile updates (for future use)
+	// Subscribe to tile updates
 	updates := client.SubscribeTileUpdates()
 	go func() {
 		for update := range updates {
 			logger.Info("tile update received",
 				logging.Field{Key: "changed_tiles", Value: update.Count})
 
-			// Future: Update topology overlay incrementally (Feature 5)
+			// Update topology overlay incrementally
+			if topologyOverlay != nil && update.Count > 0 {
+				updateCount := 0
+				for _, tile := range update.Tiles {
+					isOpen := topology.IsPathable(tile.TileType)
+					if err := topologyOverlay.SetTile(tile.X, tile.Y, tile.Z, isOpen); err != nil {
+						logger.Error("failed to update topology tile", err,
+							logging.Field{Key: "x", Value: tile.X},
+							logging.Field{Key: "y", Value: tile.Y},
+							logging.Field{Key: "z", Value: tile.Z})
+					} else {
+						updateCount++
+					}
+				}
+
+				if updateCount > 0 {
+					logger.Info("topology overlay updated",
+						logging.Field{Key: "tiles_updated", Value: updateCount},
+						logging.Field{Key: "open_pct", Value: topologyOverlay.GetOpenPercentage()})
+				}
+			}
 		}
 	}()
 
