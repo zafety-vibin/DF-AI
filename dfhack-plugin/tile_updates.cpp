@@ -67,11 +67,6 @@ std::vector<uint8_t> detect_tile_changes()
 
                     // Update cache
                     g_tile_cache[key] = current_type;
-
-                    // Limit batch size to 1000 tiles
-                    if (result.size() >= 1000 * 9) {
-                        return result;
-                    }
                 }
             }
         }

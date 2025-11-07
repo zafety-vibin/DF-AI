@@ -70,6 +70,10 @@ func SerializeMessage(msg Message) ([]byte, error) {
 		if err := serializeError(&buf, m); err != nil {
 			return nil, err
 		}
+	case *EntityUpdateMessage:
+		if err := serializeEntityUpdate(&buf, m); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unknown message type: %T", msg)
 	}
@@ -126,6 +130,8 @@ func DeserializeMessage(data []byte) (Message, error) {
 		msg, err = deserializeDisconnect(payload)
 	case MessageTypeError:
 		msg, err = deserializeError(payload)
+	case MessageTypeEntityUpdate:
+		msg, err = deserializeEntityUpdate(payload)
 	default:
 		return nil, fmt.Errorf("%w: 0x%02X", ErrInvalidMessageType, msgType)
 	}
@@ -561,6 +567,116 @@ func (m *ErrorMessage) Deserialize(data []byte) error {
 	e, ok := msg.(*ErrorMessage)
 	if !ok {
 		return fmt.Errorf("expected ErrorMessage, got %T", msg)
+	}
+	*m = *e
+	return nil
+}
+
+// serializeEntityUpdate encodes EntityUpdateMessage payload
+func serializeEntityUpdate(w io.Writer, msg *EntityUpdateMessage) error {
+	// [4: Count] [N: Entity Array]
+	if err := binary.Write(w, binary.BigEndian, msg.Count); err != nil {
+		return err
+	}
+
+	// Serialize entities
+	for i := range msg.Entities {
+		if err := serializeEntityInfo(w, &msg.Entities[i]); err != nil {
+			return fmt.Errorf("entity %d: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+// deserializeEntityUpdate decodes EntityUpdateMessage payload
+func deserializeEntityUpdate(data []byte) (*EntityUpdateMessage, error) {
+	if len(data) < 4 {
+		return nil, errors.New("entity update payload too short")
+	}
+
+	msg := &EntityUpdateMessage{}
+	buf := bytes.NewReader(data)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.Count); err != nil {
+		return nil, err
+	}
+
+	// Deserialize entities
+	msg.Entities = make([]EntityInfo, msg.Count)
+	for i := uint32(0); i < msg.Count; i++ {
+		entity, err := deserializeEntityInfo(buf)
+		if err != nil {
+			return nil, fmt.Errorf("entity %d: %w", i, err)
+		}
+		msg.Entities[i] = *entity
+	}
+
+	return msg, nil
+}
+
+// serializeEntityInfo encodes a single EntityInfo (13 bytes)
+// [4: ID] [2: X] [2: Y] [2: Z] [1: Type] [2: Subtype]
+func serializeEntityInfo(w io.Writer, entity *EntityInfo) error {
+	if err := binary.Write(w, binary.BigEndian, entity.ID); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, entity.X); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, entity.Y); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, entity.Z); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, entity.Type); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, entity.Subtype); err != nil {
+		return err
+	}
+	return nil
+}
+
+// deserializeEntityInfo decodes a single EntityInfo (13 bytes)
+func deserializeEntityInfo(r io.Reader) (*EntityInfo, error) {
+	entity := &EntityInfo{}
+
+	if err := binary.Read(r, binary.BigEndian, &entity.ID); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(r, binary.BigEndian, &entity.X); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(r, binary.BigEndian, &entity.Y); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(r, binary.BigEndian, &entity.Z); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(r, binary.BigEndian, &entity.Type); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(r, binary.BigEndian, &entity.Subtype); err != nil {
+		return nil, err
+	}
+
+	return entity, nil
+}
+
+func (m *EntityUpdateMessage) Serialize() ([]byte, error) {
+	return SerializeMessage(m)
+}
+
+func (m *EntityUpdateMessage) Deserialize(data []byte) error {
+	msg, err := DeserializeMessage(data)
+	if err != nil {
+		return err
+	}
+	e, ok := msg.(*EntityUpdateMessage)
+	if !ok {
+		return fmt.Errorf("expected EntityUpdateMessage, got %T", msg)
 	}
 	*m = *e
 	return nil

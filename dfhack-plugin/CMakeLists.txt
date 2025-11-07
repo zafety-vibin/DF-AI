@@ -16,6 +16,7 @@ include(DFHackPlugin)
 DFHACK_PLUGIN(df_ai_protocol
     df_ai_protocol.cpp
     tile_extractor.cpp
+    entities.cpp
     LINK_LIBRARIES clsocket
 )
 

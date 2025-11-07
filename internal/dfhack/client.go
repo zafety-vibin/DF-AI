@@ -36,6 +36,7 @@ type Client struct {
 	mu               sync.RWMutex
 	fullStateCh      chan *protocol.FullStateMessage
 	tileUpdateCh     chan *protocol.TileUpdateMessage
+	entityUpdateCh   chan *protocol.EntityUpdateMessage
 	stopCh           chan struct{}
 	wg               sync.WaitGroup
 	heartbeatSeq     uint8
@@ -49,10 +50,11 @@ type Client struct {
 // NewClient creates a new DFHack client
 func NewClient(logger *logging.Logger) *Client {
 	return &Client{
-		logger:       logger,
-		fullStateCh:  make(chan *protocol.FullStateMessage, 1),
-		tileUpdateCh: make(chan *protocol.TileUpdateMessage, 100),
-		stopCh:       make(chan struct{}),
+		logger:         logger,
+		fullStateCh:    make(chan *protocol.FullStateMessage, 1),
+		tileUpdateCh:   make(chan *protocol.TileUpdateMessage, 100),
+		entityUpdateCh: make(chan *protocol.EntityUpdateMessage, 100),
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -273,6 +275,17 @@ func (c *Client) messageLoop(conn *protocol.Connection) {
 				c.logger.Warn("tile update channel full, dropping message")
 			}
 
+		case *protocol.EntityUpdateMessage:
+			c.logger.Info("received entity update",
+				logging.Field{Key: "entity_count", Value: m.Count})
+
+			// Send to entity update channel (non-blocking)
+			select {
+			case c.entityUpdateCh <- m:
+			default:
+				c.logger.Warn("entity update channel full, dropping message")
+			}
+
 		case *protocol.HeartbeatMessage:
 			// Echo heartbeat back with incremented sequence
 			c.handleHeartbeat(conn, m)
@@ -318,6 +331,11 @@ func (c *Client) RequestFullState(reason uint8) (<-chan *protocol.FullStateMessa
 // SubscribeTileUpdates returns channel for incremental tile updates
 func (c *Client) SubscribeTileUpdates() <-chan *protocol.TileUpdateMessage {
 	return c.tileUpdateCh
+}
+
+// SubscribeEntityUpdates returns channel for entity position updates
+func (c *Client) SubscribeEntityUpdates() <-chan *protocol.EntityUpdateMessage {
+	return c.entityUpdateCh
 }
 
 // IsConnected returns true if connection is active

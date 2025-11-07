@@ -33,6 +33,7 @@ const (
 	MessageTypeHeartbeat      uint8 = 0x05
 	MessageTypeError          uint8 = 0x06
 	MessageTypeDisconnect     uint8 = 0x07
+	MessageTypeEntityUpdate   uint8 = 0x08
 )
 
 // Common errors
@@ -215,3 +216,37 @@ const (
 	ErrVersionMismatch_ uint16 = 0x0003
 	ErrInternal         uint16 = 0x0004
 )
+
+// EntityInfo represents a single entity (dwarf, enemy, animal)
+type EntityInfo struct {
+	ID      uint32 // Unit ID from DF
+	X       int16  // X coordinate
+	Y       int16  // Y coordinate
+	Z       int16  // Z coordinate
+	Type    uint8  // 1=dwarf, 2=enemy, 3=animal, 4=other
+	Subtype uint16 // Race ID for detailed classification
+}
+
+// Entity type constants
+const (
+	EntityTypeDwarf  uint8 = 0x01
+	EntityTypeEnemy  uint8 = 0x02
+	EntityTypeAnimal uint8 = 0x03
+	EntityTypeOther  uint8 = 0x04
+)
+
+// EntityUpdateMessage contains entity position updates
+type EntityUpdateMessage struct {
+	Count    uint32
+	Entities []EntityInfo
+}
+
+func (m *EntityUpdateMessage) Type() uint8 { return MessageTypeEntityUpdate }
+
+func (m *EntityUpdateMessage) Validate() error {
+	if uint32(len(m.Entities)) != m.Count {
+		return fmt.Errorf("entity count mismatch: Count=%d, len(Entities)=%d", m.Count, len(m.Entities))
+	}
+	// Count can be 0 (no entities) - that's valid
+	return nil
+}

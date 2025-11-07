@@ -7,10 +7,12 @@
 #include "Export.h"
 #include "PluginManager.h"
 #include "modules/MapCache.h"
+#include "modules/Units.h"
 
 #include "df/map_block.h"
 #include "df/world.h"
 #include "df/coord.h"
+#include "df/unit.h"
 
 #include "protocol.h"
 #include "ActiveSocket.h"  // SimpleSockets
@@ -36,6 +38,8 @@ static uint64_t g_last_heartbeat_ms = 0;  // Last time we received heartbeat fro
 static uint32_t g_reconnect_delay_ms = 1000;  // Current reconnection backoff delay
 static std::unique_ptr<std::thread> g_message_thread;  // Background message handler
 static bool g_stop_message_loop = false;  // Signal to stop message thread
+static bool g_auto_update_enabled = false;  // Auto-update toggle flag
+static uint32_t g_heartbeat_counter = 0;  // Count heartbeats for auto-update trigger
 
 // Forward declarations
 bool connect_to_server(color_ostream &out);
@@ -64,6 +68,83 @@ uint64_t get_time_ms()
 extern std::vector<uint8_t> extract_full_map_state();
 extern bool get_map_dimensions(int32_t &width, int32_t &height, int32_t &depth);
 extern std::vector<uint8_t> detect_tile_changes();
+
+// Entity tracking - inline implementation
+struct EntityInfo {
+    uint32_t id;
+    int16_t x, y, z;
+    uint8_t type;
+    uint16_t subtype;
+};
+
+const uint8_t ENTITY_TYPE_DWARF = 0x01;
+const uint8_t ENTITY_TYPE_ENEMY = 0x02;
+const uint8_t ENTITY_TYPE_ANIMAL = 0x03;
+const uint8_t ENTITY_TYPE_OTHER = 0x04;
+
+std::vector<EntityInfo> extract_entities()
+{
+    std::vector<EntityInfo> entities;
+    if (!df::global::world) return entities;
+
+    auto &units = df::global::world->units.active;
+
+    for (auto unit : units) {
+        if (!unit) continue;
+        if (unit->pos.x == -30000) continue;
+
+        EntityInfo entity;
+        entity.id = unit->id;
+        entity.x = unit->pos.x;
+        entity.y = unit->pos.y;
+        entity.z = unit->pos.z;
+        entity.subtype = unit->race;
+
+        // For now, classify all units as OTHER
+        // We can refine this later with proper civ detection
+        entity.type = ENTITY_TYPE_OTHER;
+
+        entities.push_back(entity);
+    }
+    return entities;
+}
+
+std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &entities)
+{
+    std::vector<uint8_t> buffer;
+    buffer.resize(4, 0);
+    buffer.push_back(PROTOCOL_VERSION);
+    buffer.push_back(0x08);  // ENTITY_UPDATE
+
+    uint32_t count = entities.size();
+    buffer.push_back((count >> 24) & 0xFF);
+    buffer.push_back((count >> 16) & 0xFF);
+    buffer.push_back((count >> 8) & 0xFF);
+    buffer.push_back(count & 0xFF);
+
+    for (const auto &e : entities) {
+        buffer.push_back((e.id >> 24) & 0xFF);
+        buffer.push_back((e.id >> 16) & 0xFF);
+        buffer.push_back((e.id >> 8) & 0xFF);
+        buffer.push_back(e.id & 0xFF);
+        buffer.push_back((e.x >> 8) & 0xFF);
+        buffer.push_back(e.x & 0xFF);
+        buffer.push_back((e.y >> 8) & 0xFF);
+        buffer.push_back(e.y & 0xFF);
+        buffer.push_back((e.z >> 8) & 0xFF);
+        buffer.push_back(e.z & 0xFF);
+        buffer.push_back(e.type);
+        buffer.push_back((e.subtype >> 8) & 0xFF);
+        buffer.push_back(e.subtype & 0xFF);
+    }
+
+    uint32_t length = buffer.size();
+    buffer[0] = (length >> 24) & 0xFF;
+    buffer[1] = (length >> 16) & 0xFF;
+    buffer[2] = (length >> 8) & 0xFF;
+    buffer[3] = length & 0xFF;
+    return buffer;
+}
 
 // Plugin initialization
 DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginCommand> &commands)
@@ -199,6 +280,69 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
         },
         false,
         "Usage: ai-check-updates\nDetects changed tiles and sends TILE_UPDATE to server."
+    ));
+
+    commands.push_back(PluginCommand(
+        "ai-send-entities",
+        "Scan and send entity positions to server",
+        [](color_ostream &out, std::vector<std::string> &params) -> command_result {
+            if (!g_connected) {
+                out.printerr("Not connected - use 'ai-connect' first\n");
+                return CR_FAILURE;
+            }
+
+            out.print("Scanning entities...\n");
+            std::vector<EntityInfo> entities = extract_entities();
+
+            out.print("Found %d entities\n", (int)entities.size());
+
+            // Serialize and send
+            std::vector<uint8_t> message = serialize_entity_update(entities);
+
+            int sent = g_socket->Send(message.data(), message.size());
+            if (sent != (int)message.size()) {
+                out.printerr("Failed to send ENTITY_UPDATE (%d/%d bytes)\n", sent, (int)message.size());
+                return CR_FAILURE;
+            }
+
+            out.print("Sent ENTITY_UPDATE (%d entities, %d bytes)\n", (int)entities.size(), (int)message.size());
+            return CR_OK;
+        },
+        false,
+        "Usage: ai-send-entities\nScans all active units and sends entity positions to server."
+    ));
+
+    commands.push_back(PluginCommand(
+        "ai-auto-update",
+        "Toggle automatic updates on/off",
+        [](color_ostream &out, std::vector<std::string> &params) -> command_result {
+            if (!g_connected) {
+                out.printerr("Not connected - use 'ai-connect' first\n");
+                return CR_FAILURE;
+            }
+
+            // Parse on/off from params
+            if (params.empty()) {
+                out.print("Auto-update is currently: %s\n", g_auto_update_enabled ? "ON" : "OFF");
+                return CR_OK;
+            }
+
+            std::string cmd = params[0];
+            if (cmd == "on" || cmd == "ON" || cmd == "1" || cmd == "true") {
+                g_auto_update_enabled = true;
+                out.print("Auto-update enabled - will send updates every 10 heartbeats (~10 seconds)\n");
+            } else if (cmd == "off" || cmd == "OFF" || cmd == "0" || cmd == "false") {
+                g_auto_update_enabled = false;
+                out.print("Auto-update disabled\n");
+            } else {
+                out.printerr("Invalid parameter: %s (use 'on' or 'off')\n", cmd.c_str());
+                return CR_WRONG_USAGE;
+            }
+
+            return CR_OK;
+        },
+        false,
+        "Usage: ai-auto-update [on|off]\nToggle automatic entity and tile updates.\nIf no parameter given, shows current status."
     ));
 
     out.print("DF AI Protocol plugin initialized\n");
@@ -703,6 +847,27 @@ void message_receive_loop(color_ostream &out)
                     // Echo heartbeat back
                     if (!send_heartbeat_echo(out, timestamp, sequence)) {
                         out.printerr("Failed to echo heartbeat\n");
+                    }
+
+                    // Auto-update logic: send updates every 10 heartbeats (~10 seconds)
+                    if (g_auto_update_enabled) {
+                        g_heartbeat_counter++;
+                        if (g_heartbeat_counter >= 10) {
+                            g_heartbeat_counter = 0;
+
+                            // Send tile updates
+                            std::vector<uint8_t> tile_changes = detect_tile_changes();
+                            if (!tile_changes.empty()) {
+                                send_tile_update(out, tile_changes);
+                            }
+
+                            // Send entity updates
+                            std::vector<EntityInfo> entities = extract_entities();
+                            std::vector<uint8_t> entity_msg = serialize_entity_update(entities);
+                            if (g_socket && g_socket->IsSocketValid()) {
+                                g_socket->Send(entity_msg.data(), entity_msg.size());
+                            }
+                        }
                     }
                 }
                 break;

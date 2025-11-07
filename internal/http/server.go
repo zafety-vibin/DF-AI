@@ -15,14 +15,15 @@ import (
 
 // Server manages the HTTP monitoring API
 type Server struct {
-	httpServer    *http.Server
-	logger        *logging.Logger
-	dfhackClient  *dfhack.Client
-	configMgr     *config.ConfigManager
-	startTime     time.Time
-	configReloads uint64
-	httpRequests  uint64
-	mu            sync.Mutex
+	httpServer           *http.Server
+	logger               *logging.Logger
+	dfhackClient         *dfhack.Client
+	configMgr            *config.ConfigManager
+	getHazardMetricsFunc func() *HazardMetrics
+	startTime            time.Time
+	configReloads        uint64
+	httpRequests         uint64
+	mu                   sync.Mutex
 }
 
 // NewServer creates a new HTTP monitoring server
@@ -33,6 +34,13 @@ func NewServer(logger *logging.Logger, dfhackClient *dfhack.Client, configMgr *c
 		configMgr:    configMgr,
 		startTime:    time.Now(),
 	}
+}
+
+// SetGetHazardMetrics sets the callback function for retrieving hazard metrics
+func (s *Server) SetGetHazardMetrics(fn func() *HazardMetrics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getHazardMetricsFunc = fn
 }
 
 // Start starts the HTTP server

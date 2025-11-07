@@ -11,6 +11,7 @@ import (
 
 	"github.com/df-ai/orchestrator/internal/config"
 	"github.com/df-ai/orchestrator/internal/dfhack"
+	"github.com/df-ai/orchestrator/internal/hazards"
 	"github.com/df-ai/orchestrator/internal/http"
 	"github.com/df-ai/orchestrator/internal/logging"
 	"github.com/df-ai/orchestrator/internal/protocol"
@@ -20,6 +21,7 @@ import (
 
 var (
 	topologyOverlay *topology.TopologyOverlay
+	hazardManager   *hazards.HazardManager
 )
 
 var (
@@ -96,6 +98,19 @@ func main() {
 			logging.Field{Key: "open_pct", Value: topologyOverlay.GetOpenPercentage()},
 			logging.Field{Key: "build_ms", Value: buildDuration.Milliseconds()})
 
+		// Build hazard overlays
+		hazardManager = hazards.NewHazardManager(state.Width, state.Height, state.Depth)
+		hazardManager.BuildFromTiles(state.Tiles)
+
+		// Log hazard overlay statistics
+		counts := hazardManager.GetAllCounts()
+		logger.Info("hazard overlays built",
+			logging.Field{Key: "aquifer_count", Value: counts["aquifer"]},
+			logging.Field{Key: "water_count", Value: counts["water"]},
+			logging.Field{Key: "lava_count", Value: counts["lava"]},
+			logging.Field{Key: "cavern_count", Value: counts["caverns"]},
+			logging.Field{Key: "memory_kb", Value: hazardManager.GetMemoryUsage() / 1024})
+
 		// Test compression
 		compConfig := topology.CompressionConfig{
 			Mode:    cfg.TopologyCompressionMode,
@@ -133,6 +148,24 @@ func main() {
 	var httpServer *http.Server
 	if cfg.EnableHttpApi {
 		httpServer = http.NewServer(logger, client, configMgr)
+
+		// Set hazard metrics callback
+		httpServer.SetGetHazardMetrics(func() *http.HazardMetrics {
+			if hazardManager == nil {
+				return nil
+			}
+			counts := hazardManager.GetAllCounts()
+			return &http.HazardMetrics{
+				AquiferCount: counts["aquifer"],
+				WaterCount:   counts["water"],
+				LavaCount:    counts["lava"],
+				CavernCount:  counts["caverns"],
+				EnemyCount:   counts["enemies"],
+				DwarfCount:   counts["dwarves"],
+				MemoryKB:     hazardManager.GetMemoryUsage() / 1024,
+			}
+		})
+
 		if err := httpServer.Start(ctx); err != nil {
 			logger.Error("failed to start HTTP server", err)
 			os.Exit(1)
@@ -173,6 +206,28 @@ func main() {
 						logging.Field{Key: "tiles_updated", Value: updateCount},
 						logging.Field{Key: "open_pct", Value: topologyOverlay.GetOpenPercentage()})
 				}
+			}
+
+			// Update hazard overlays incrementally
+			if hazardManager != nil && update.Count > 0 {
+				hazardManager.UpdateFromTiles(update.Tiles)
+			}
+		}
+	}()
+
+	// Subscribe to entity updates
+	entityUpdates := client.SubscribeEntityUpdates()
+	go func() {
+		for update := range entityUpdates {
+			// Update entity overlays (enemies and dwarves)
+			if hazardManager != nil && update.Count > 0 {
+				hazardManager.BuildFromEntities(update.Entities)
+
+				// Log entity counts
+				counts := hazardManager.GetAllCounts()
+				logger.Debug("entity overlays updated",
+					logging.Field{Key: "enemy_count", Value: counts["enemies"]},
+					logging.Field{Key: "dwarf_count", Value: counts["dwarves"]})
 			}
 		}
 	}()
