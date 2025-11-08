@@ -255,6 +255,7 @@ func main() {
 			autonomousLoop = autonomous.NewLoop(
 				logger,
 				loopInterval,
+				client,
 				modificationOverlay,
 				topologyOverlay,
 				hazardManager,

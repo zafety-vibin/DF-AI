@@ -31,7 +31,7 @@ topology_z_radius: 3             # ±3 levels from center
 llm_provider_type: claude        # claude, openai_compatible, multi_model
 
 # Claude API settings
-claude_api_key: ${CLAUDE_API_KEY}  # From environment or config
+claude_api_key: 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
 claude_model: claude-haiku-4-5-20251001  # Haiku (cheapest), or claude-sonnet-4-5, claude-opus-4-5
 
 # OpenAI-compatible endpoint settings (when using openai_compatible or multi_model)
@@ -53,7 +53,7 @@ planner_temperature: 0.7                # Higher for creative planning
 # LLM Request tuning
 llm_temperature: 0.7            # Randomness (0.0-1.0)
 llm_max_tokens: 2048            # Max response length (Haiku is concise, 2048 sufficient)
-llm_timeout_seconds: 30         # Request timeout (Haiku is fast, 30s plenty)
+llm_timeout_seconds: 30s        # Request timeout (Haiku is fast, 30s plenty)
 
 # Context assembly settings
 context_budget_kb: 200          # Max context size for LLM (in KB)

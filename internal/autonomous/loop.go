@@ -12,6 +12,7 @@ import (
 
 	"github.com/df-ai/orchestrator/internal/commands"
 	appcontext "github.com/df-ai/orchestrator/internal/context"
+	"github.com/df-ai/orchestrator/internal/dfhack"
 	"github.com/df-ai/orchestrator/internal/hazards"
 	"github.com/df-ai/orchestrator/internal/llm"
 	"github.com/df-ai/orchestrator/internal/logging"
@@ -25,6 +26,7 @@ import (
 type AutonomousLoop struct {
 	logger              *logging.Logger
 	timer               *Timer
+	dfhackClient        *dfhack.Client
 	modOverlay          *modifications.ModificationOverlay
 	topoOverlay         *topology.TopologyOverlay
 	hazardMgr           *hazards.HazardManager
@@ -50,6 +52,7 @@ type AutonomousLoop struct {
 func NewLoop(
 	logger *logging.Logger,
 	interval time.Duration,
+	dfhackClient *dfhack.Client,
 	modOverlay *modifications.ModificationOverlay,
 	topoOverlay *topology.TopologyOverlay,
 	hazardMgr *hazards.HazardManager,
@@ -63,6 +66,7 @@ func NewLoop(
 	loop := &AutonomousLoop{
 		logger:              logger,
 		timer:               NewTimer(interval),
+		dfhackClient:        dfhackClient,
 		modOverlay:          modOverlay,
 		topoOverlay:         topoOverlay,
 		hazardMgr:           hazardMgr,
@@ -151,6 +155,12 @@ func (al *AutonomousLoop) run(ctx context.Context) {
 
 // runCycle executes a single decision cycle
 func (al *AutonomousLoop) runCycle() error {
+	// Skip cycle if DFHack not connected (prevents wasting API calls on stale data)
+	if al.dfhackClient != nil && !al.dfhackClient.IsConnected() {
+		al.logger.Debug("skipping cycle - DFHack not connected")
+		return nil
+	}
+
 	cycleStart := time.Now()
 	turnBuilder := NewTurnBuilder()
 

@@ -103,9 +103,16 @@ std::vector<EntityInfo> extract_entities()
         entity.z = unit->pos.z;
         entity.subtype = unit->race;
 
-        // For now, classify all units as OTHER
-        // We can refine this later with proper civ detection
-        entity.type = ENTITY_TYPE_OTHER;
+        // Classify entity type
+        // Fort members are dwarves, others are animals/enemies
+        // Simple heuristic: Fort units have tame or fort flags
+        if (unit->flags1.bits.tame || unit->flags2.bits.resident) {
+            entity.type = ENTITY_TYPE_DWARF;  // Fort citizen or tame animal (count as dwarf)
+        } else if (unit->flags1.bits.marauder || unit->flags1.bits.invader_origin) {
+            entity.type = ENTITY_TYPE_ENEMY;   // Hostile
+        } else {
+            entity.type = ENTITY_TYPE_ANIMAL;  // Wild animal or other
+        }
 
         entities.push_back(entity);
     }
@@ -310,22 +317,15 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
         "Connect to Go orchestrator server",
         [](color_ostream &out, std::vector<std::string> &params) -> command_result {
             if (connect_to_server(out)) {
-                // Automatically send initial entity update after connection
-                out.print("Sending initial entity update...\n");
-                std::vector<EntityInfo> entities = extract_entities();
-                std::vector<uint8_t> entity_msg = serialize_entity_update(entities);
-                if (g_socket && g_socket->IsSocketValid()) {
-                    int sent = g_socket->Send(entity_msg.data(), entity_msg.size());
-                    if (sent == (int)entity_msg.size()) {
-                        out.print("Sent initial ENTITY_UPDATE (%d entities)\n", (int)entities.size());
-                    }
-                }
+                out.print("Connected successfully\n");
+                out.print("Use 'ai-send-entities' to send initial entity data\n");
+                out.print("Or enable 'ai-auto-update on' for automatic updates\n");
                 return CR_OK;
             }
             return CR_FAILURE;
         },
         false,
-        "Usage: ai-connect\nConnects to the Go orchestrator server, performs handshake, and sends initial entity data."
+        "Usage: ai-connect\nConnects to the Go orchestrator server and performs handshake."
     ));
 
     commands.push_back(PluginCommand(
