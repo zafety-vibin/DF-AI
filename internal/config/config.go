@@ -34,6 +34,31 @@ type Config struct {
 	TopologyCompressionMode string `yaml:"topology_compression_mode"` // full, active_z_levels, custom_bounds
 	TopologyCenterZ         uint16 `yaml:"topology_center_z"`
 	TopologyZRadius         uint16 `yaml:"topology_z_radius"`
+
+	// LLM Provider Configuration
+	LLMProviderType string `yaml:"llm_provider_type"` // claude, openai_compatible, multi_model
+
+	// Claude API settings
+	ClaudeAPIKey string `yaml:"claude_api_key"` // From environment or config
+	ClaudeModel  string `yaml:"claude_model"`   // claude-sonnet-4, claude-opus-4, etc.
+
+	// OpenAI-compatible endpoint settings
+	LLMEndpoint string `yaml:"llm_endpoint"` // Local LLM server or OpenAI-compatible API
+	LLMModel    string `yaml:"llm_model"`    // Model name for OpenAI endpoint
+	LLMAPIKey   string `yaml:"llm_api_key"`  // API key if required
+
+	// LLM Request tuning
+	LLMTemperature   float64       `yaml:"llm_temperature"`    // Randomness (0.0-1.0)
+	LLMMaxTokens     int           `yaml:"llm_max_tokens"`     // Max response length
+	LLMTimeoutSeconds time.Duration `yaml:"llm_timeout_seconds"` // Request timeout
+
+	// Context assembly settings
+	ContextBudgetKB              int `yaml:"context_budget_kb"`               // Max context size in KB
+	ContextUpdateFrequencySeconds int `yaml:"context_update_frequency_seconds"` // Update frequency
+
+	// Viewport settings
+	ViewportActiveZMargin      uint16 `yaml:"viewport_active_z_margin"`       // Z-levels above/below active
+	ViewportHazardMarginTiles  uint16 `yaml:"viewport_hazard_margin_tiles"`   // Tile margin around hazards
 }
 
 // Load reads and parses the configuration file
@@ -98,5 +123,44 @@ func (c *Config) setDefaults() {
 	}
 	if c.TopologyZRadius == 0 {
 		c.TopologyZRadius = 3
+	}
+
+	// LLM Provider Configuration defaults
+	if c.LLMProviderType == "" {
+		c.LLMProviderType = "claude"
+	}
+	if c.ClaudeModel == "" {
+		c.ClaudeModel = "claude-opus-4-1"
+	}
+	if c.LLMEndpoint == "" {
+		c.LLMEndpoint = "http://localhost:8000"
+	}
+	if c.LLMModel == "" {
+		c.LLMModel = "llama-3-70b"
+	}
+	if c.LLMTemperature == 0 {
+		c.LLMTemperature = 0.7
+	}
+	if c.LLMMaxTokens == 0 {
+		c.LLMMaxTokens = 4096
+	}
+	if c.LLMTimeoutSeconds == 0 {
+		c.LLMTimeoutSeconds = 60 * time.Second
+	}
+
+	// Context assembly defaults
+	if c.ContextBudgetKB == 0 {
+		c.ContextBudgetKB = 200 // 200 KB
+	}
+	if c.ContextUpdateFrequencySeconds == 0 {
+		c.ContextUpdateFrequencySeconds = 100
+	}
+
+	// Viewport defaults
+	if c.ViewportActiveZMargin == 0 {
+		c.ViewportActiveZMargin = 3
+	}
+	if c.ViewportHazardMarginTiles == 0 {
+		c.ViewportHazardMarginTiles = 5
 	}
 }

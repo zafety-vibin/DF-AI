@@ -26,3 +26,28 @@ log_format: json     # json or text
 topology_compression_mode: full  # full, active_z_levels, custom_bounds
 topology_center_z: 0             # For active_z_levels mode
 topology_z_radius: 3             # ±3 levels from center
+
+# LLM Provider Configuration
+llm_provider_type: claude        # claude, openai_compatible, multi_model
+
+# Claude API settings
+claude_api_key: ${CLAUDE_API_KEY}  # From environment or config
+claude_model: claude-opus-4-1       # claude-sonnet-4, claude-opus-4, etc.
+
+# OpenAI-compatible endpoint settings (when using openai_compatible or multi_model)
+llm_endpoint: http://localhost:8000  # Local LLM server or other OpenAI-compatible API
+llm_model: llama-3-70b               # Model name for OpenAI endpoint
+llm_api_key: ${LLM_API_KEY}          # API key if required
+
+# LLM Request tuning
+llm_temperature: 0.7            # Randomness (0.0-1.0)
+llm_max_tokens: 4096            # Max response length
+llm_timeout_seconds: 60         # Request timeout
+
+# Context assembly settings
+context_budget_kb: 200          # Max context size for LLM (in KB)
+context_update_frequency_seconds: 100  # How often to generate new context
+
+# Viewport settings for context generation
+viewport_active_z_margin: 3     # Z-levels above/below active level to include
+viewport_hazard_margin_tiles: 5 # Tile margin around hazards to include

@@ -15,15 +15,19 @@ import (
 
 // Server manages the HTTP monitoring API
 type Server struct {
-	httpServer           *http.Server
-	logger               *logging.Logger
-	dfhackClient         *dfhack.Client
-	configMgr            *config.ConfigManager
-	getHazardMetricsFunc func() *HazardMetrics
-	startTime            time.Time
-	configReloads        uint64
-	httpRequests         uint64
-	mu                   sync.Mutex
+	httpServer                  *http.Server
+	logger                      *logging.Logger
+	dfhackClient                *dfhack.Client
+	configMgr                   *config.ConfigManager
+	getHazardMetricsFunc        func() *HazardMetrics
+	getModificationMetricsFunc  func() *ModificationMetrics
+	getContextMetricsFunc       func() *ContextMetrics
+	getLLMMetricsFunc           func() *LLMMetrics
+	getCommandMetricsFunc       func() *CommandMetrics
+	startTime                   time.Time
+	configReloads               uint64
+	httpRequests                uint64
+	mu                          sync.Mutex
 }
 
 // NewServer creates a new HTTP monitoring server
@@ -41,6 +45,34 @@ func (s *Server) SetGetHazardMetrics(fn func() *HazardMetrics) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.getHazardMetricsFunc = fn
+}
+
+// SetGetModificationMetrics sets the callback function for retrieving modification metrics
+func (s *Server) SetGetModificationMetrics(fn func() *ModificationMetrics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getModificationMetricsFunc = fn
+}
+
+// SetGetContextMetrics sets the callback function for retrieving context metrics
+func (s *Server) SetGetContextMetrics(fn func() *ContextMetrics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getContextMetricsFunc = fn
+}
+
+// SetGetLLMMetrics sets the callback function for retrieving LLM metrics
+func (s *Server) SetGetLLMMetrics(fn func() *LLMMetrics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getLLMMetricsFunc = fn
+}
+
+// SetGetCommandMetrics sets the callback function for retrieving command metrics
+func (s *Server) SetGetCommandMetrics(fn func() *CommandMetrics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getCommandMetricsFunc = fn
 }
 
 // Start starts the HTTP server

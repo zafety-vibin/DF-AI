@@ -34,6 +34,8 @@ const (
 	MessageTypeError          uint8 = 0x06
 	MessageTypeDisconnect     uint8 = 0x07
 	MessageTypeEntityUpdate   uint8 = 0x08
+	MessageTypeCommand        uint8 = 0x09
+	MessageTypeCommandAck     uint8 = 0x0A
 )
 
 // Common errors
@@ -248,5 +250,95 @@ func (m *EntityUpdateMessage) Validate() error {
 		return fmt.Errorf("entity count mismatch: Count=%d, len(Entities)=%d", m.Count, len(m.Entities))
 	}
 	// Count can be 0 (no entities) - that's valid
+	return nil
+}
+
+// CommandType constants for command messages
+const (
+	CommandTypeDig    uint8 = 0x01
+	CommandTypeBuild  uint8 = 0x02
+	CommandTypeCancel uint8 = 0x03
+)
+
+// AckStatus constants for command acknowledgment messages
+const (
+	AckStatusSuccess uint8 = 0x00
+	AckStatusPartial uint8 = 0x01
+	AckStatusFailure uint8 = 0x02
+)
+
+// BuildType constants for build designation commands
+const (
+	BuildTypeWall        uint8 = 0x01
+	BuildTypeFloor       uint8 = 0x02
+	BuildTypeUpStair     uint8 = 0x03
+	BuildTypeDownStair   uint8 = 0x04
+	BuildTypeUpDownStair uint8 = 0x05
+)
+
+// Region represents a 3D bounding box for designations
+type Region struct {
+	X1, Y1, Z1 int16 // Start coordinates
+	X2, Y2, Z2 int16 // End coordinates (inclusive)
+}
+
+// BuildDesignation represents a single build command
+type BuildDesignation struct {
+	X, Y, Z   int16 // Build location
+	BuildType uint8 // Type of construction
+}
+
+// CommandMessage represents a command from server to DFHack
+type CommandMessage struct {
+	CommandID   uint32 // Unique command identifier
+	CommandType uint8  // Type of command (dig/build/cancel)
+	Region      Region // For DIG and CANCEL commands
+	Build       BuildDesignation // For BUILD commands
+}
+
+func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
+
+func (m *CommandMessage) Validate() error {
+	// Validate CommandType
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeCancel {
+		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
+	}
+
+	// Type-specific validation
+	switch m.CommandType {
+	case CommandTypeDig, CommandTypeCancel:
+		// Validate region bounds
+		if m.Region.X2 < m.Region.X1 || m.Region.Y2 < m.Region.Y1 || m.Region.Z2 < m.Region.Z1 {
+			return errors.New("invalid region: end coordinates must be >= start coordinates")
+		}
+		// Single Z-level requirement
+		if m.Region.Z1 != m.Region.Z2 {
+			return errors.New("region must be on single Z-level (Z1 must equal Z2)")
+		}
+	case CommandTypeBuild:
+		// Validate BuildType
+		if m.Build.BuildType < BuildTypeWall || m.Build.BuildType > BuildTypeUpDownStair {
+			return fmt.Errorf("invalid build type: 0x%02X", m.Build.BuildType)
+		}
+	}
+
+	return nil
+}
+
+// CommandAckMessage represents acknowledgment from DFHack to server
+type CommandAckMessage struct {
+	CommandID uint32 // Original command ID
+	Status    uint8  // Execution status (success/partial/failure)
+	ErrorMsg  string // Error description (empty if success)
+}
+
+func (m *CommandAckMessage) Type() uint8 { return MessageTypeCommandAck }
+
+func (m *CommandAckMessage) Validate() error {
+	// Validate Status
+	if m.Status > AckStatusFailure {
+		return fmt.Errorf("invalid ack status: 0x%02X", m.Status)
+	}
+	// ErrorMsg length is validated during serialization
 	return nil
 }

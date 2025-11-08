@@ -52,6 +52,7 @@ bool receive_message(std::vector<uint8_t> &msg_out, uint8_t &type_out);
 bool send_full_state(color_ostream &out);
 bool send_tile_update(color_ostream &out, const std::vector<uint8_t> &tiles);
 bool send_heartbeat_echo(color_ostream &out, uint64_t timestamp, uint8_t sequence);
+void handleCommand(const std::vector<uint8_t> &payload);  // From designations.cpp
 
 // Helper: Read exactly n bytes from socket
 bool read_exact(uint8_t *buffer, size_t n);
@@ -870,6 +871,11 @@ void message_receive_loop(color_ostream &out)
                         }
                     }
                 }
+                break;
+
+            case MSG_TYPE_COMMAND:
+                out.print("Received COMMAND message\n");
+                handleCommand(payload);
                 break;
 
             case MSG_TYPE_DISCONNECT:

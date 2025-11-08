@@ -13,6 +13,9 @@ constexpr uint8_t MSG_TYPE_RESYNC_REQUEST = 0x04;
 constexpr uint8_t MSG_TYPE_HEARTBEAT = 0x05;
 constexpr uint8_t MSG_TYPE_ERROR = 0x06;
 constexpr uint8_t MSG_TYPE_DISCONNECT = 0x07;
+constexpr uint8_t MSG_TYPE_ENTITY_UPDATE = 0x08;
+constexpr uint8_t MSG_TYPE_COMMAND = 0x09;
+constexpr uint8_t MSG_TYPE_COMMAND_ACK = 0x0A;
 
 // Tile flags
 constexpr uint8_t FLAG_HIDDEN = 0x01;
@@ -41,6 +44,16 @@ constexpr uint8_t RESYNC_PERIODIC = 0x03;
 // Heartbeat timing (milliseconds)
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 10000;
 constexpr uint32_t HEARTBEAT_TIMEOUT_MS = 15000;
+
+// Command types
+constexpr uint8_t COMMAND_TYPE_DIG = 0x01;
+constexpr uint8_t COMMAND_TYPE_BUILD = 0x02;
+constexpr uint8_t COMMAND_TYPE_CANCEL = 0x03;
+
+// ACK status codes
+constexpr uint8_t ACK_STATUS_SUCCESS = 0x00;
+constexpr uint8_t ACK_STATUS_PARTIAL = 0x01;
+constexpr uint8_t ACK_STATUS_FAILURE = 0x02;
 
 // Shared helper functions (implemented in tile_extractor.cpp)
 #include <vector>

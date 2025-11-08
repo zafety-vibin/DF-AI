@@ -159,3 +159,33 @@ func (t *TopologyOverlay) SetTile(x, y, z int16, isOpen bool) error {
 
 	return nil
 }
+
+// GetTile returns the open/closed state for a single tile
+// Thread-safe: Acquires read lock
+func (t *TopologyOverlay) GetTile(x, y, z int16) (bool, error) {
+	// Bounds validation
+	if x < 0 || x >= int16(t.width) {
+		return false, fmt.Errorf("x coordinate out of bounds: %d (valid: 0-%d)", x, t.width-1)
+	}
+	if y < 0 || y >= int16(t.height) {
+		return false, fmt.Errorf("y coordinate out of bounds: %d (valid: 0-%d)", y, t.height-1)
+	}
+	if z < 0 || z >= int16(t.depth) {
+		return false, fmt.Errorf("z coordinate out of bounds: %d (valid: 0-%d)", z, t.depth-1)
+	}
+
+	// Calculate bit index
+	bitIndex := uint32(z)*uint32(t.width)*uint32(t.height) +
+		uint32(y)*uint32(t.width) +
+		uint32(x)
+
+	byteIndex := bitIndex / 8
+	bitOffset := bitIndex % 8
+
+	// Read bit with read lock
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	isOpen := (t.data[byteIndex] >> bitOffset) & 1
+	return isOpen == 1, nil
+}

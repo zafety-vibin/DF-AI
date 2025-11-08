@@ -37,6 +37,7 @@ type Client struct {
 	fullStateCh      chan *protocol.FullStateMessage
 	tileUpdateCh     chan *protocol.TileUpdateMessage
 	entityUpdateCh   chan *protocol.EntityUpdateMessage
+	commandAckCh     chan *protocol.CommandAckMessage
 	stopCh           chan struct{}
 	wg               sync.WaitGroup
 	heartbeatSeq     uint8
@@ -54,6 +55,7 @@ func NewClient(logger *logging.Logger) *Client {
 		fullStateCh:    make(chan *protocol.FullStateMessage, 1),
 		tileUpdateCh:   make(chan *protocol.TileUpdateMessage, 100),
 		entityUpdateCh: make(chan *protocol.EntityUpdateMessage, 100),
+		commandAckCh:   make(chan *protocol.CommandAckMessage, 100),
 		stopCh:         make(chan struct{}),
 	}
 }
@@ -290,6 +292,18 @@ func (c *Client) messageLoop(conn *protocol.Connection) {
 			// Echo heartbeat back with incremented sequence
 			c.handleHeartbeat(conn, m)
 
+		case *protocol.CommandAckMessage:
+			c.logger.Info("received command ack",
+				logging.Field{Key: "command_id", Value: m.CommandID},
+				logging.Field{Key: "status", Value: m.Status})
+
+			// Send to command ACK channel (non-blocking)
+			select {
+			case c.commandAckCh <- m:
+			default:
+				c.logger.Warn("command ack channel full, dropping message")
+			}
+
 		case *protocol.DisconnectMessage:
 			c.logger.Info("received disconnect",
 				logging.Field{Key: "reason", Value: m.Reason})
@@ -336,6 +350,32 @@ func (c *Client) SubscribeTileUpdates() <-chan *protocol.TileUpdateMessage {
 // SubscribeEntityUpdates returns channel for entity position updates
 func (c *Client) SubscribeEntityUpdates() <-chan *protocol.EntityUpdateMessage {
 	return c.entityUpdateCh
+}
+
+// SubscribeCommandAcks returns channel for command acknowledgments
+func (c *Client) SubscribeCommandAcks() <-chan *protocol.CommandAckMessage {
+	return c.commandAckCh
+}
+
+// SendCommand sends a command to the DFHack plugin
+func (c *Client) SendCommand(cmd *protocol.CommandMessage) error {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return errors.New("not connected")
+	}
+
+	if err := conn.Send(cmd); err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+
+	c.logger.Debug("sent command to DFHack",
+		logging.Field{Key: "command_id", Value: cmd.CommandID},
+		logging.Field{Key: "command_type", Value: cmd.CommandType})
+
+	return nil
 }
 
 // IsConnected returns true if connection is active

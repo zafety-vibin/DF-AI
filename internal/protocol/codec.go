@@ -74,6 +74,14 @@ func SerializeMessage(msg Message) ([]byte, error) {
 		if err := serializeEntityUpdate(&buf, m); err != nil {
 			return nil, err
 		}
+	case *CommandMessage:
+		if err := serializeCommand(&buf, m); err != nil {
+			return nil, err
+		}
+	case *CommandAckMessage:
+		if err := serializeCommandAck(&buf, m); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unknown message type: %T", msg)
 	}
@@ -132,6 +140,10 @@ func DeserializeMessage(data []byte) (Message, error) {
 		msg, err = deserializeError(payload)
 	case MessageTypeEntityUpdate:
 		msg, err = deserializeEntityUpdate(payload)
+	case MessageTypeCommand:
+		msg, err = deserializeCommand(payload)
+	case MessageTypeCommandAck:
+		msg, err = deserializeCommandAck(payload)
 	default:
 		return nil, fmt.Errorf("%w: 0x%02X", ErrInvalidMessageType, msgType)
 	}
@@ -679,5 +691,208 @@ func (m *EntityUpdateMessage) Deserialize(data []byte) error {
 		return fmt.Errorf("expected EntityUpdateMessage, got %T", msg)
 	}
 	*m = *e
+	return nil
+}
+
+// serializeCommand encodes CommandMessage payload
+func serializeCommand(w io.Writer, msg *CommandMessage) error {
+	// [4: CommandID] [1: CommandType] [N: Payload]
+	if err := binary.Write(w, binary.BigEndian, msg.CommandID); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, msg.CommandType); err != nil {
+		return err
+	}
+
+	// Type-specific payload
+	switch msg.CommandType {
+	case CommandTypeDig, CommandTypeCancel:
+		// [2: X1] [2: Y1] [2: Z1] [2: X2] [2: Y2] [2: Z2]
+		if err := binary.Write(w, binary.BigEndian, msg.Region.X1); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Region.Y1); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Region.Z1); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Region.X2); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Region.Y2); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Region.Z2); err != nil {
+			return err
+		}
+	case CommandTypeBuild:
+		// [2: X] [2: Y] [2: Z] [1: BuildType]
+		if err := binary.Write(w, binary.BigEndian, msg.Build.X); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Build.Y); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Build.Z); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Build.BuildType); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// deserializeCommand decodes CommandMessage payload
+func deserializeCommand(data []byte) (*CommandMessage, error) {
+	if len(data) < 5 { // Minimum: 4 (CommandID) + 1 (CommandType)
+		return nil, errors.New("command payload too short")
+	}
+
+	msg := &CommandMessage{}
+	buf := bytes.NewReader(data)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.CommandID); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.CommandType); err != nil {
+		return nil, err
+	}
+
+	// Type-specific payload
+	switch msg.CommandType {
+	case CommandTypeDig, CommandTypeCancel:
+		// Read region (12 bytes)
+		if err := binary.Read(buf, binary.BigEndian, &msg.Region.X1); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.Region.Y1); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.Region.Z1); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.Region.X2); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.Region.Y2); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.Region.Z2); err != nil {
+			return nil, err
+		}
+	case CommandTypeBuild:
+		// Read build designation (7 bytes)
+		if err := binary.Read(buf, binary.BigEndian, &msg.Build.X); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.Build.Y); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.Build.Z); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.Build.BuildType); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("unknown command type: 0x%02X", msg.CommandType)
+	}
+
+	return msg, nil
+}
+
+func (m *CommandMessage) Serialize() ([]byte, error) {
+	return SerializeMessage(m)
+}
+
+func (m *CommandMessage) Deserialize(data []byte) error {
+	msg, err := DeserializeMessage(data)
+	if err != nil {
+		return err
+	}
+	c, ok := msg.(*CommandMessage)
+	if !ok {
+		return fmt.Errorf("expected CommandMessage, got %T", msg)
+	}
+	*m = *c
+	return nil
+}
+
+// serializeCommandAck encodes CommandAckMessage payload
+func serializeCommandAck(w io.Writer, msg *CommandAckMessage) error {
+	// [4: CommandID] [1: Status] [2: ErrorMsgLen] [N: ErrorMsg]
+	if err := binary.Write(w, binary.BigEndian, msg.CommandID); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, msg.Status); err != nil {
+		return err
+	}
+
+	// Error message (length-prefixed)
+	errorBytes := []byte(msg.ErrorMsg)
+	if len(errorBytes) > 65535 {
+		return errors.New("error message too long (max 65535 bytes)")
+	}
+	if err := binary.Write(w, binary.BigEndian, uint16(len(errorBytes))); err != nil {
+		return err
+	}
+	if len(errorBytes) > 0 {
+		if _, err := w.Write(errorBytes); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// deserializeCommandAck decodes CommandAckMessage payload
+func deserializeCommandAck(data []byte) (*CommandAckMessage, error) {
+	if len(data) < 7 { // Minimum: 4 (CommandID) + 1 (Status) + 2 (ErrorMsgLen)
+		return nil, errors.New("command ack payload too short")
+	}
+
+	msg := &CommandAckMessage{}
+	buf := bytes.NewReader(data)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.CommandID); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.Status); err != nil {
+		return nil, err
+	}
+
+	// Read error message
+	var errorLen uint16
+	if err := binary.Read(buf, binary.BigEndian, &errorLen); err != nil {
+		return nil, err
+	}
+	if errorLen > 0 {
+		errorBytes := make([]byte, errorLen)
+		if _, err := io.ReadFull(buf, errorBytes); err != nil {
+			return nil, err
+		}
+		msg.ErrorMsg = string(errorBytes)
+	}
+
+	return msg, nil
+}
+
+func (m *CommandAckMessage) Serialize() ([]byte, error) {
+	return SerializeMessage(m)
+}
+
+func (m *CommandAckMessage) Deserialize(data []byte) error {
+	msg, err := DeserializeMessage(data)
+	if err != nil {
+		return err
+	}
+	a, ok := msg.(*CommandAckMessage)
+	if !ok {
+		return fmt.Errorf("expected CommandAckMessage, got %T", msg)
+	}
+	*m = *a
 	return nil
 }
