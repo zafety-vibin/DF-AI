@@ -212,18 +212,21 @@ bool applyDigDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t 
         return false;
     }
 
-    // Use DFHack's dig command for better designation handling
-    // Format: "dig rect <x1> <y1> <z> <x2> <y2>"
-    Core &core = Core::getInstance();
-    color_ostream_proxy out(core.getConsole());
+    // Use low-level designation bits (dig command requires cursor position)
+    // Set dig designation on each tile in region
+    int designated = 0;
+    for (int16_t x = x1; x <= x2; x++) {
+        for (int16_t y = y1; y <= y2; y++) {
+            df::map_block *block = Maps::getTileBlock(x, y, z);
+            if (block) {
+                block->designation[x%16][y%16].bits.dig = df::tile_dig_designation::Default;
+                designated++;
+            }
+        }
+    }
 
-    std::ostringstream cmd;
-    cmd << "dig rect " << x1 << " " << y1 << " " << z << " " << x2 << " " << y2;
-
-    command_result result = core.runCommand(out, cmd.str());
-
-    if (result != CR_OK) {
-        error = "dig command failed";
+    if (designated == 0) {
+        error = "No tiles designated (all blocked or invalid)";
         return false;
     }
 

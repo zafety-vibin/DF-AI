@@ -141,7 +141,7 @@ func (fg *FeedbackGenerator) generateFailureMessage(pc *PendingCommand) string {
 
 // generateNotStartedMessage creates a not-started feedback message
 func (fg *FeedbackGenerator) generateNotStartedMessage(pc *PendingCommand) string {
-	waitTime := time.Since(pc.Command.SentAt)
+	waitTime := time.Since(pc.StartTime)
 	return fmt.Sprintf("NOT STARTED: %s has been designated but no progress detected yet. "+
 		"Waiting for %s. "+
 		"Dwarves may be busy with other tasks or path-finding to the work area.",
