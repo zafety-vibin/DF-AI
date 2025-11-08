@@ -32,7 +32,7 @@ llm_provider_type: claude        # claude, openai_compatible, multi_model
 
 # Claude API settings
 claude_api_key: ${CLAUDE_API_KEY}  # From environment or config
-claude_model: claude-haiku-4        # claude-haiku-4 (cheapest), claude-sonnet-4, claude-opus-4
+claude_model: claude-haiku-4-5-20251001  # Haiku (cheapest), or claude-sonnet-4-5, claude-opus-4-5
 
 # OpenAI-compatible endpoint settings (when using openai_compatible or multi_model)
 llm_endpoint: http://localhost:11434/v1  # Ollama default port, or 1234 for LM Studio
@@ -47,7 +47,7 @@ extractor_temperature: 0.2              # Low for deterministic extraction
 
 planner_provider_type: claude           # Claude for reasoning, or openai_compatible for local
 planner_api_key: ${CLAUDE_API_KEY}
-planner_model: claude-haiku-4           # Haiku for cheap planning
+planner_model: claude-haiku-4-5-20251001  # Haiku for cheap planning
 planner_temperature: 0.7                # Higher for creative planning
 
 # LLM Request tuning
