@@ -168,9 +168,31 @@ func (a *Assembler) assembleLevel1(
 	// Extract dwarf positions
 	dwarves := FormatDwarfsAsJSON(entities)
 
+	// If no modifications, include topology slice so AI can see terrain
+	var topologySliceData *TopologySliceData
+	if mods.GetCount() == 0 && a.embarkPointSet && topoOverlay != nil {
+		// Get embark Z-level topology (60x60 area)
+		embarkZ := a.embarkPoint.Z
+		region := modifications.Region{
+			XMin: a.embarkPoint.X - 30,
+			XMax: a.embarkPoint.X + 30,
+			YMin: a.embarkPoint.Y - 30,
+			YMax: a.embarkPoint.Y + 30,
+			ZMin: embarkZ,
+			ZMax: embarkZ,
+		}
+
+		// Extract topology for this region
+		topologySliceData = extractTopologySlice(topoOverlay, region)
+		a.logger.Debug("added topology slice to context",
+			logging.Field{Key: "z", Value: embarkZ},
+			logging.Field{Key: "region", Value: fmt.Sprintf("(%d,%d)-(%d,%d)", region.XMin, region.YMin, region.XMax, region.YMax)})
+	}
+
 	ctx.Chambers = chambers
 	ctx.Hazards = hazardData
 	ctx.Dwarves = dwarves
+	ctx.TopologySlice = topologySliceData
 
 	// Calculate size
 	size, err := calculateContextSize(ctx)

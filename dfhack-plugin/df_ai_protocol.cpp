@@ -196,7 +196,7 @@ void sendCommandAck(uint32_t cmdID, uint8_t status, const std::string &error)
     g_socket->Send(msg.data(), msg.size());
 }
 
-// Apply dig designation to region using DFHack dig command
+// Apply dig designation to region using MapCache (proper DFHack pattern)
 bool applyDigDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, int16_t z2, std::string &error)
 {
     if (!Maps::isValidTilePos(x1, y1, z)) {
@@ -212,23 +212,38 @@ bool applyDigDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t 
         return false;
     }
 
-    // Use low-level designation bits (dig command requires cursor position)
-    // Set dig designation on each tile in region
+    // Use MapCache for proper designation read/write (like dig plugin does)
+    MapExtras::MapCache cache;
     int designated = 0;
+
     for (int16_t x = x1; x <= x2; x++) {
         for (int16_t y = y1; y <= y2; y++) {
-            df::map_block *block = Maps::getTileBlock(x, y, z);
-            if (block) {
-                block->designation[x%16][y%16].bits.dig = df::tile_dig_designation::Default;
-                designated++;
+            df::coord pos(x, y, z);
+
+            // Read current designation via MapCache
+            df::tile_designation des = cache.designationAt(pos);
+
+            // Skip if already designated
+            if (des.bits.dig != df::tile_dig_designation::No) {
+                continue;
             }
+
+            // Set dig designation
+            des.bits.dig = df::tile_dig_designation::Default;
+
+            // Write back to DF via MapCache - THIS IS THE CRITICAL STEP!
+            cache.setDesignationAt(pos, des);
+            designated++;
         }
     }
 
     if (designated == 0) {
-        error = "No tiles designated (all blocked or invalid)";
+        error = "No tiles designated (all already marked or invalid)";
         return false;
     }
+
+    // CRITICAL: Flush MapCache changes to DF!
+    cache.WriteAll();
 
     return true;
 }
