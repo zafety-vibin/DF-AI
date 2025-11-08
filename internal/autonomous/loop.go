@@ -46,6 +46,10 @@ type AutonomousLoop struct {
 	// Pending command tracking
 	pendingCommands map[uint32]*commands.PendingCommand
 	pendingMu       sync.RWMutex
+
+	// Entity cache (updated from ENTITY_UPDATE messages)
+	cachedEntities []protocol.EntityInfo
+	entityMu       sync.RWMutex
 }
 
 // NewLoop creates a new autonomous loop
@@ -262,7 +266,9 @@ func (al *AutonomousLoop) assembleContext() (string, error) {
 	// For now, use Level 0 (text overview) + Level 1 (active area)
 	// Future: adaptive context level based on task complexity
 
-	entities := appcontext.EntityInfoSlice{} // TODO: Get entities from entity tracking
+	// Get entities from hazard manager entity overlays
+	// These are populated from ENTITY_UPDATE messages
+	entities := al.getEntities()
 
 	// Generate Level 0 context (text overview)
 	ctx0, err := al.contextAssembler.AssembleContext(
@@ -621,6 +627,21 @@ func (al *AutonomousLoop) logInteraction(turn *Turn, response *llm.Response, cyc
 func (al *AutonomousLoop) TriggerImmediate() {
 	al.timer.TriggerImmediate()
 	al.logger.Info("immediate cycle triggered")
+}
+
+// UpdateEntities updates the cached entity list (called from main.go when ENTITY_UPDATE received)
+func (al *AutonomousLoop) UpdateEntities(entities []protocol.EntityInfo) {
+	al.entityMu.Lock()
+	defer al.entityMu.Unlock()
+	al.cachedEntities = entities
+	al.logger.Debug("entity cache updated", logging.Field{Key: "count", Value: len(entities)})
+}
+
+// getEntities returns the cached entity list for context assembly
+func (al *AutonomousLoop) getEntities() appcontext.EntityInfoSlice {
+	al.entityMu.RLock()
+	defer al.entityMu.RUnlock()
+	return appcontext.EntityInfoSlice(al.cachedEntities)
 }
 
 // GetHistory returns the conversation history

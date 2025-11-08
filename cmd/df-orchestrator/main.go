@@ -522,6 +522,11 @@ func main() {
 					logging.Field{Key: "enemy_count", Value: counts["enemies"]},
 					logging.Field{Key: "dwarf_count", Value: counts["dwarves"]})
 
+				// Update autonomous loop entity cache
+				if autonomousLoop != nil {
+					autonomousLoop.UpdateEntities(update.Entities)
+				}
+
 				// Trigger first AI cycle immediately after initial entity data
 				if firstEntityUpdate && autonomousLoop != nil {
 					firstEntityUpdate = false
