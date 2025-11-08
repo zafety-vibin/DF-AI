@@ -7,12 +7,14 @@
 #include "Export.h"
 #include "PluginManager.h"
 #include "modules/MapCache.h"
+#include "modules/Maps.h"
 #include "modules/Units.h"
 
 #include "df/map_block.h"
 #include "df/world.h"
 #include "df/coord.h"
 #include "df/unit.h"
+#include "df/tile_dig_designation.h"
 
 #include "protocol.h"
 #include "ActiveSocket.h"  // SimpleSockets
@@ -147,6 +149,159 @@ std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &enti
     return buffer;
 }
 
+// Designation command handling (inline implementation)
+
+// Send command acknowledgment back to server
+void sendCommandAck(uint32_t cmdID, uint8_t status, const std::string &error)
+{
+    if (!g_socket || !g_socket->IsSocketValid()) return;
+
+    std::vector<uint8_t> msg;
+    msg.resize(4, 0);
+    msg.push_back(PROTOCOL_VERSION);
+    msg.push_back(0x0A);  // COMMAND_ACK
+
+    // Command ID
+    msg.push_back((cmdID >> 24) & 0xFF);
+    msg.push_back((cmdID >> 16) & 0xFF);
+    msg.push_back((cmdID >> 8) & 0xFF);
+    msg.push_back(cmdID & 0xFF);
+
+    // Status
+    msg.push_back(status);
+
+    // Error message
+    uint16_t errorLen = error.empty() ? 0 : error.size();
+    msg.push_back((errorLen >> 8) & 0xFF);
+    msg.push_back(errorLen & 0xFF);
+    if (errorLen > 0) {
+        msg.insert(msg.end(), error.begin(), error.end());
+    }
+
+    // Fill length
+    uint32_t length = msg.size();
+    msg[0] = (length >> 24) & 0xFF;
+    msg[1] = (length >> 16) & 0xFF;
+    msg[2] = (length >> 8) & 0xFF;
+    msg[3] = length & 0xFF;
+
+    g_socket->Send(msg.data(), msg.size());
+}
+
+// Apply dig designation to region
+bool applyDigDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, int16_t z2, std::string &error)
+{
+    if (!Maps::isValidTilePos(x1, y1, z)) {
+        error = "Invalid start coordinates";
+        return false;
+    }
+    if (!Maps::isValidTilePos(x2, y2, z2)) {
+        error = "Invalid end coordinates";
+        return false;
+    }
+    if (z != z2) {
+        error = "Z-levels must match (single level per command)";
+        return false;
+    }
+
+    int designated = 0;
+    for (int16_t x = x1; x <= x2; x++) {
+        for (int16_t y = y1; y <= y2; y++) {
+            df::map_block *block = Maps::getTileBlock(x, y, z);
+            if (block) {
+                block->designation[x%16][y%16].bits.dig = df::tile_dig_designation::Default;
+                designated++;
+            }
+        }
+    }
+
+    if (designated == 0) {
+        error = "No tiles designated (all blocked or invalid)";
+        return false;
+    }
+
+    return true;
+}
+
+// Apply cancel designation to region
+bool applyCancelDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, int16_t z2, std::string &error)
+{
+    if (!Maps::isValidTilePos(x1, y1, z) || !Maps::isValidTilePos(x2, y2, z2)) {
+        error = "Invalid coordinates";
+        return false;
+    }
+
+    int cancelled = 0;
+    for (int16_t x = x1; x <= x2; x++) {
+        for (int16_t y = y1; y <= y2; y++) {
+            df::map_block *block = Maps::getTileBlock(x, y, z);
+            if (block) {
+                block->designation[x%16][y%16].bits.dig = df::tile_dig_designation::No;
+                cancelled++;
+            }
+        }
+    }
+
+    return true;
+}
+
+// Handle COMMAND message from server
+void handleCommand(const std::vector<uint8_t> &payload)
+{
+    if (payload.size() < 5) {
+        sendCommandAck(0, 0x02, "Invalid command payload");
+        return;
+    }
+
+    // Parse command ID and type
+    uint32_t cmdID = ((uint32_t)payload[0] << 24) | ((uint32_t)payload[1] << 16) |
+                     ((uint32_t)payload[2] << 8) | (uint32_t)payload[3];
+    uint8_t cmdType = payload[4];
+
+    std::string error;
+    bool success = false;
+
+    switch (cmdType) {
+        case 0x01: {  // DIG
+            if (payload.size() < 17) {
+                sendCommandAck(cmdID, 0x02, "Invalid DIG payload");
+                return;
+            }
+            int16_t x1 = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y1 = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z1 = ((int16_t)payload[9] << 8) | payload[10];
+            int16_t x2 = ((int16_t)payload[11] << 8) | payload[12];
+            int16_t y2 = ((int16_t)payload[13] << 8) | payload[14];
+            int16_t z2 = ((int16_t)payload[15] << 8) | payload[16];
+            success = applyDigDesignation(x1, y1, z1, x2, y2, z2, error);
+            break;
+        }
+        case 0x02: {  // BUILD (not implemented)
+            sendCommandAck(cmdID, 0x02, "BUILD not yet implemented");
+            return;
+        }
+        case 0x03: {  // CANCEL
+            if (payload.size() < 17) {
+                sendCommandAck(cmdID, 0x02, "Invalid CANCEL payload");
+                return;
+            }
+            int16_t x1 = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y1 = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z1 = ((int16_t)payload[9] << 8) | payload[10];
+            int16_t x2 = ((int16_t)payload[11] << 8) | payload[12];
+            int16_t y2 = ((int16_t)payload[13] << 8) | payload[14];
+            int16_t z2 = ((int16_t)payload[15] << 8) | payload[16];
+            success = applyCancelDesignation(x1, y1, z1, x2, y2, z2, error);
+            break;
+        }
+        default:
+            sendCommandAck(cmdID, 0x02, "Unknown command type");
+            return;
+    }
+
+    sendCommandAck(cmdID, success ? 0x00 : 0x02, error);
+}
+
 // Plugin initialization
 DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginCommand> &commands)
 {
@@ -155,12 +310,22 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
         "Connect to Go orchestrator server",
         [](color_ostream &out, std::vector<std::string> &params) -> command_result {
             if (connect_to_server(out)) {
+                // Automatically send initial entity update after connection
+                out.print("Sending initial entity update...\n");
+                std::vector<EntityInfo> entities = extract_entities();
+                std::vector<uint8_t> entity_msg = serialize_entity_update(entities);
+                if (g_socket && g_socket->IsSocketValid()) {
+                    int sent = g_socket->Send(entity_msg.data(), entity_msg.size());
+                    if (sent == (int)entity_msg.size()) {
+                        out.print("Sent initial ENTITY_UPDATE (%d entities)\n", (int)entities.size());
+                    }
+                }
                 return CR_OK;
             }
             return CR_FAILURE;
         },
         false,
-        "Usage: ai-connect\nConnects to the Go orchestrator server and performs handshake."
+        "Usage: ai-connect\nConnects to the Go orchestrator server, performs handshake, and sends initial entity data."
     ));
 
     commands.push_back(PluginCommand(
@@ -829,6 +994,11 @@ void message_receive_loop(color_ostream &out)
                 }
                 break;
 
+            case MSG_TYPE_COMMAND:
+                out.print("Received COMMAND\n");
+                handleCommand(payload);
+                break;
+
             case MSG_TYPE_HEARTBEAT:
                 // Parse heartbeat: [8: timestamp] [1: sequence]
                 if (payload.size() >= 9) {
@@ -871,11 +1041,6 @@ void message_receive_loop(color_ostream &out)
                         }
                     }
                 }
-                break;
-
-            case MSG_TYPE_COMMAND:
-                out.print("Received COMMAND message\n");
-                handleCommand(payload);
                 break;
 
             case MSG_TYPE_DISCONNECT:

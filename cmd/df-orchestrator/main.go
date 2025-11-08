@@ -34,6 +34,7 @@ var (
 	queryExecutor        *appcontext.QueryExecutor
 	autonomousLoop       *autonomous.AutonomousLoop
 	llmProvider          llm.Provider
+	firstEntityUpdate    bool = true // Track if we should trigger first AI cycle
 )
 
 var (
@@ -501,6 +502,13 @@ func main() {
 				logger.Debug("entity overlays updated",
 					logging.Field{Key: "enemy_count", Value: counts["enemies"]},
 					logging.Field{Key: "dwarf_count", Value: counts["dwarves"]})
+
+				// Trigger first AI cycle immediately after initial entity data
+				if firstEntityUpdate && autonomousLoop != nil {
+					firstEntityUpdate = false
+					logger.Info("initial entity data received - triggering first AI decision")
+					autonomousLoop.TriggerImmediate()
+				}
 			}
 		}
 	}()
