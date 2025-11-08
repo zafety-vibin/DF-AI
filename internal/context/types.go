@@ -57,11 +57,12 @@ type ViewportContext struct {
 	TextOverview string `json:"text_overview,omitempty"`
 
 	// Level 1+ (structured data)
-	EmbarkPoint  *modifications.Coordinate `json:"embark_point,omitempty"` // Cached starting position (set once, never updated)
-	Chambers     []ChamberFeature      `json:"chambers,omitempty"`
-	Hazards      HazardData            `json:"hazards,omitempty"`
-	Dwarves      []EntityPosition      `json:"dwarves,omitempty"`
-	ActiveRegion *modifications.Region `json:"active_region,omitempty"`
+	EmbarkPoint   *modifications.Coordinate `json:"embark_point,omitempty"` // Cached starting position (set once, never updated)
+	Chambers      []ChamberFeature      `json:"chambers,omitempty"`
+	Hazards       HazardData            `json:"hazards,omitempty"`
+	Dwarves       []EntityPosition      `json:"dwarves,omitempty"`
+	ActiveRegion  *modifications.Region `json:"active_region,omitempty"`
+	TopologySlice *TopologySliceData    `json:"topology_slice,omitempty"` // Terrain map (first turn only)
 
 	// Level 2+ (expanded data)
 	CavernData   *CavernData      `json:"cavern_data,omitempty"`
@@ -123,6 +124,19 @@ type TopologyData struct {
 	CompressedSizeKB uint32  `json:"compressed_size_kb"`
 	ZLevelsIncluded  []int16 `json:"z_levels_included"`
 	OpenPercentage   float64 `json:"open_percentage"`
+}
+
+// TopologySliceData contains terrain map for a single Z-level region
+type TopologySliceData struct {
+	Z          int16    `json:"z"`           // Z-level
+	XMin       int16    `json:"x_min"`       // Region bounds
+	YMin       int16    `json:"y_min"`
+	XMax       int16    `json:"x_max"`
+	YMax       int16    `json:"y_max"`
+	Width      int16    `json:"width"`       // Dimensions
+	Height     int16    `json:"height"`
+	OpenTiles  []string `json:"open_tiles"`  // Array of "X,Y" for open tiles
+	Description string  `json:"description"` // Human-readable terrain summary
 }
 
 // QueryType represents the type of query to execute

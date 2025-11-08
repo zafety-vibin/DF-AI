@@ -65,9 +65,9 @@ func (a *Assembler) AssembleContext(
 	case Level0:
 		return a.assembleLevel0(mods, hazardMgr, entities)
 	case Level1:
-		return a.assembleLevel1(mods, hazardMgr, entities)
+		return a.assembleLevel1(mods, hazardMgr, entities, topoOverlay)
 	case Level2:
-		return a.assembleLevel2(mods, hazardMgr, entities)
+		return a.assembleLevel2(mods, hazardMgr, entities, topoOverlay)
 	case Level3:
 		return a.assembleLevel3(mods, hazardMgr, entities, topoOverlay)
 	default:
@@ -110,6 +110,7 @@ func (a *Assembler) assembleLevel1(
 	mods *modifications.ModificationOverlay,
 	hazardMgr *hazards.HazardManager,
 	entities EntityInfoSlice,
+	topoOverlay *topology.TopologyOverlay,
 ) (*ViewportContext, error) {
 	ctx := &ViewportContext{
 		Level:       Level1,
@@ -184,9 +185,6 @@ func (a *Assembler) assembleLevel1(
 
 		// Extract topology for this region
 		topologySliceData = extractTopologySlice(topoOverlay, region)
-		a.logger.Debug("added topology slice to context",
-			logging.Field{Key: "z", Value: embarkZ},
-			logging.Field{Key: "region", Value: fmt.Sprintf("(%d,%d)-(%d,%d)", region.XMin, region.YMin, region.XMax, region.YMax)})
 	}
 
 	ctx.Chambers = chambers
@@ -210,9 +208,10 @@ func (a *Assembler) assembleLevel2(
 	mods *modifications.ModificationOverlay,
 	hazardMgr *hazards.HazardManager,
 	entities EntityInfoSlice,
+	topoOverlay *topology.TopologyOverlay,
 ) (*ViewportContext, error) {
 	// Start with Level 1 context
-	ctx, err := a.assembleLevel1(mods, hazardMgr, entities)
+	ctx, err := a.assembleLevel1(mods, hazardMgr, entities, topoOverlay)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +259,7 @@ func (a *Assembler) assembleLevel3(
 	topoOverlay *topology.TopologyOverlay,
 ) (*ViewportContext, error) {
 	// Start with Level 2 context
-	ctx, err := a.assembleLevel2(mods, hazardMgr, entities)
+	ctx, err := a.assembleLevel2(mods, hazardMgr, entities, topoOverlay)
 	if err != nil {
 		return nil, err
 	}
@@ -410,5 +409,47 @@ func calculateDwarfCentroid(entities EntityInfoSlice) modifications.Coordinate {
 		X: int16(sumX / int32(count)),
 		Y: int16(sumY / int32(count)),
 		Z: int16(sumZ / int32(count)),
+	}
+}
+
+// extractTopologySlice extracts terrain map for embark area on first turn
+func extractTopologySlice(topoOverlay *topology.TopologyOverlay, region modifications.Region) *TopologySliceData {
+	if topoOverlay == nil {
+		return nil
+	}
+
+	width := region.XMax - region.XMin + 1
+	height := region.YMax - region.YMin + 1
+
+	// Extract open tiles in region (walls vs open space)
+	openTiles := []string{}
+	openCount := 0
+
+	for x := region.XMin; x <= region.XMax; x++ {
+		for y := region.YMin; y <= region.YMax; y++ {
+			isOpen, err := topoOverlay.IsOpen(x, y, region.ZMin)
+			if err == nil && isOpen {
+				openTiles = append(openTiles, fmt.Sprintf("%d,%d", x, y))
+				openCount++
+			}
+		}
+	}
+
+	totalTiles := int(width * height)
+	openPct := float64(openCount) / float64(totalTiles) * 100
+
+	description := fmt.Sprintf("Embark area %dx%d at Z=%d: %d/%d tiles open (%.1f%% passable, %.1f%% walls/rock)",
+		width, height, region.ZMin, openCount, totalTiles, openPct, 100-openPct)
+
+	return &TopologySliceData{
+		Z:           region.ZMin,
+		XMin:        region.XMin,
+		YMin:        region.YMin,
+		XMax:        region.XMax,
+		YMax:        region.YMax,
+		Width:       width,
+		Height:      height,
+		OpenTiles:   openTiles,
+		Description: description,
 	}
 }
