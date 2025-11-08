@@ -145,6 +145,12 @@ func (al *AutonomousLoop) run(ctx context.Context) {
 			}
 		}
 
+		// Check connection before running cycle (prevents wasting API calls)
+		if al.dfhackClient != nil && !al.dfhackClient.IsConnected() {
+			al.logger.Debug("skipping cycle - DFHack not connected")
+			continue // Skip this cycle, wait for next timer
+		}
+
 		// Run decision cycle
 		al.logger.Info("starting autonomous decision cycle")
 		if err := al.runCycle(); err != nil {
@@ -155,12 +161,6 @@ func (al *AutonomousLoop) run(ctx context.Context) {
 
 // runCycle executes a single decision cycle
 func (al *AutonomousLoop) runCycle() error {
-	// Skip cycle if DFHack not connected (prevents wasting API calls on stale data)
-	if al.dfhackClient != nil && !al.dfhackClient.IsConnected() {
-		al.logger.Debug("skipping cycle - DFHack not connected")
-		return nil
-	}
-
 	cycleStart := time.Now()
 	turnBuilder := NewTurnBuilder()
 
@@ -356,6 +356,16 @@ func (al *AutonomousLoop) executeCommands(specs []llm.CommandSpec) (uint32, erro
 			return 0, fmt.Errorf("dig command missing region")
 		}
 		return al.executeDig(spec)
+	case "chop":
+		if spec.Region == nil {
+			return 0, fmt.Errorf("chop command missing region")
+		}
+		return al.executeChop(spec)
+	case "gather":
+		if spec.Region == nil {
+			return 0, fmt.Errorf("gather command missing region")
+		}
+		return al.executeGather(spec)
 	case "build":
 		if spec.Region == nil {
 			return 0, fmt.Errorf("build command missing region")
@@ -439,6 +449,86 @@ func (al *AutonomousLoop) executeBuild(spec llm.CommandSpec) (uint32, error) {
 	}
 
 	return result.Response.CommandID, nil
+}
+
+// executeChop executes a tree chopping command
+func (al *AutonomousLoop) executeChop(spec llm.CommandSpec) (uint32, error) {
+	region := spec.Region
+	al.logger.Info("executing chop command",
+		logging.Field{Key: "region", Value: fmt.Sprintf("(%d,%d,%d) to (%d,%d,%d)",
+			region.X1, region.Y1, region.Z, region.X2, region.Y2, region.Z)})
+
+	result, err := al.commandExecutor.SendChopCommand(
+		int16(region.X1),
+		int16(region.Y1),
+		int16(region.Z),
+		int16(region.X2),
+		int16(region.Y2),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("chop command failed: %w", err)
+	}
+
+	if !result.Success {
+		return 0, fmt.Errorf("chop command rejected: %s", result.ErrorMsg)
+	}
+
+	cmdID := result.Response.CommandID
+	expectedTiles := commands.CalculateExpectedTiles(protocol.Region{
+		X1: int16(region.X1), Y1: int16(region.Y1), Z1: int16(region.Z),
+		X2: int16(region.X2), Y2: int16(region.Y2), Z2: int16(region.Z),
+	})
+
+	al.pendingMu.Lock()
+	al.pendingCommands[cmdID] = &commands.PendingCommand{
+		TaskStatus:    commands.TaskStatusNotStarted,
+		ExpectedTiles: expectedTiles,
+		StartTime:     time.Now(),
+		Description:   fmt.Sprintf("Chop trees in region (%d,%d,%d) to (%d,%d,%d)", region.X1, region.Y1, region.Z, region.X2, region.Y2, region.Z),
+	}
+	al.pendingMu.Unlock()
+
+	return cmdID, nil
+}
+
+// executeGather executes a plant gathering command
+func (al *AutonomousLoop) executeGather(spec llm.CommandSpec) (uint32, error) {
+	region := spec.Region
+	al.logger.Info("executing gather command",
+		logging.Field{Key: "region", Value: fmt.Sprintf("(%d,%d,%d) to (%d,%d,%d)",
+			region.X1, region.Y1, region.Z, region.X2, region.Y2, region.Z)})
+
+	result, err := al.commandExecutor.SendGatherCommand(
+		int16(region.X1),
+		int16(region.Y1),
+		int16(region.Z),
+		int16(region.X2),
+		int16(region.Y2),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("gather command failed: %w", err)
+	}
+
+	if !result.Success {
+		return 0, fmt.Errorf("gather command rejected: %s", result.ErrorMsg)
+	}
+
+	cmdID := result.Response.CommandID
+	expectedTiles := commands.CalculateExpectedTiles(protocol.Region{
+		X1: int16(region.X1), Y1: int16(region.Y1), Z1: int16(region.Z),
+		X2: int16(region.X2), Y2: int16(region.Y2), Z2: int16(region.Z),
+	})
+
+	al.pendingMu.Lock()
+	al.pendingCommands[cmdID] = &commands.PendingCommand{
+		TaskStatus:    commands.TaskStatusNotStarted,
+		ExpectedTiles: expectedTiles,
+		StartTime:     time.Now(),
+		Description:   fmt.Sprintf("Gather plants in region (%d,%d,%d) to (%d,%d,%d)", region.X1, region.Y1, region.Z, region.X2, region.Y2, region.Z),
+	}
+	al.pendingMu.Unlock()
+
+	return cmdID, nil
 }
 
 // generateFeedback generates feedback for all pending commands

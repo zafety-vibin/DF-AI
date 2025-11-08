@@ -80,16 +80,21 @@ Task Feedback:
 - Dwarves work at their own pace - tasks may take 1-5 minutes
 
 Available Commands:
-1. dig from (x1, y1, z) to (x2, y2, z) - Designate area for mining (single Z-level only, z must equal z)
-2. build at (x, y, z) - Place a construction (NOT YET IMPLEMENTED)
-3. wait - Observe without acting, let ongoing tasks complete
+1. dig from (x1, y1, z) to (x2, y2, z) - Designate area for mining (single Z-level only)
+2. chop from (x1, y1, z) to (x2, y2, z) - Designate trees for chopping (for wood/clear area)
+3. gather from (x1, y1, z) to (x2, y2, z) - Designate plants for gathering (food/materials)
+4. build at (x, y, z) - Place a construction (NOT YET IMPLEMENTED)
+5. wait - Observe without acting, let ongoing tasks complete
 
 Guidelines:
 - Start digging near embark_point on first turn (check embark_point.z for surface level)
 - Avoid digging into aquifers, water, or lava (check hazards array first)
+- Use chop to designate trees for wood (essential for beds, barrels, bins)
+- Use gather to collect surface plants (food and brewing materials)
 - Wait for tasks to complete before issuing new overlapping commands (check task progress)
 - If a task is stalled (no progress 60s), dwarves may be busy or path blocked
 - Expand systematically: entrance hall → bedrooms → dining hall → workshops
+- Gather food/wood early before digging deep (surface resources are safe)
 - Fort development takes time - dwarves aren't instant, be patient
 
 Learning from Outcomes:

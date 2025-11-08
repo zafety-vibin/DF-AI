@@ -258,6 +258,8 @@ const (
 	CommandTypeDig    uint8 = 0x01
 	CommandTypeBuild  uint8 = 0x02
 	CommandTypeCancel uint8 = 0x03
+	CommandTypeChop   uint8 = 0x04
+	CommandTypeGather uint8 = 0x05
 )
 
 // AckStatus constants for command acknowledgment messages

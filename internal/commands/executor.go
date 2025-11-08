@@ -92,6 +92,34 @@ func (e *CommandExecutor) SendCancelCommand(x1, y1, z int16, x2, y2 int16) (*Com
 	return e.SendCommand(cmd)
 }
 
+// SendChopCommand sends a tree chopping designation command
+func (e *CommandExecutor) SendChopCommand(x1, y1, z int16, x2, y2 int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeChop,
+		Region: protocol.Region{
+			X1: x1, Y1: y1, Z1: z,
+			X2: x2, Y2: y2, Z2: z,
+		},
+	}
+
+	return e.SendCommand(cmd)
+}
+
+// SendGatherCommand sends a plant gathering designation command
+func (e *CommandExecutor) SendGatherCommand(x1, y1, z int16, x2, y2 int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeGather,
+		Region: protocol.Region{
+			X1: x1, Y1: y1, Z1: z,
+			X2: x2, Y2: y2, Z2: z,
+		},
+	}
+
+	return e.SendCommand(cmd)
+}
+
 // SendCommand sends a command and waits for acknowledgment
 func (e *CommandExecutor) SendCommand(cmdMsg *protocol.CommandMessage) (*CommandResult, error) {
 	// Check if connected
