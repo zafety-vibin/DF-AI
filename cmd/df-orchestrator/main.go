@@ -384,6 +384,19 @@ func main() {
 			}
 		})
 
+		// Set AI history callback
+		httpServer.SetGetAIHistory(func() interface{} {
+			if autonomousLoop == nil {
+				return nil
+			}
+			history := autonomousLoop.GetHistory()
+			return map[string]interface{}{
+				"turns":       history.GetRecentTurns(10), // Last 10 turns
+				"total_turns": history.GetTurnCount(),
+				"in_memory":   history.GetHistorySize(),
+			}
+		})
+
 		if err := httpServer.Start(ctx); err != nil {
 			logger.Error("failed to start HTTP server", err)
 			os.Exit(1)

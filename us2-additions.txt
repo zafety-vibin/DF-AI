@@ -1,0 +1,100 @@
+=== Add to df_ai_protocol.cpp ===
+
+After the send_full_state() function, add:
+
+```cpp
+// Send tile update message (US2)
+bool send_tile_update(color_ostream &out, const std::vector<uint8_t> &tiles)
+{
+    if (!g_connected || !g_socket) {
+        out.printerr("Not connected\n");
+        return false;
+    }
+
+    uint32_t tile_count = tiles.size() / 9;
+    if (tile_count == 0) {
+        out.print("No changed tiles to send\n");
+        return true;
+    }
+
+    // Build TILE_UPDATE message: [4:Length][1:Ver][1:Type][4:Count][N:Tiles]
+    std::vector<uint8_t> message;
+    message.reserve(10 + tiles.size());
+
+    // Length placeholder
+    message.resize(4, 0);
+
+    // Version and type
+    message.push_back(PROTOCOL_VERSION);
+    message.push_back(MSG_TYPE_TILE_UPDATE);
+
+    // Payload: [4: Count][N: Tiles]
+    write_uint32_be(message, tile_count);
+    message.insert(message.end(), tiles.begin(), tiles.end());
+
+    // Fill length
+    uint32_t length = message.size();
+    message[0] = (length >> 24) & 0xFF;
+    message[1] = (length >> 16) & 0xFF;
+    message[2] = (length >> 8) & 0xFF;
+    message[3] = length & 0xFF;
+
+    // Send
+    int32_t sent = g_socket->Send(message.data(), message.size());
+    if (sent != (int32_t)message.size()) {
+        out.printerr("Failed to send tile update\n");
+        return false;
+    }
+
+    out.print("Sent TILE_UPDATE (%d tiles, %d bytes)\n", tile_count, (int)message.size());
+    return true;
+}
+```
+
+In plugin_init(), after ai-status command, add:
+
+```cpp
+    commands.push_back(PluginCommand(
+        "ai-check-updates",
+        "Check for and send tile changes",
+        [](color_ostream &out, std::vector<std::string> &params) -> command_result {
+            if (!g_connected) {
+                out.printerr("Not connected - use 'ai-connect' first\n");
+                return CR_FAILURE;
+            }
+
+            out.print("Scanning for tile changes...\n");
+            std::vector<uint8_t> changes = detect_tile_changes();
+
+            if (changes.empty()) {
+                out.print("No changes detected\n");
+                return CR_OK;
+            }
+
+            uint32_t count = changes.size() / 9;
+            out.print("Found %d changed tiles\n", count);
+
+            if (send_tile_update(out, changes)) {
+                return CR_OK;
+            }
+            return CR_FAILURE;
+        },
+        false,
+        "Usage: ai-check-updates\nDetects changed tiles and sends TILE_UPDATE to server."
+    ));
+```
+
+Forward declarations at top (after line 42):
+
+```cpp
+bool send_tile_update(color_ostream &out, const std::vector<uint8_t> &tiles);
+std::vector<uint8_t> detect_tile_changes();
+```
+
+=== SUMMARY ===
+These additions complete US2:
+- send_tile_update() function: Sends TILE_UPDATE messages
+- ai-check-updates command: Manual trigger for testing
+- Integrates with detect_tile_changes() from tile_updates.cpp
+
+To apply manually, edit dfhack-build/plugins/df_ai_protocol.cpp and add the code above.

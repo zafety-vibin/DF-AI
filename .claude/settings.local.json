@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod init:*)",
+      "Bash(go mod edit:*)",
+      "Bash(mkdir:*)",
+      "Bash(go get:*)",
+      "Bash(go mod tidy:*)",
+      "Bash(go build:*)",
+      "Bash(./bin/df-orchestrator.exe:*)",
+      "Bash(powershell:*)",
+      "Bash(go run:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

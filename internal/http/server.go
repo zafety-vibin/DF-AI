@@ -24,6 +24,7 @@ type Server struct {
 	getContextMetricsFunc       func() *ContextMetrics
 	getLLMMetricsFunc           func() *LLMMetrics
 	getCommandMetricsFunc       func() *CommandMetrics
+	getAIHistoryFunc            func() interface{} // Returns AI turn history
 	startTime                   time.Time
 	configReloads               uint64
 	httpRequests                uint64
@@ -75,6 +76,13 @@ func (s *Server) SetGetCommandMetrics(fn func() *CommandMetrics) {
 	s.getCommandMetricsFunc = fn
 }
 
+// SetGetAIHistory sets the callback function for retrieving AI decision history
+func (s *Server) SetGetAIHistory(fn func() interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getAIHistoryFunc = fn
+}
+
 // Start starts the HTTP server
 func (s *Server) Start(ctx context.Context) error {
 	cfg := s.configMgr.Get()
@@ -86,6 +94,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/health", s.withMetrics(s.healthHandler))
 	mux.HandleFunc("/ready", s.withMetrics(s.readyHandler))
 	mux.HandleFunc("/metrics", s.withMetrics(s.metricsHandler))
+	mux.HandleFunc("/ai/history", s.withMetrics(s.aiHistoryHandler))
 
 	// Create HTTP server
 	addr := fmt.Sprintf(":%d", cfg.HttpPort)
