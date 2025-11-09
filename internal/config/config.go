@@ -88,6 +88,33 @@ type Config struct {
 	EnableDynamicContext  bool `yaml:"enable_dynamic_context"`   // Use query-based context
 	ContextAlwaysInclude  []string `yaml:"context_always_include"` // Always send these fields
 	ContextMaxSizeBytes   int  `yaml:"context_max_size_bytes"`   // Hard limit on context
+
+	// Goal Agent System (Feature 006)
+	EnableGoalAgents bool                `yaml:"enable_goal_agents"` // Enable graph-based agents (true) or direct-LLM mode (false)
+	AgentFood        AgentConfig         `yaml:"agent_food"`
+	AgentHousing     AgentConfig         `yaml:"agent_housing"`
+	AgentMining      AgentConfig         `yaml:"agent_mining"`
+	AgentWealth      AgentConfig         `yaml:"agent_wealth"`
+	AgentDefense     DefenseAgentConfig  `yaml:"agent_defense"`
+
+	// Local LLM Configuration
+	LocalLLMEndpoint string `yaml:"local_llm_endpoint"` // LM Studio endpoint (http://localhost:1234/v1)
+	LocalLLMModel    string `yaml:"local_llm_model"`    // Model name (qwen2.5-7b-instruct-q4_k_m)
+	LLMTimeoutMS     int    `yaml:"llm_timeout_ms"`     // Request timeout in milliseconds
+}
+
+// AgentConfig holds configuration for a goal agent
+type AgentConfig struct {
+	Enabled  bool                   `yaml:"enabled"`
+	Priority int                    `yaml:"priority"`
+	Targets  map[string]interface{} `yaml:"targets"` // Agent-specific thresholds
+}
+
+// DefenseAgentConfig holds configuration for defense agent with variable priority
+type DefenseAgentConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	PriorityBase  int  `yaml:"priority_base"`   // Priority when no threats
+	PriorityThreat int `yaml:"priority_threat"` // Priority when enemies detected
 }
 
 // Load reads and parses the configuration file
@@ -234,5 +261,70 @@ func (c *Config) setDefaults() {
 	}
 	if c.ContextMaxSizeBytes == 0 {
 		c.ContextMaxSizeBytes = 250 * 1024 // 250 KB hard limit
+	}
+
+	// Local LLM defaults
+	if c.LocalLLMEndpoint == "" {
+		c.LocalLLMEndpoint = "http://localhost:1234/v1"
+	}
+	if c.LocalLLMModel == "" {
+		c.LocalLLMModel = "qwen2.5-7b-instruct-q4_k_m"
+	}
+	if c.LLMTimeoutMS == 0 {
+		c.LLMTimeoutMS = 5000 // 5 seconds
+	}
+
+	// Goal Agent defaults
+	// Note: EnableGoalAgents defaults to false (existing behavior)
+	// If enabled, agents default to enabled with standard priorities and targets
+	if c.EnableGoalAgents {
+		// Food agent defaults
+		if c.AgentFood.Priority == 0 {
+			c.AgentFood.Enabled = true
+			c.AgentFood.Priority = 10
+			if c.AgentFood.Targets == nil {
+				c.AgentFood.Targets = map[string]interface{}{
+					"food_per_dwarf":  20,
+					"drink_per_dwarf": 15,
+				}
+			}
+		}
+		// Housing agent defaults
+		if c.AgentHousing.Priority == 0 {
+			c.AgentHousing.Enabled = true
+			c.AgentHousing.Priority = 9
+			if c.AgentHousing.Targets == nil {
+				c.AgentHousing.Targets = map[string]interface{}{
+					"bedrooms_per_dwarf": 1,
+				}
+			}
+		}
+		// Mining agent defaults
+		if c.AgentMining.Priority == 0 {
+			c.AgentMining.Enabled = true
+			c.AgentMining.Priority = 7
+			if c.AgentMining.Targets == nil {
+				c.AgentMining.Targets = map[string]interface{}{
+					"tiles_per_cycle":  50,
+					"no_strike_cycles": 20,
+				}
+			}
+		}
+		// Wealth agent defaults
+		if c.AgentWealth.Priority == 0 {
+			c.AgentWealth.Enabled = true
+			c.AgentWealth.Priority = 6
+			if c.AgentWealth.Targets == nil {
+				c.AgentWealth.Targets = map[string]interface{}{
+					"growth_threshold": 0.10, // 10% per 10 cycles
+				}
+			}
+		}
+		// Defense agent defaults
+		if c.AgentDefense.PriorityBase == 0 && c.AgentDefense.PriorityThreat == 0 {
+			c.AgentDefense.Enabled = true
+			c.AgentDefense.PriorityBase = 0   // Low when no threats
+			c.AgentDefense.PriorityThreat = 10 // Max when threats detected
+		}
 	}
 }

@@ -91,3 +91,43 @@ room_max_size: 1000              # Max tiles for room (20×20)
 enable_dynamic_context: true   # Use query-based context (experimental)
 context_always_include: [dwarf_count, alerts, phase]
 context_max_size_bytes: 256000  # 250 KB hard limit
+
+# Goal Agent System (Feature 006)
+enable_goal_agents: false      # Enable graph-based agents (true) or direct-LLM mode (false)
+
+# Local LLM Configuration
+local_llm_endpoint: http://localhost:1234/v1  # LM Studio default endpoint
+local_llm_model: qwen2.5-7b-instruct-q4_k_m   # Model name
+llm_timeout_ms: 5000                           # Request timeout (5 seconds)
+
+# Agent Configuration (only used when enable_goal_agents: true)
+agent_food:
+  enabled: true
+  priority: 10
+  targets:
+    food_per_dwarf: 20
+    drink_per_dwarf: 15
+
+agent_housing:
+  enabled: true
+  priority: 9
+  targets:
+    bedrooms_per_dwarf: 1
+
+agent_mining:
+  enabled: true
+  priority: 7
+  targets:
+    tiles_per_cycle: 50
+    no_strike_cycles: 20
+
+agent_wealth:
+  enabled: true
+  priority: 6
+  targets:
+    growth_threshold: 0.10  # 10% growth per 10 cycles
+
+agent_defense:
+  enabled: true
+  priority_base: 0       # Priority when no threats
+  priority_threat: 10    # Priority when enemies detected

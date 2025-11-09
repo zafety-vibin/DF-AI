@@ -9,6 +9,7 @@ Auto-generated from all feature plans. Last updated: 2025-11-05
 - In-memory sparse maps (~10-50 KB total) (004-hazard-overlays)
 - Go 1.21+ (server), C++17 (DFHack plugin for command execution) + Go stdlib + net/http (LLM HTTP client), existing protocol/hazards/topology packages (005-llm-integration)
 - In-memory sparse maps (modification overlay <1 MB), no persistence (research experiment) (005-llm-integration)
+- Go 1.21+ (server orchestrator) (006-local-llm-agents)
 
 - Go 1.21+ (server), C++17 (DFHack plugin) (001-binary-protocol)
 
@@ -28,9 +29,9 @@ tests/
 Go 1.21+ (server), C++17 (DFHack plugin): Follow standard conventions
 
 ## Recent Changes
+- 006-local-llm-agents: Added Go 1.21+ (server orchestrator)
 - 005-llm-integration: Added Go 1.21+ (server), C++17 (DFHack plugin for command execution) + Go stdlib + net/http (LLM HTTP client), existing protocol/hazards/topology packages
 - 004-hazard-overlays: Added Go 1.21+ + Go stdlib only (may need protocol enhancement)
-- 003-topology-graph-layer: Added Go 1.21+
 
 
 <!-- MANUAL ADDITIONS START -->
