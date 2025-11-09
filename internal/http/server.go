@@ -25,6 +25,7 @@ type Server struct {
 	getLLMMetricsFunc           func() *LLMMetrics
 	getCommandMetricsFunc       func() *CommandMetrics
 	getAIHistoryFunc            func() interface{} // Returns AI turn history
+	saveModificationsFunc       func() error       // Manual save trigger
 	startTime                   time.Time
 	configReloads               uint64
 	httpRequests                uint64
@@ -83,6 +84,13 @@ func (s *Server) SetGetAIHistory(fn func() interface{}) {
 	s.getAIHistoryFunc = fn
 }
 
+// SetSaveModifications sets the callback function for manual save
+func (s *Server) SetSaveModifications(fn func() error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.saveModificationsFunc = fn
+}
+
 // Start starts the HTTP server
 func (s *Server) Start(ctx context.Context) error {
 	cfg := s.configMgr.Get()
@@ -95,6 +103,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/ready", s.withMetrics(s.readyHandler))
 	mux.HandleFunc("/metrics", s.withMetrics(s.metricsHandler))
 	mux.HandleFunc("/ai/history", s.withMetrics(s.aiHistoryHandler))
+	mux.HandleFunc("/ai/save", s.withMetrics(s.saveHandler))
 
 	// Create HTTP server
 	addr := fmt.Sprintf(":%d", cfg.HttpPort)

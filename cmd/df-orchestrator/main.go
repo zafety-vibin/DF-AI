@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/df-ai/orchestrator/internal/autonomous"
+	"github.com/df-ai/orchestrator/internal/blueprints"
 	"github.com/df-ai/orchestrator/internal/commands"
 	"github.com/df-ai/orchestrator/internal/config"
 	appcontext "github.com/df-ai/orchestrator/internal/context"
@@ -19,6 +20,7 @@ import (
 	"github.com/df-ai/orchestrator/internal/llm"
 	"github.com/df-ai/orchestrator/internal/logging"
 	"github.com/df-ai/orchestrator/internal/modifications"
+	"github.com/df-ai/orchestrator/internal/phases"
 	"github.com/df-ai/orchestrator/internal/protocol"
 	"github.com/df-ai/orchestrator/internal/topology"
 	"golang.org/x/sync/errgroup"
@@ -29,12 +31,14 @@ var (
 	hazardManager        *hazards.HazardManager
 	modificationOverlay  *modifications.ModificationOverlay
 	modificationDetector *modifications.Detector
+	modBounds            modifications.Bounds // Map dimensions for persistence
 	commandExecutor      *commands.CommandExecutor
 	contextAssembler     *appcontext.Assembler
 	queryExecutor        *appcontext.QueryExecutor
 	autonomousLoop       *autonomous.AutonomousLoop
 	llmProvider          llm.Provider
-	firstEntityUpdate    bool = true // Track if we should trigger first AI cycle
+	phaseManager         *phases.PhaseManager // Fort development phase tracking
+	firstEntityUpdate    bool = true          // Track if we should trigger first AI cycle
 )
 
 var (
@@ -64,14 +68,51 @@ Fort State Context:
   - Check before digging to avoid disasters
 - Chambers: extracted rooms and corridors from modifications (empty until you dig)
 - Dwarves: active dwarves and their positions
+- topology_slice: Terrain map showing walls vs open space (first turn only, 60×60 area)
+  - open_tiles: Array of "X,Y" coordinates that are ALREADY OPEN (floors, air, passable)
+  - TO DIG: Choose coordinates NOT in open_tiles (those are walls/rock)
+  - IMPORTANT: Do not dig coordinates that appear in open_tiles - those are already floors!
+  - Example: If open_tiles contains "45,35", do NOT dig (45,35) - it's already open space
 
 Starting Strategy (First Turn):
 - Check embark_point to see where your dwarves are located
+- Check dwarves array to see their ACTUAL Z-level (embark_point.z is average, dwarves may be higher/lower)
+- Dig at the SAME Z-level where most dwarves are clustered (check dwarves[].z)
 - Survey hazards within active_region (60×60 area around embark)
 - Identify safe digging direction (away from aquifers/water/lava)
-- Start with small entrance hall (5×10 corridor) near embark_point
-- Typical coordinates: embark_point.z is your surface level
-- Example: If embark at (72, 89, 155), dig entrance at (72, 80, 155) to (72, 90, 155)
+- Start with small entrance hall (5×10 corridor) adjacent to where dwarves are standing
+- CRITICAL: Dwarves must be able to WALK to the dig site - don't dig isolated rooms on different Z-levels!
+- Example: If dwarves at (72, 89, 155), dig entrance at (72, 80, 155) to (72, 90, 155) - SAME Z=155
+
+Digging Commands:
+Standard mining:
+  dig from (x1, y1, z) to (x2, y2, z)
+  - Removes walls, creates passable floor
+  - Use for horizontal expansion on same Z-level
+
+Stairs (connecting Z-levels vertically):
+  dig stairs from (x1, y1, z) to (x2, y2, z)
+  - Creates up/down staircases that connect to levels above AND below
+  - Essential for multi-level forts - use these to go up or down
+  - Example: "dig stairs from (50,50,120) to (52,52,120)" creates 3x3 stairwell
+
+Channels (digging down one level):
+  dig channel from (x1, y1, z) to (x2, y2, z)
+  - Removes floor, creates hole to level below
+  - Useful for creating openings between floors
+  - WARNING: Don't channel where dwarves are standing!
+
+Ramps (sloped access):
+  dig ramp from (x1, y1, z) to (x2, y2, z)
+  - Creates sloped passage to level above
+  - Alternative to stairs for wagons/vehicles
+  - Smoother access but takes more space
+
+Staircase Strategy:
+- First turn: Dig entrance hall on dwarf Z-level
+- Second turn: Add stairs to connect to level below for expansion
+- Build vertically: Stairs at (x,y,z) connect to (x,y,z-1) and (x,y,z+1)
+- Always leave path from stairs to work areas
 
 Task Feedback:
 - Each previous command is tracked for completion
@@ -80,11 +121,21 @@ Task Feedback:
 - Dwarves work at their own pace - tasks may take 1-5 minutes
 
 Available Commands:
-1. dig from (x1, y1, z) to (x2, y2, z) - Designate area for mining (single Z-level only)
-2. chop from (x1, y1, z) to (x2, y2, z) - Designate trees for chopping (for wood/clear area)
-3. gather from (x1, y1, z) to (x2, y2, z) - Designate plants for gathering (food/materials)
-4. build at (x, y, z) - Place a construction (NOT YET IMPLEMENTED)
-5. wait - Observe without acting, let ongoing tasks complete
+1. dig [type] from (x1, y1, z) to (x2, y2, z)
+   Types: (default), stairs, channel, ramp, upstair, downstair
+2. chop from (x1, y1, z) to (x2, y2, z) - Designate trees for chopping
+3. gather from (x1, y1, z) to (x2, y2, z) - Designate plants for gathering
+4. wait - Observe without acting, let ongoing tasks complete
+
+Blueprints (Templates):
+- Available blueprints are listed in the "blueprints" array in context
+- Blueprints are SUGGESTIONS, not requirements - feel free to design your own layouts
+- Use blueprints to learn patterns, then create unique variations
+- Each fort should be unique to the world, not copy-pasted templates
+- Example: "entrance_hall_10x10" shows a standard entrance with stairs in corner
+  - You can use it as-is, modify it, or ignore it and design from scratch
+- Blueprints help you learn good practices (stairs placement, room proportions)
+  - But adapt to terrain, hazards, and your specific fort needs
 
 Guidelines:
 - Start digging near embark_point on first turn (check embark_point.z for surface level)
@@ -102,15 +153,30 @@ Learning from Outcomes:
 - If you breach aquifer or hit lava, learn from it - adjust future digging strategy
 - No actions are blocked - you learn by experiencing consequences
 
+Multi-Command Strategy:
+- You can issue MULTIPLE commands in one response for connected work
+- Each command executes in parallel (dwarves work on all simultaneously)
+- Example: Dig entrance + add stairs + gather food all at once
+- Connected designs: Place stairs in corner of entrance hall for vertical expansion
+
 Respond with:
 1. Your reasoning (what you observe, why you're acting)
-2. The command(s) to execute (dig/wait)
+2. Multiple commands if doing connected work (entrance + stairs, or entrance + food gathering)
 
-Example first turn response:
-"I'm at embark point (72, 89, 155). I see hazards: aquifer 15 tiles north. Safe to dig south.
-Starting with entrance hall south of embark to avoid aquifer.
+Example multi-command response:
+"I'm at embark point (72, 89, 130) on Z=130. Dwarves are clustered here. I'll dig an entrance hall
+with stairs in the corner for future vertical expansion, and gather surface plants for food:
 
-dig from (72, 75, 155) to (82, 85, 155)"`
+dig from (70, 85, 130) to (80, 95, 130)
+dig stairs from (78, 93, 130) to (80, 95, 130)
+gather from (60, 80, 130) to (85, 100, 130)
+
+This creates entrance (10x10), stairs in SE corner, and food collection simultaneously."
+
+Example single command:
+"Entrance hall in progress (23/100 tiles). Waiting for completion before adding stairs.
+
+wait"`
 
 func main() {
 	flag.Parse()
@@ -162,6 +228,36 @@ func main() {
 	commandExecutor = commands.NewCommandExecutor(logger, client, 5*time.Second)
 	logger.Info("command executor initialized",
 		logging.Field{Key: "timeout", Value: "5s"})
+
+	// Set up save request callback (from ai-save command)
+	client.SetOnSaveRequest(func() {
+		if modificationOverlay == nil || !cfg.EnablePersistence {
+			logger.Warn("save requested but persistence not enabled")
+			return
+		}
+
+		// Create persistent wrapper and save
+		fortName := fmt.Sprintf("fort_%d", time.Now().Unix())
+		persistent := modifications.NewPersistentModifications(
+			modBounds,
+			cfg.PersistencePath,
+			time.Duration(cfg.AutoSaveIntervalSec)*time.Second,
+			cfg.EnablePersistence,
+		)
+
+		// Copy modifications
+		for coord, info := range modificationOverlay.GetAll() {
+			persistent.Add(coord, info)
+		}
+
+		if err := persistent.Save(fortName); err != nil {
+			logger.Error("save failed", err)
+		} else {
+			logger.Info("modifications saved",
+				logging.Field{Key: "fort", Value: fortName},
+				logging.Field{Key: "count", Value: modificationOverlay.GetCount()})
+		}
+	})
 
 	// Set up topology overlay callback
 	client.SetOnFullState(func(state *protocol.FullStateMessage) {
@@ -224,7 +320,7 @@ func main() {
 		}
 
 		// Initialize modification tracking overlay
-		modBounds := modifications.Bounds{
+		modBounds = modifications.Bounds{
 			Width:  state.Width,
 			Height: state.Height,
 			Depth:  state.Depth,
@@ -241,9 +337,53 @@ func main() {
 
 		// Initialize context assembler
 		contextAssembler = appcontext.NewAssembler()
+
+		// Enable room detection if configured
+		if cfg.EnableRoomDetection {
+			contextAssembler.EnableRoomDetection(cfg.RoomMinSize, cfg.RoomMaxSize)
+			logger.Info("room detection enabled",
+				logging.Field{Key: "min_size", Value: cfg.RoomMinSize},
+				logging.Field{Key: "max_size", Value: cfg.RoomMaxSize})
+		}
+
+		// Load blueprint library
+		blueprintLib := blueprints.NewBlueprintLibrary("blueprints")
+		blueprintList := blueprintLib.ListBlueprints()
+		if len(blueprintList) > 0 {
+			// Convert to BlueprintInfo for context
+			bpInfos := make([]appcontext.BlueprintInfo, 0, len(blueprintList))
+			for _, name := range blueprintList {
+				bp := blueprintLib.GetBlueprint(name)
+				if bp != nil {
+					bpInfos = append(bpInfos, appcontext.BlueprintInfo{
+						Name:       name,
+						Description: bp.Description,
+						Dimensions: fmt.Sprintf("%dx%dx%d", bp.Width, bp.Height, bp.Depth),
+						TileCount:  len(bp.Digs),
+						Tags:       bp.Tags,
+					})
+				}
+			}
+			contextAssembler.SetBlueprints(bpInfos)
+			logger.Info("blueprints loaded",
+				logging.Field{Key: "count", Value: len(blueprintList)})
+		}
+
 		queryExecutor = appcontext.NewQueryExecutor(topologyOverlay, hazardManager, modificationOverlay)
 
 		logger.Info("context assembly initialized")
+
+		// Initialize phase manager
+		phaseConfig := phases.PhaseConfig{
+			EmbarkDays:    cfg.PhaseEmbarkDays,
+			EstablishDays: cfg.PhaseEstablishDays,
+			ExpandDays:    cfg.PhaseExpandDays,
+		}
+		phaseManager = phases.NewPhaseManager(phaseConfig, cfg.EnablePhaseSystem)
+
+		logger.Info("phase manager initialized",
+			logging.Field{Key: "enabled", Value: cfg.EnablePhaseSystem},
+			logging.Field{Key: "embark_days", Value: cfg.PhaseEmbarkDays})
 
 		// Initialize LLM provider
 		llmProvider, err = llm.CreateProvider(cfg)
@@ -268,6 +408,7 @@ func main() {
 				llmProvider,
 				commandExecutor,
 				SystemPrompt,
+				phaseManager, // Pass phase manager for adaptive prompts
 			)
 
 			logger.Info("autonomous loop initialized",
@@ -403,6 +544,32 @@ func main() {
 			}
 		})
 
+		// Set save modifications callback
+		httpServer.SetSaveModifications(func() error {
+			if modificationOverlay == nil || !cfg.EnablePersistence {
+				return fmt.Errorf("persistence not enabled")
+			}
+
+			// Create persistent wrapper and save
+			// TODO: Get actual fort name from DF (for now use timestamp)
+			fortName := fmt.Sprintf("fort_%d", time.Now().Unix())
+
+			persistent := modifications.NewPersistentModifications(
+				modBounds, // Use global map bounds
+				cfg.PersistencePath,
+				time.Duration(cfg.AutoSaveIntervalSec)*time.Second,
+				cfg.EnablePersistence,
+			)
+
+			// Copy current modifications to persistent overlay
+			// TODO: This is a workaround - should use PersistentModifications from start
+			for coord, info := range modificationOverlay.GetAll() {
+				persistent.Add(coord, info)
+			}
+
+			return persistent.Save(fortName)
+		})
+
 		if err := httpServer.Start(ctx); err != nil {
 			logger.Error("failed to start HTTP server", err)
 			os.Exit(1)
@@ -418,7 +585,7 @@ func main() {
 	// 	time.Sleep(5 * time.Second) // Wait for connection
 	// 	if client.IsConnected() && commandExecutor != nil {
 	// 		logger.Info("sending test dig command...")
-	// 		result, err := commandExecutor.SendDigCommand(10, 20, 95, 15, 25)
+	// 		result, err := commandExecutor.SendDigCommand(protocol.DigTypeDefault, 10, 20, 95, 15, 25)
 	// 		if err != nil {
 	// 			logger.Error("test command failed", err)
 	// 		} else {
@@ -514,6 +681,12 @@ func main() {
 		for update := range entityUpdates {
 			// Update entity overlays (enemies and dwarves)
 			if hazardManager != nil && update.Count > 0 {
+				// CRITICAL: Cache entities FIRST before triggering AI cycle
+				// Update autonomous loop entity cache
+				if autonomousLoop != nil {
+					autonomousLoop.UpdateEntities(update.Entities)
+				}
+
 				hazardManager.BuildFromEntities(update.Entities)
 
 				// Log entity counts
@@ -522,15 +695,21 @@ func main() {
 					logging.Field{Key: "enemy_count", Value: counts["enemies"]},
 					logging.Field{Key: "dwarf_count", Value: counts["dwarves"]})
 
-				// Update autonomous loop entity cache
-				if autonomousLoop != nil {
-					autonomousLoop.UpdateEntities(update.Entities)
+				// Update phase manager with REAL DF days (if available)
+				if phaseManager != nil && update.FortInfo != nil {
+					phaseManager.UpdateFromFortInfo(int(update.FortInfo.DaysElapsed))
+					logger.Debug("phase manager updated",
+						logging.Field{Key: "days_elapsed", Value: update.FortInfo.DaysElapsed},
+						logging.Field{Key: "current_phase", Value: phaseManager.GetPhase().String()},
+						logging.Field{Key: "wealth", Value: update.FortInfo.CreatedWealth})
 				}
 
-				// Trigger first AI cycle immediately after initial entity data
+				// Trigger first AI cycle immediately AFTER entity cache updated
 				if firstEntityUpdate && autonomousLoop != nil {
 					firstEntityUpdate = false
 					logger.Info("initial entity data received - triggering first AI decision")
+					// Small delay to ensure cache is written
+					time.Sleep(100 * time.Millisecond)
 					autonomousLoop.TriggerImmediate()
 				}
 			}

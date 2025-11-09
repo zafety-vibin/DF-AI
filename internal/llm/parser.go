@@ -10,9 +10,10 @@ import (
 
 // CommandSpec represents a parsed command from LLM response
 type CommandSpec struct {
-	Type   string                 // "dig", "build", "wait", etc.
-	Region *RegionSpec            // Coordinates for dig/build commands
-	Params map[string]interface{} // Additional parameters
+	Type    string                 // "dig", "build", "wait", etc.
+	DigType string                 // For dig commands: "default", "stairs", "updownstairs", "channel", "ramp", "upstair", "downstair"
+	Region  *RegionSpec            // Coordinates for dig/build commands
+	Params  map[string]interface{} // Additional parameters
 }
 
 // RegionSpec contains coordinates for a region-based command
@@ -94,22 +95,33 @@ func parseNaturalLanguage(text string) *ParsedResponse {
 		RawText:   text,
 	}
 
-	// Pattern: dig/build from (x1, y1, z) to (x2, y2, z) or dig/build at (x, y, z)
-	coordPattern := regexp.MustCompile(`(?i)(dig|build)\s+(?:from\s+)?\(?(\d+),\s*(\d+),\s*(\d+)\)?\s+(?:to\s+)?\(?(\d+),\s*(\d+)(?:,\s*\d+)?\)?`)
+	// Pattern: dig [type] from (x1, y1, z) to (x2, y2, z)
+	// Captures: dig type (optional: stairs, updownstairs, channel, ramp, upstair, downstair, default)
+	coordPattern := regexp.MustCompile(`(?i)(dig|build)\s+(?:(stairs|updownstairs|updown|channel|ramp|upstair|downstair)\s+)?(?:from\s+)?\(?(\d+),\s*(\d+),\s*(\d+)\)?\s+(?:to\s+)?\(?(\d+),\s*(\d+)(?:,\s*\d+)?\)?`)
 
 	matches := coordPattern.FindAllStringSubmatch(text, -1)
 	for _, match := range matches {
-		if len(match) >= 7 {
+		if len(match) >= 8 {
 			cmdType := strings.ToLower(match[1])
+			digType := strings.ToLower(match[2]) // Empty string if not specified
 
-			x1, _ := strconv.ParseUint(match[2], 10, 16)
-			y1, _ := strconv.ParseUint(match[3], 10, 16)
-			z, _ := strconv.ParseUint(match[4], 10, 16)
-			x2, _ := strconv.ParseUint(match[5], 10, 16)
-			y2, _ := strconv.ParseUint(match[6], 10, 16)
+			// Normalize dig types
+			if digType == "updown" {
+				digType = "updownstairs"
+			}
+			if digType == "" && cmdType == "dig" {
+				digType = "default" // Standard mining if not specified
+			}
+
+			x1, _ := strconv.ParseUint(match[3], 10, 16)
+			y1, _ := strconv.ParseUint(match[4], 10, 16)
+			z, _ := strconv.ParseUint(match[5], 10, 16)
+			x2, _ := strconv.ParseUint(match[6], 10, 16)
+			y2, _ := strconv.ParseUint(match[7], 10, 16)
 
 			cmd := CommandSpec{
-				Type: cmdType,
+				Type:    cmdType,
+				DigType: digType,
 				Region: &RegionSpec{
 					X1: uint16(x1),
 					Y1: uint16(y1),

@@ -165,6 +165,19 @@ func (m *ModificationOverlay) GetModificationsInRegion(region Region, since time
 	return result
 }
 
+// GetAll returns copy of all modifications (for persistence)
+func (m *ModificationOverlay) GetAll() map[Coordinate]ModificationInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Return copy to prevent external modification
+	result := make(map[Coordinate]ModificationInfo, len(m.modifications))
+	for coord, info := range m.modifications {
+		result[coord] = info
+	}
+	return result
+}
+
 // LinkCommandToModifications associates a command ID with modifications in a region
 // Used to track which command caused which modifications
 func (m *ModificationOverlay) LinkCommandToModifications(commandID uint32, region Region, timestamp time.Time) int {

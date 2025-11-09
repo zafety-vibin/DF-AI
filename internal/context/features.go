@@ -6,19 +6,44 @@ import (
 	"github.com/df-ai/orchestrator/internal/hazards"
 	"github.com/df-ai/orchestrator/internal/modifications"
 	"github.com/df-ai/orchestrator/internal/protocol"
+	"github.com/df-ai/orchestrator/internal/spatial"
 )
 
 // ExtractChamberFeatures converts Chamber structs to ChamberFeature JSON objects
 // Includes natural language descriptions and formatted coordinates
 func ExtractChamberFeatures(chambers []modifications.Chamber) []ChamberFeature {
+	return ExtractChamberFeaturesWithRooms(chambers, nil)
+}
+
+// ExtractChamberFeaturesWithRooms adds room type analysis
+func ExtractChamberFeaturesWithRooms(chambers []modifications.Chamber, roomAnalyzer *spatial.RoomAnalyzer) []ChamberFeature {
 	if len(chambers) == 0 {
 		return []ChamberFeature{}
 	}
 
+	// Analyze room types if analyzer provided
+	var rooms []*spatial.Room
+	if roomAnalyzer != nil {
+		// Convert chambers to rooms
+		chamberPtrs := make([]*modifications.Chamber, len(chambers))
+		for i := range chambers {
+			chamberPtrs[i] = &chambers[i]
+		}
+		rooms = roomAnalyzer.AnalyzeChambers(chamberPtrs)
+	}
+
 	features := make([]ChamberFeature, 0, len(chambers))
-	for _, chamber := range chambers {
+	for i, chamber := range chambers {
 		// Generate natural language description
 		description := modifications.GenerateChamberDescription(chamber)
+
+		// Get room type if analyzed
+		roomType := ""
+		if i < len(rooms) && rooms[i] != nil {
+			roomType = rooms[i].Type.String()
+			// Enhance description with room type
+			description = fmt.Sprintf("%s (%s)", description, roomType)
+		}
 
 		// Format bounds
 		boundsMin := fmt.Sprintf("(%d,%d,%d)",
@@ -35,6 +60,7 @@ func ExtractChamberFeatures(chambers []modifications.Chamber) []ChamberFeature {
 		feature := ChamberFeature{
 			ID:          chamber.ID,
 			Description: description,
+			RoomType:    roomType,
 			BoundsMin:   boundsMin,
 			BoundsMax:   boundsMax,
 			Dimensions:  dimensions,

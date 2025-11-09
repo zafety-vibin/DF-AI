@@ -17,6 +17,7 @@ import (
 	"github.com/df-ai/orchestrator/internal/llm"
 	"github.com/df-ai/orchestrator/internal/logging"
 	"github.com/df-ai/orchestrator/internal/modifications"
+	"github.com/df-ai/orchestrator/internal/phases"
 	"github.com/df-ai/orchestrator/internal/protocol"
 	"github.com/df-ai/orchestrator/internal/topology"
 )
@@ -36,6 +37,7 @@ type AutonomousLoop struct {
 	feedbackGenerator   *commands.FeedbackGenerator
 	conversationHistory *ConversationHistory
 	systemPrompt        string
+	phaseManager        *phases.PhaseManager // Fort development phases
 	logFile             *os.File
 	mu                  sync.RWMutex
 	running             bool
@@ -64,6 +66,7 @@ func NewLoop(
 	llmProvider llm.Provider,
 	commandExecutor *commands.CommandExecutor,
 	systemPrompt string,
+	phaseManager *phases.PhaseManager, // Optional phase manager
 ) *AutonomousLoop {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -80,6 +83,7 @@ func NewLoop(
 		feedbackGenerator:   commands.NewFeedbackGenerator(),
 		conversationHistory: NewConversationHistory(5), // Keep last 5 turns
 		systemPrompt:        systemPrompt,
+		phaseManager:        phaseManager,
 		ctx:                 ctx,
 		cancel:              cancel,
 		pendingCommands:     make(map[uint32]*commands.PendingCommand),
@@ -261,29 +265,65 @@ func (al *AutonomousLoop) runCycle() error {
 	return nil
 }
 
-// assembleContext assembles fort state context
-func (al *AutonomousLoop) assembleContext() (string, error) {
-	// For now, use Level 0 (text overview) + Level 1 (active area)
-	// Future: adaptive context level based on task complexity
+// mapDigType converts string dig type to protocol constant
+func mapDigType(digType string) uint8 {
+	switch digType {
+	case "stairs", "updownstairs":
+		return protocol.DigTypeUpDownStair
+	case "channel":
+		return protocol.DigTypeChannel
+	case "ramp":
+		return protocol.DigTypeRamp
+	case "downstair":
+		return protocol.DigTypeDownStair
+	case "upstair":
+		return protocol.DigTypeUpStair
+	default:
+		return protocol.DigTypeDefault // Standard mining
+	}
+}
 
-	// Get entities from hazard manager entity overlays
-	// These are populated from ENTITY_UPDATE messages
+// assembleContext assembles fort state context
+// Uses smart assembly: first turn shows terrain, later turns show modifications + rooms
+func (al *AutonomousLoop) assembleContext() (string, error) {
+	// Get entities from cached entities (updated via ENTITY_UPDATE)
 	entities := al.getEntities()
 
-	// Generate Level 0 context (text overview)
-	ctx0, err := al.contextAssembler.AssembleContext(
-		appcontext.Level0,
-		al.modOverlay,
-		al.hazardMgr,
-		entities,
-		al.topoOverlay,
-	)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate Level 0 context: %w", err)
+	// DEBUG: Log entity count
+	dwarfCount := 0
+	for _, e := range entities {
+		if e.Type == protocol.EntityTypeDwarf {
+			dwarfCount++
+		}
+	}
+	al.logger.Info("assembling context",
+		logging.Field{Key: "total_entities", Value: len(entities)},
+		logging.Field{Key: "dwarf_count", Value: dwarfCount})
+
+	// Smart context assembly based on fort state
+	// First turn (no mods): Show embark point + terrain + dwarves
+	// Later turns: Show modifications + chambers + dwarves + hazards
+
+	isFirstTurn := al.modOverlay.GetCount() == 0
+
+	if isFirstTurn {
+		// FIRST TURN: Use L1 with topology slice
+		ctx, err := al.contextAssembler.AssembleContext(
+			appcontext.Level1,
+			al.modOverlay,
+			al.hazardMgr,
+			entities,
+			al.topoOverlay,
+		)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate first turn context: %w", err)
+		}
+
+		return al.formatContextAsJSON(ctx)
 	}
 
-	// Generate Level 1 context (active area with chambers)
-	ctx1, err := al.contextAssembler.AssembleContext(
+	// SUBSEQUENT TURNS: Use L1 (modifications + chambers with room types)
+	ctx, err := al.contextAssembler.AssembleContext(
 		appcontext.Level1,
 		al.modOverlay,
 		al.hazardMgr,
@@ -291,25 +331,24 @@ func (al *AutonomousLoop) assembleContext() (string, error) {
 		al.topoOverlay,
 	)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate Level 1 context: %w", err)
+		return "", fmt.Errorf("failed to generate context: %w", err)
 	}
 
-	// Combine contexts
+	return al.formatContextAsJSON(ctx)
+}
+
+// formatContextAsJSON converts ViewportContext to JSON string
+func (al *AutonomousLoop) formatContextAsJSON(ctx *appcontext.ViewportContext) (string, error) {
+	jsonData, err := appcontext.FormatAsJSON(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to format context as JSON: %w", err)
+	}
+
 	var sb strings.Builder
-	sb.WriteString("## Fort State Overview\n\n")
-	sb.WriteString(ctx0.TextOverview)
-	sb.WriteString("\n\n")
-
-	// Add Level 1 JSON data
-	if ctx1 != nil {
-		jsonData, err := appcontext.FormatAsJSON(ctx1)
-		if err == nil {
-			sb.WriteString("## Detailed Context (JSON)\n\n")
-			sb.WriteString("```json\n")
-			sb.Write(jsonData)
-			sb.WriteString("\n```\n")
-		}
-	}
+	sb.WriteString("## Fort State\n\n")
+	sb.WriteString("```json\n")
+	sb.Write(jsonData)
+	sb.WriteString("\n```\n")
 
 	return sb.String(), nil
 }
@@ -331,6 +370,13 @@ func (al *AutonomousLoop) formatPrompt(context string, feedback []*commands.Feed
 		sb.WriteString("\n")
 	}
 
+	// Add phase information (if phase manager exists)
+	if al.phaseManager != nil {
+		phaseText := al.phaseManager.GetPromptAddition()
+		sb.WriteString(phaseText)
+		sb.WriteString("\n")
+	}
+
 	// Add fort context
 	sb.WriteString(context)
 	sb.WriteString("\n\n")
@@ -347,53 +393,86 @@ func (al *AutonomousLoop) formatPrompt(context string, feedback []*commands.Feed
 	return sb.String()
 }
 
-// executeCommands executes parsed commands
+// executeCommands executes ALL parsed commands
 func (al *AutonomousLoop) executeCommands(specs []llm.CommandSpec) (uint32, error) {
 	if len(specs) == 0 {
 		return 0, nil
 	}
 
-	// Execute first command (multi-command support in future)
-	spec := specs[0]
+	al.logger.Info("executing commands", logging.Field{Key: "count", Value: len(specs)})
 
-	switch spec.Type {
-	case "dig":
-		if spec.Region == nil {
-			return 0, fmt.Errorf("dig command missing region")
+	// Execute ALL commands
+	var lastCommandID uint32
+	for i, spec := range specs {
+		var cmdID uint32
+		var err error
+
+		switch spec.Type {
+		case "dig":
+			if spec.Region == nil {
+				al.logger.Warn("dig command missing region, skipping",
+					logging.Field{Key: "index", Value: i})
+				continue
+			}
+			cmdID, err = al.executeDig(spec)
+		case "chop":
+			if spec.Region == nil {
+				al.logger.Warn("chop command missing region, skipping",
+					logging.Field{Key: "index", Value: i})
+				continue
+			}
+			cmdID, err = al.executeChop(spec)
+		case "gather":
+			if spec.Region == nil {
+				al.logger.Warn("gather command missing region, skipping",
+					logging.Field{Key: "index", Value: i})
+				continue
+			}
+			cmdID, err = al.executeGather(spec)
+		case "build":
+			if spec.Region == nil {
+				al.logger.Warn("build command missing region, skipping",
+					logging.Field{Key: "index", Value: i})
+				continue
+			}
+			cmdID, err = al.executeBuild(spec)
+		case "wait":
+			al.logger.Info("executing wait command")
+			continue
+		default:
+			al.logger.Warn("unknown command type, skipping",
+				logging.Field{Key: "type", Value: spec.Type},
+				logging.Field{Key: "index", Value: i})
+			continue
 		}
-		return al.executeDig(spec)
-	case "chop":
-		if spec.Region == nil {
-			return 0, fmt.Errorf("chop command missing region")
+
+		if err != nil {
+			al.logger.Error("command failed", err,
+				logging.Field{Key: "index", Value: i},
+				logging.Field{Key: "type", Value: spec.Type})
+			// Continue with other commands despite error
+		} else if cmdID > 0 {
+			lastCommandID = cmdID
 		}
-		return al.executeChop(spec)
-	case "gather":
-		if spec.Region == nil {
-			return 0, fmt.Errorf("gather command missing region")
-		}
-		return al.executeGather(spec)
-	case "build":
-		if spec.Region == nil {
-			return 0, fmt.Errorf("build command missing region")
-		}
-		return al.executeBuild(spec)
-	case "wait":
-		al.logger.Info("executing wait command",
-			logging.Field{Key: "params", Value: spec.Params})
-		return 0, nil // No command ID for wait
-	default:
-		return 0, fmt.Errorf("unknown command type: %s", spec.Type)
 	}
+
+	return lastCommandID, nil
 }
 
 // executeDig executes a dig command
 func (al *AutonomousLoop) executeDig(spec llm.CommandSpec) (uint32, error) {
 	region := spec.Region
+
+	// Map dig type string to protocol constant
+	digType := mapDigType(spec.DigType)
+
 	al.logger.Info("executing dig command",
 		logging.Field{Key: "region", Value: fmt.Sprintf("(%d,%d,%d) to (%d,%d,%d)",
-			region.X1, region.Y1, region.Z, region.X2, region.Y2, region.Z)})
+			region.X1, region.Y1, region.Z, region.X2, region.Y2, region.Z)},
+		logging.Field{Key: "dig_type", Value: spec.DigType})
 
 	result, err := al.commandExecutor.SendDigCommand(
+		digType,
 		int16(region.X1),
 		int16(region.Y1),
 		int16(region.Z),

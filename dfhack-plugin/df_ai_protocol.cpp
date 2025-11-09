@@ -9,12 +9,15 @@
 #include "modules/MapCache.h"
 #include "modules/Maps.h"
 #include "modules/Units.h"
+#include "modules/Buildings.h"
 
 #include "df/map_block.h"
 #include "df/world.h"
 #include "df/coord.h"
 #include "df/unit.h"
 #include "df/tile_dig_designation.h"
+#include "df/building_civzonest.h"
+#include "df/building_type.h"
 
 #include "protocol.h"
 #include "ActiveSocket.h"  // SimpleSockets
@@ -105,12 +108,14 @@ std::vector<EntityInfo> extract_entities()
         entity.subtype = unit->race;
 
         // Classify entity type
-        // Fort members are dwarves, others are animals/enemies
-        // Simple heuristic: Fort units have tame or fort flags
-        if (unit->flags1.bits.tame || unit->flags2.bits.resident) {
-            entity.type = ENTITY_TYPE_DWARF;  // Fort citizen or tame animal (count as dwarf)
+        // Fort citizens are dwarves (resident flag + dwarf race)
+        // Race 0 = dwarf in most worlds (TODO: Could check race name for "DWARF")
+        if (unit->flags2.bits.resident && unit->race == 0) {
+            entity.type = ENTITY_TYPE_DWARF;  // Fort citizen (actual dwarf)
         } else if (unit->flags1.bits.marauder || unit->flags1.bits.invader_origin) {
             entity.type = ENTITY_TYPE_ENEMY;   // Hostile
+        } else if (unit->flags1.bits.tame) {
+            entity.type = ENTITY_TYPE_ANIMAL;  // Tame animal (pets, livestock)
         } else {
             entity.type = ENTITY_TYPE_ANIMAL;  // Wild animal or other
         }
@@ -118,6 +123,36 @@ std::vector<EntityInfo> extract_entities()
         entities.push_back(entity);
     }
     return entities;
+}
+
+// FortInfo structure for fort-level statistics
+struct FortInfo {
+    uint32_t days_elapsed;
+    uint64_t created_wealth;
+    uint8_t season;
+    uint32_t year;
+};
+
+// Extract fort-level information
+// TODO: Find correct API for DF 53.02 - cur_year/cur_year_tick don't exist in this version
+FortInfo extract_fort_info()
+{
+    FortInfo info = {0};
+
+    if (!df::global::world) {
+        return info;
+    }
+
+    // Use frame_counter as approximation for now (10 ticks/second at normal speed)
+    // Roughly 1200 ticks/day at normal speed -> frame_counter / 1200 ≈ days
+    info.days_elapsed = df::global::world->frame_counter / 1200;
+
+    // TODO: Find correct API for wealth, season, year in DF 53.02
+    info.created_wealth = 0;  // Placeholder
+    info.season = 0;           // Placeholder
+    info.year = 0;             // Placeholder
+
+    return info;
 }
 
 std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &entities)
@@ -148,6 +183,35 @@ std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &enti
         buffer.push_back((e.subtype >> 8) & 0xFF);
         buffer.push_back(e.subtype & 0xFF);
     }
+
+    // Append FortInfo (optional)
+    FortInfo fort_info = extract_fort_info();
+    buffer.push_back(1);  // hasFortInfo = true
+
+    // DaysElapsed (4 bytes, big-endian)
+    buffer.push_back((fort_info.days_elapsed >> 24) & 0xFF);
+    buffer.push_back((fort_info.days_elapsed >> 16) & 0xFF);
+    buffer.push_back((fort_info.days_elapsed >> 8) & 0xFF);
+    buffer.push_back(fort_info.days_elapsed & 0xFF);
+
+    // CreatedWealth (8 bytes, big-endian)
+    buffer.push_back((fort_info.created_wealth >> 56) & 0xFF);
+    buffer.push_back((fort_info.created_wealth >> 48) & 0xFF);
+    buffer.push_back((fort_info.created_wealth >> 40) & 0xFF);
+    buffer.push_back((fort_info.created_wealth >> 32) & 0xFF);
+    buffer.push_back((fort_info.created_wealth >> 24) & 0xFF);
+    buffer.push_back((fort_info.created_wealth >> 16) & 0xFF);
+    buffer.push_back((fort_info.created_wealth >> 8) & 0xFF);
+    buffer.push_back(fort_info.created_wealth & 0xFF);
+
+    // Season (1 byte)
+    buffer.push_back(fort_info.season);
+
+    // Year (4 bytes, big-endian)
+    buffer.push_back((fort_info.year >> 24) & 0xFF);
+    buffer.push_back((fort_info.year >> 16) & 0xFF);
+    buffer.push_back((fort_info.year >> 8) & 0xFF);
+    buffer.push_back(fort_info.year & 0xFF);
 
     uint32_t length = buffer.size();
     buffer[0] = (length >> 24) & 0xFF;
@@ -197,7 +261,7 @@ void sendCommandAck(uint32_t cmdID, uint8_t status, const std::string &error)
 }
 
 // Apply dig designation to region using MapCache (proper DFHack pattern)
-bool applyDigDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, int16_t z2, std::string &error)
+bool applyDigDesignation(uint8_t digType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, int16_t z2, std::string &error)
 {
     if (!Maps::isValidTilePos(x1, y1, z)) {
         error = "Invalid start coordinates";
@@ -215,37 +279,74 @@ bool applyDigDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t 
     // Use MapCache for proper designation read/write (like dig plugin does)
     MapExtras::MapCache cache;
     int designated = 0;
+    int skipped_hidden = 0;
+    int skipped_already = 0;
+
+    Core::getInstance().getConsole().print("DEBUG: Digging region (%d,%d,%d) to (%d,%d,%d)\n",
+        x1, y1, z, x2, y2, z2);
 
     for (int16_t x = x1; x <= x2; x++) {
         for (int16_t y = y1; y <= y2; y++) {
             df::coord pos(x, y, z);
 
+            // Check if tile is valid
+            df::tiletype tt = cache.tiletypeAt(pos);
+            if (tt == tiletype::Void) {
+                continue; // Invalid tile
+            }
+
             // Read current designation via MapCache
             df::tile_designation des = cache.designationAt(pos);
 
-            // Skip if already designated
-            if (des.bits.dig != df::tile_dig_designation::No) {
-                continue;
+            // Debug: Log first tile
+            if (x == x1 && y == y1) {
+                Core::getInstance().getConsole().print("DEBUG: First tile (%d,%d,%d): tiletype=%d, hidden=%d, current_dig=%d\n",
+                    x, y, z, tt, des.bits.hidden ? 1 : 0, des.bits.dig);
             }
 
-            // Set dig designation
-            des.bits.dig = df::tile_dig_designation::Default;
+            // Set dig designation using type from protocol
+            des.bits.dig = static_cast<df::tile_dig_designation>(digType);
 
-            // Write back to DF via MapCache - THIS IS THE CRITICAL STEP!
+            // Write back to DF via MapCache
             cache.setDesignationAt(pos, des);
             designated++;
         }
     }
 
+    Core::getInstance().getConsole().print("DEBUG: Designated %d tiles (skipped %d hidden, %d already marked)\n",
+        designated, skipped_hidden, skipped_already);
+
     if (designated == 0) {
-        error = "No tiles designated (all already marked or invalid)";
+        error = "No tiles designated (all already marked, hidden, or invalid)";
         return false;
     }
 
     // CRITICAL: Flush MapCache changes to DF!
-    cache.WriteAll();
+    bool writeSuccess = cache.WriteAll();
+    Core::getInstance().getConsole().print("DEBUG: WriteAll() result: %s\n", writeSuccess ? "success" : "failed");
 
     return true;
+}
+
+// Apply zone designation (bedroom, dining hall, meeting area, barracks)
+// TODO: Building API changed in DF 53.02 - needs research for correct usage
+bool applyZoneDesignation(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error)
+{
+    error = "Zone designations not yet implemented for DF 53.02 (Building API changed)";
+    return false;
+
+    /* DISABLED - API incompatible with DF 53.02
+    using namespace DFHack;
+
+    // Allocate civzone building
+    df::building_civzonest* zone = virtual_cast<df::building_civzonest>(
+        Buildings::allocInstance(df::coord(x1, y1, z), df::building_type::Civzone)
+    );
+
+    // ... zone setup code ...
+
+    return true;
+    */
 }
 
 // Apply cancel designation to region
@@ -335,17 +436,18 @@ void handleCommand(const std::vector<uint8_t> &payload)
 
     switch (cmdType) {
         case 0x01: {  // DIG
-            if (payload.size() < 17) {
+            if (payload.size() < 18) {  // Now includes DigType byte
                 sendCommandAck(cmdID, 0x02, "Invalid DIG payload");
                 return;
             }
-            int16_t x1 = ((int16_t)payload[5] << 8) | payload[6];
-            int16_t y1 = ((int16_t)payload[7] << 8) | payload[8];
-            int16_t z1 = ((int16_t)payload[9] << 8) | payload[10];
-            int16_t x2 = ((int16_t)payload[11] << 8) | payload[12];
-            int16_t y2 = ((int16_t)payload[13] << 8) | payload[14];
-            int16_t z2 = ((int16_t)payload[15] << 8) | payload[16];
-            success = applyDigDesignation(x1, y1, z1, x2, y2, z2, error);
+            uint8_t digType = payload[5];
+            int16_t x1 = ((int16_t)payload[6] << 8) | payload[7];
+            int16_t y1 = ((int16_t)payload[8] << 8) | payload[9];
+            int16_t z1 = ((int16_t)payload[10] << 8) | payload[11];
+            int16_t x2 = ((int16_t)payload[12] << 8) | payload[13];
+            int16_t y2 = ((int16_t)payload[14] << 8) | payload[15];
+            int16_t z2 = ((int16_t)payload[16] << 8) | payload[17];
+            success = applyDigDesignation(digType, x1, y1, z1, x2, y2, z2, error);
             break;
         }
         case 0x02: {  // BUILD (not implemented)
@@ -353,16 +455,17 @@ void handleCommand(const std::vector<uint8_t> &payload)
             return;
         }
         case 0x03: {  // CANCEL
-            if (payload.size() < 17) {
+            if (payload.size() < 18) {  // Now includes DigType byte (ignored for cancel)
                 sendCommandAck(cmdID, 0x02, "Invalid CANCEL payload");
                 return;
             }
-            int16_t x1 = ((int16_t)payload[5] << 8) | payload[6];
-            int16_t y1 = ((int16_t)payload[7] << 8) | payload[8];
-            int16_t z1 = ((int16_t)payload[9] << 8) | payload[10];
-            int16_t x2 = ((int16_t)payload[11] << 8) | payload[12];
-            int16_t y2 = ((int16_t)payload[13] << 8) | payload[14];
-            int16_t z2 = ((int16_t)payload[15] << 8) | payload[16];
+            // Skip digType byte at payload[5]
+            int16_t x1 = ((int16_t)payload[6] << 8) | payload[7];
+            int16_t y1 = ((int16_t)payload[8] << 8) | payload[9];
+            int16_t z1 = ((int16_t)payload[10] << 8) | payload[11];
+            int16_t x2 = ((int16_t)payload[12] << 8) | payload[13];
+            int16_t y2 = ((int16_t)payload[14] << 8) | payload[15];
+            int16_t z2 = ((int16_t)payload[16] << 8) | payload[17];
             success = applyCancelDesignation(x1, y1, z1, x2, y2, z2, error);
             break;
         }
@@ -392,6 +495,20 @@ void handleCommand(const std::vector<uint8_t> &payload)
             int16_t y2 = ((int16_t)payload[13] << 8) | payload[14];
             int16_t z2 = ((int16_t)payload[15] << 8) | payload[16];
             success = applyGatherDesignation(x1, y1, z1, x2, y2, z2, error);
+            break;
+        }
+        case 0x06: {  // ZONE
+            if (payload.size() < 12) {
+                sendCommandAck(cmdID, 0x02, "Invalid ZONE payload");
+                return;
+            }
+            uint8_t zoneType = payload[5];
+            int16_t x1 = ((int16_t)payload[6] << 8) | payload[7];
+            int16_t y1 = ((int16_t)payload[8] << 8) | payload[9];
+            int16_t z = ((int16_t)payload[10] << 8) | payload[11];
+            int16_t x2 = ((int16_t)payload[12] << 8) | payload[13];
+            int16_t y2 = ((int16_t)payload[14] << 8) | payload[15];
+            success = applyZoneDesignation(zoneType, x1, y1, z, x2, y2, error);
             break;
         }
         default:
@@ -569,6 +686,47 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
         },
         false,
         "Usage: ai-send-entities\nScans all active units and sends entity positions to server."
+    ));
+
+    commands.push_back(PluginCommand(
+        "ai-save",
+        "Request server to save current fort state",
+        [](color_ostream &out, std::vector<std::string> &params) -> command_result {
+            if (!g_connected) {
+                out.printerr("Not connected - use 'ai-connect' first\n");
+                return CR_FAILURE;
+            }
+
+            // Send RESYNC_REQUEST with reason 0x04 to trigger save
+            /* Simpler alternative: Just print instructions
+            out.print("To save modifications, use:\n");
+            out.print("  curl -X POST http://localhost:8081/ai/save\n");
+            return CR_OK;
+            */
+            std::vector<uint8_t> msg;
+            msg.resize(4, 0);
+            msg.push_back(PROTOCOL_VERSION);
+            msg.push_back(0x07);  // RESYNC_REQUEST
+            msg.push_back(0x04);  // Reason: Save request
+
+            uint32_t length = msg.size();
+            msg[0] = (length >> 24) & 0xFF;
+            msg[1] = (length >> 16) & 0xFF;
+            msg[2] = (length >> 8) & 0xFF;
+            msg[3] = length & 0xFF;
+
+            int sent = g_socket->Send(msg.data(), msg.size());
+            if (sent != (int)msg.size()) {
+                out.printerr("Failed to send save request\n");
+                return CR_FAILURE;
+            }
+
+            out.print("Save request sent to server\n");
+            out.print("Check server logs for save confirmation\n");
+            return CR_OK;
+        },
+        false,
+        "Usage: ai-save\nRequests the server to save current modifications to disk."
     ));
 
     commands.push_back(PluginCommand(

@@ -46,6 +46,7 @@ type Client struct {
 	metrics          SessionMetrics
 	metricsMu        sync.Mutex
 	onFullState      func(*protocol.FullStateMessage) // Callback for FULL_STATE messages
+	onSaveRequest    func()                            // Callback for save requests
 }
 
 // NewClient creates a new DFHack client
@@ -304,6 +305,20 @@ func (c *Client) messageLoop(conn *protocol.Connection) {
 				c.logger.Warn("command ack channel full, dropping message")
 			}
 
+		case *protocol.ResyncRequestMessage:
+			// Plugin sending RESYNC back to us (unusual)
+			// Reason 0x04 = save request from ai-save command
+			if m.Reason == 0x04 {
+				c.logger.Info("received save request from plugin")
+				// Trigger save callback if set
+				if c.onSaveRequest != nil {
+					c.onSaveRequest()
+				}
+			} else {
+				c.logger.Warn("received unexpected resync from plugin",
+					logging.Field{Key: "reason", Value: m.Reason})
+			}
+
 		case *protocol.DisconnectMessage:
 			c.logger.Info("received disconnect",
 				logging.Field{Key: "reason", Value: m.Reason})
@@ -483,6 +498,11 @@ func (c *Client) GetSessionMetrics() SessionMetrics {
 // SetOnFullState sets callback for FULL_STATE messages
 func (c *Client) SetOnFullState(callback func(*protocol.FullStateMessage)) {
 	c.onFullState = callback
+}
+
+// SetOnSaveRequest sets callback for save requests (from ai-save command)
+func (c *Client) SetOnSaveRequest(callback func()) {
+	c.onSaveRequest = callback
 }
 
 // Stop gracefully shuts down the client

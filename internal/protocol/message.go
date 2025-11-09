@@ -127,8 +127,8 @@ type ResyncRequestMessage struct {
 func (m *ResyncRequestMessage) Type() uint8 { return MessageTypeResyncRequest }
 
 func (m *ResyncRequestMessage) Validate() error {
-	// Reason codes 0x00-0x03 are valid
-	if m.Reason > 0x03 {
+	// Reason codes 0x00-0x04 are valid
+	if m.Reason > 0x04 {
 		return fmt.Errorf("invalid resync reason: 0x%02X", m.Reason)
 	}
 	return nil
@@ -140,6 +140,7 @@ const (
 	ReasonInconsistency uint8 = 0x01
 	ReasonReconnect     uint8 = 0x02
 	ReasonPeriodic      uint8 = 0x03
+	ReasonSaveRequest   uint8 = 0x04 // NEW: Plugin requesting save
 )
 
 // TileUpdateMessage contains incremental tile changes
@@ -237,10 +238,19 @@ const (
 	EntityTypeOther  uint8 = 0x04
 )
 
-// EntityUpdateMessage contains entity position updates
+// FortInfo contains fort-level statistics (optional extension to ENTITY_UPDATE)
+type FortInfo struct {
+	DaysElapsed   uint32 // In-game days since embark (from cur_year_tick)
+	CreatedWealth uint64 // Total fort value (world->status.created_wealth)
+	Season        uint8  // 0=Spring, 1=Summer, 2=Autumn, 3=Winter
+	Year          uint32 // Current year
+}
+
+// EntityUpdateMessage contains entity position updates + optional fort info
 type EntityUpdateMessage struct {
 	Count    uint32
 	Entities []EntityInfo
+	FortInfo *FortInfo // Optional (nil if not included)
 }
 
 func (m *EntityUpdateMessage) Type() uint8 { return MessageTypeEntityUpdate }
@@ -260,6 +270,26 @@ const (
 	CommandTypeCancel uint8 = 0x03
 	CommandTypeChop   uint8 = 0x04
 	CommandTypeGather uint8 = 0x05
+	CommandTypeZone   uint8 = 0x06 // NEW: Designate zones (bedroom, dining, etc.)
+)
+
+// ZoneType constants for zone designations
+const (
+	ZoneTypeBedroom     uint8 = 0x01 // Personal bedroom
+	ZoneTypeDining      uint8 = 0x02 // Dining hall
+	ZoneTypeMeetingHall uint8 = 0x03 // Meeting area
+	ZoneTypeBarracks    uint8 = 0x04 // Military training
+	ZoneTypeDormitory   uint8 = 0x05 // Shared sleeping
+)
+
+// DigType constants (matches df::tile_dig_designation enum)
+const (
+	DigTypeDefault     uint8 = 0x01 // Standard mining (Default)
+	DigTypeUpDownStair uint8 = 0x02 // Staircase up+down (UpDownStair)
+	DigTypeChannel     uint8 = 0x03 // Dig down creating hole (Channel)
+	DigTypeRamp        uint8 = 0x04 // Create ramp (Ramp)
+	DigTypeDownStair   uint8 = 0x05 // Staircase down only (DownStair)
+	DigTypeUpStair     uint8 = 0x06 // Staircase up only (UpStair)
 )
 
 // AckStatus constants for command acknowledgment messages
@@ -290,12 +320,21 @@ type BuildDesignation struct {
 	BuildType uint8 // Type of construction
 }
 
+// ZoneDesignation represents a zone assignment command
+type ZoneDesignation struct {
+	X1, Y1, Z int16 // Start coordinates
+	X2, Y2    int16 // End coordinates (same Z-level)
+	ZoneType  uint8 // Bedroom, dining, etc.
+}
+
 // CommandMessage represents a command from server to DFHack
 type CommandMessage struct {
-	CommandID   uint32 // Unique command identifier
-	CommandType uint8  // Type of command (dig/build/cancel)
-	Region      Region // For DIG and CANCEL commands
+	CommandID   uint32           // Unique command identifier
+	CommandType uint8            // Type of command (dig/build/cancel/zone)
+	DigType     uint8            // For DIG: dig designation type (Default=1, UpDownStair=2, Channel=3, etc)
+	Region      Region           // For DIG and CANCEL commands
 	Build       BuildDesignation // For BUILD commands
+	Zone        ZoneDesignation  // For ZONE commands
 }
 
 func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }

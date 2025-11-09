@@ -34,3 +34,39 @@ func (s *Server) aiHistoryHandler(w http.ResponseWriter, r *http.Request) {
 	// Return history as JSON
 	s.writeJSON(w, http.StatusOK, history)
 }
+
+// saveHandler implements POST /ai/save endpoint
+// Triggers manual save of modifications to disk
+func (s *Server) saveHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
+			"error": "Method not allowed, use POST",
+		})
+		return
+	}
+
+	// Get save callback
+	s.mu.Lock()
+	saveFn := s.saveModificationsFunc
+	s.mu.Unlock()
+
+	if saveFn == nil {
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"error": "Save system not initialized",
+		})
+		return
+	}
+
+	// Trigger save
+	if err := saveFn(); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "success",
+		"message": "Modifications saved to disk",
+	})
+}

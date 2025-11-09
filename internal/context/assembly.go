@@ -7,6 +7,7 @@ import (
 	"github.com/df-ai/orchestrator/internal/hazards"
 	"github.com/df-ai/orchestrator/internal/modifications"
 	"github.com/df-ai/orchestrator/internal/protocol"
+	"github.com/df-ai/orchestrator/internal/spatial"
 	"github.com/df-ai/orchestrator/internal/topology"
 )
 
@@ -25,6 +26,13 @@ type Assembler struct {
 	// Embark point (cached from first dwarf positions, never updated)
 	embarkPoint    modifications.Coordinate
 	embarkPointSet bool
+
+	// Spatial analysis (room detection)
+	roomAnalyzer *spatial.RoomAnalyzer
+	enableRoomDetection bool
+
+	// Blueprint templates (optional)
+	blueprints []BlueprintInfo
 }
 
 // NewAssembler creates a new context assembler with default budgets
@@ -36,7 +44,20 @@ func NewAssembler() *Assembler {
 		level3Budget: 200 * 1024, // 200 KB for full context
 		zMargin:      3,          // +/- 3 Z-levels
 		hazardLimit:  1000,       // Max 1000 hazard positions
+		roomAnalyzer: spatial.NewRoomAnalyzer(9, 400), // Default: 3x3 min, 20x20 max
+		enableRoomDetection: false, // Disabled by default
 	}
+}
+
+// EnableRoomDetection enables spatial room analysis
+func (a *Assembler) EnableRoomDetection(minSize, maxSize int) {
+	a.roomAnalyzer = spatial.NewRoomAnalyzer(minSize, maxSize)
+	a.enableRoomDetection = true
+}
+
+// SetBlueprints sets available blueprint templates for AI
+func (a *Assembler) SetBlueprints(blueprints []BlueprintInfo) {
+	a.blueprints = blueprints
 }
 
 // NewAssemblerWithConfig creates an assembler with custom configuration
@@ -135,7 +156,13 @@ func (a *Assembler) assembleLevel1(
 	if mods != nil && mods.GetCount() > 0 {
 		extractor := modifications.NewChamberExtractor(mods)
 		chamberList := extractor.ExtractChambers()
-		chambers = ExtractChamberFeatures(chamberList)
+
+		// Use room analyzer if enabled
+		if a.enableRoomDetection && a.roomAnalyzer != nil {
+			chambers = ExtractChamberFeaturesWithRooms(chamberList, a.roomAnalyzer)
+		} else {
+			chambers = ExtractChamberFeatures(chamberList)
+		}
 
 		// Set active region from modification bounds
 		bounds := mods.GetBounds()
@@ -172,15 +199,20 @@ func (a *Assembler) assembleLevel1(
 	// If no modifications, include topology slice so AI can see terrain
 	var topologySliceData *TopologySliceData
 	if mods.GetCount() == 0 && a.embarkPointSet && topoOverlay != nil {
-		// Get embark Z-level topology (60x60 area)
-		embarkZ := a.embarkPoint.Z
+		// Find Z-level where MOST dwarves are (mode, not average)
+		// This is more accurate than embark_point.Z which averages all positions
+		dwarfZ := findMostCommonDwarfZ(entities)
+		if dwarfZ == 0 {
+			dwarfZ = a.embarkPoint.Z // Fallback to centroid if no dwarves
+		}
+
 		region := modifications.Region{
 			XMin: a.embarkPoint.X - 30,
 			XMax: a.embarkPoint.X + 30,
 			YMin: a.embarkPoint.Y - 30,
 			YMax: a.embarkPoint.Y + 30,
-			ZMin: embarkZ,
-			ZMax: embarkZ,
+			ZMin: dwarfZ,
+			ZMax: dwarfZ,
 		}
 
 		// Extract topology for this region
@@ -191,6 +223,7 @@ func (a *Assembler) assembleLevel1(
 	ctx.Hazards = hazardData
 	ctx.Dwarves = dwarves
 	ctx.TopologySlice = topologySliceData
+	ctx.Blueprints = a.blueprints // Available templates (if any)
 
 	// Calculate size
 	size, err := calculateContextSize(ctx)
@@ -375,6 +408,34 @@ func extractHazardsInRegion(overlay *hazards.HazardOverlay, region modifications
 	}
 
 	return positions
+}
+
+// findMostCommonDwarfZ finds the Z-level where most dwarves are located
+// Returns the mode (most frequent) Z coordinate among all dwarves
+func findMostCommonDwarfZ(entities EntityInfoSlice) int16 {
+	zCounts := make(map[int16]int)
+
+	for _, entity := range entities {
+		if entity.Type == protocol.EntityTypeDwarf {
+			zCounts[entity.Z]++
+		}
+	}
+
+	if len(zCounts) == 0 {
+		return 0 // No dwarves found
+	}
+
+	// Find Z-level with most dwarves
+	var maxZ int16
+	maxCount := 0
+	for z, count := range zCounts {
+		if count > maxCount {
+			maxCount = count
+			maxZ = z
+		}
+	}
+
+	return maxZ
 }
 
 // calculateDwarfCentroid finds the average position of all dwarves

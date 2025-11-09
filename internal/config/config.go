@@ -57,8 +57,37 @@ type Config struct {
 	ContextUpdateFrequencySeconds int `yaml:"context_update_frequency_seconds"` // Update frequency
 
 	// Viewport settings
-	ViewportActiveZMargin      uint16 `yaml:"viewport_active_z_margin"`       // Z-levels above/below active
-	ViewportHazardMarginTiles  uint16 `yaml:"viewport_hazard_margin_tiles"`   // Tile margin around hazards
+	ViewportActiveZMargin     uint16 `yaml:"viewport_active_z_margin"`      // Z-levels above/below active
+	ViewportHazardMarginTiles uint16 `yaml:"viewport_hazard_margin_tiles"`  // Tile margin around hazards
+
+	// Fort phase configuration
+	PhaseEmbarkDays    int `yaml:"phase_embark_days"`     // Days in embark phase
+	PhaseEstablishDays int `yaml:"phase_establish_days"`  // Days in establish phase
+	PhaseExpandDays    int `yaml:"phase_expand_days"`     // Days before fortify phase
+	EnablePhaseSystem  bool `yaml:"enable_phase_system"`   // Enable phase-based strategies
+
+	// Task queue settings
+	EnableTaskQueue       bool `yaml:"enable_task_queue"`        // Enable multi-step planning
+	MaxQueuedTasks        int  `yaml:"max_queued_tasks"`         // Max tasks in queue
+	TaskTimeoutSeconds    int  `yaml:"task_timeout_seconds"`     // Task execution timeout
+	EnableTaskDependencies bool `yaml:"enable_task_dependencies"` // Allow dependent tasks
+
+	// Persistence settings
+	EnablePersistence    bool   `yaml:"enable_persistence"`      // Save modifications to disk
+	PersistencePath      string `yaml:"persistence_path"`        // Where to save state
+	AutoSaveIntervalSec  int    `yaml:"autosave_interval_sec"`   // Auto-save frequency
+	LoadOnStartup        bool   `yaml:"load_on_startup"`         // Load saved state on boot
+
+	// Spatial reasoning settings
+	EnableRoomDetection   bool `yaml:"enable_room_detection"`    // Detect room types
+	EnableAreaClustering  bool `yaml:"enable_area_clustering"`   // Cluster rooms into areas
+	RoomMinSize           int  `yaml:"room_min_size"`            // Minimum tiles for room
+	RoomMaxSize           int  `yaml:"room_max_size"`            // Maximum tiles for room
+
+	// Dynamic context settings
+	EnableDynamicContext  bool `yaml:"enable_dynamic_context"`   // Use query-based context
+	ContextAlwaysInclude  []string `yaml:"context_always_include"` // Always send these fields
+	ContextMaxSizeBytes   int  `yaml:"context_max_size_bytes"`   // Hard limit on context
 }
 
 // Load reads and parses the configuration file
@@ -162,5 +191,48 @@ func (c *Config) setDefaults() {
 	}
 	if c.ViewportHazardMarginTiles == 0 {
 		c.ViewportHazardMarginTiles = 5
+	}
+
+	// Fort phase defaults
+	if c.PhaseEmbarkDays == 0 {
+		c.PhaseEmbarkDays = 7
+	}
+	if c.PhaseEstablishDays == 0 {
+		c.PhaseEstablishDays = 30
+	}
+	if c.PhaseExpandDays == 0 {
+		c.PhaseExpandDays = 100
+	}
+
+	// Task queue defaults
+	if c.MaxQueuedTasks == 0 {
+		c.MaxQueuedTasks = 20
+	}
+	if c.TaskTimeoutSeconds == 0 {
+		c.TaskTimeoutSeconds = 300 // 5 minutes
+	}
+
+	// Persistence defaults
+	if c.PersistencePath == "" {
+		c.PersistencePath = "saves"
+	}
+	if c.AutoSaveIntervalSec == 0 {
+		c.AutoSaveIntervalSec = 300 // 5 minutes
+	}
+
+	// Spatial reasoning defaults
+	if c.RoomMinSize == 0 {
+		c.RoomMinSize = 9 // 3x3 minimum
+	}
+	if c.RoomMaxSize == 0 {
+		c.RoomMaxSize = 400 // 20x20 maximum
+	}
+
+	// Dynamic context defaults
+	if len(c.ContextAlwaysInclude) == 0 {
+		c.ContextAlwaysInclude = []string{"dwarf_count", "alerts", "phase"}
+	}
+	if c.ContextMaxSizeBytes == 0 {
+		c.ContextMaxSizeBytes = 250 * 1024 // 250 KB hard limit
 	}
 }

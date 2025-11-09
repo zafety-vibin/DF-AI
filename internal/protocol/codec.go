@@ -586,7 +586,7 @@ func (m *ErrorMessage) Deserialize(data []byte) error {
 
 // serializeEntityUpdate encodes EntityUpdateMessage payload
 func serializeEntityUpdate(w io.Writer, msg *EntityUpdateMessage) error {
-	// [4: Count] [N: Entity Array]
+	// [4: Count] [N: Entity Array] [1: HasFortInfo] [N: FortInfo if present]
 	if err := binary.Write(w, binary.BigEndian, msg.Count); err != nil {
 		return err
 	}
@@ -595,6 +595,31 @@ func serializeEntityUpdate(w io.Writer, msg *EntityUpdateMessage) error {
 	for i := range msg.Entities {
 		if err := serializeEntityInfo(w, &msg.Entities[i]); err != nil {
 			return fmt.Errorf("entity %d: %w", i, err)
+		}
+	}
+
+	// Serialize optional FortInfo
+	hasFortInfo := uint8(0)
+	if msg.FortInfo != nil {
+		hasFortInfo = 1
+	}
+	if err := binary.Write(w, binary.BigEndian, hasFortInfo); err != nil {
+		return err
+	}
+
+	if msg.FortInfo != nil {
+		// [4: DaysElapsed] [8: CreatedWealth] [1: Season] [4: Year]
+		if err := binary.Write(w, binary.BigEndian, msg.FortInfo.DaysElapsed); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.FortInfo.CreatedWealth); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.FortInfo.Season); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.FortInfo.Year); err != nil {
+			return err
 		}
 	}
 
@@ -623,6 +648,27 @@ func deserializeEntityUpdate(data []byte) (*EntityUpdateMessage, error) {
 		}
 		msg.Entities[i] = *entity
 	}
+
+	// Check for optional FortInfo
+	var hasFortInfo uint8
+	if err := binary.Read(buf, binary.BigEndian, &hasFortInfo); err == nil && hasFortInfo == 1 {
+		// Read FortInfo fields
+		fortInfo := &FortInfo{}
+		if err := binary.Read(buf, binary.BigEndian, &fortInfo.DaysElapsed); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &fortInfo.CreatedWealth); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &fortInfo.Season); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &fortInfo.Year); err != nil {
+			return nil, err
+		}
+		msg.FortInfo = fortInfo
+	}
+	// If no hasFortInfo byte or hasFortInfo==0, FortInfo remains nil (backward compatible)
 
 	return msg, nil
 }
@@ -707,7 +753,10 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 	// Type-specific payload
 	switch msg.CommandType {
 	case CommandTypeDig, CommandTypeCancel:
-		// [2: X1] [2: Y1] [2: Z1] [2: X2] [2: Y2] [2: Z2]
+		// [1: DigType] [2: X1] [2: Y1] [2: Z1] [2: X2] [2: Y2] [2: Z2]
+		if err := binary.Write(w, binary.BigEndian, msg.DigType); err != nil {
+			return err
+		}
 		if err := binary.Write(w, binary.BigEndian, msg.Region.X1); err != nil {
 			return err
 		}
@@ -764,7 +813,10 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 	// Type-specific payload
 	switch msg.CommandType {
 	case CommandTypeDig, CommandTypeCancel:
-		// Read region (12 bytes)
+		// Read dig type + region (1 + 12 bytes)
+		if err := binary.Read(buf, binary.BigEndian, &msg.DigType); err != nil {
+			return nil, err
+		}
 		if err := binary.Read(buf, binary.BigEndian, &msg.Region.X1); err != nil {
 			return nil, err
 		}

@@ -52,7 +52,7 @@ planner_temperature: 0.7                # Higher for creative planning
 
 # LLM Request tuning
 llm_temperature: 0.7            # Randomness (0.0-1.0)
-llm_max_tokens: 2048            # Max response length (Haiku is concise, 2048 sufficient)
+llm_max_tokens: 4096            # Max response length (Haiku is concise, 2048 sufficient)
 llm_timeout_seconds: 30s        # Request timeout (Haiku is fast, 30s plenty)
 
 # Context assembly settings
@@ -62,3 +62,32 @@ context_update_frequency_seconds: 100  # How often to generate new context
 # Viewport settings for context generation
 viewport_active_z_margin: 3     # Z-levels above/below active level to include
 viewport_hazard_margin_tiles: 5 # Tile margin around hazards to include
+
+# Fort phase system
+enable_phase_system: true       # Enable phase-based AI strategies
+phase_embark_days: 7            # Days in embark phase (survival focus)
+phase_establish_days: 30        # Days before expand phase (infrastructure)
+phase_expand_days: 100          # Days before fortify phase (growth)
+
+# Task queue system
+enable_task_queue: true        # Multi-step planning (experimental)
+max_queued_tasks: 20            # Maximum tasks in queue
+task_timeout_seconds: 300       # 5 minutes per task
+enable_task_dependencies: true # Allow dependent tasks
+
+# Persistence
+enable_persistence: true        # Save modifications to disk
+persistence_path: saves         # Directory for saved state
+autosave_interval_sec: 300      # Auto-save every 5 minutes
+load_on_startup: true           # Load saved modifications on boot
+
+# Spatial reasoning
+enable_room_detection: true     # Infer room types from dimensions
+enable_area_clustering: true   # Group rooms into areas (experimental)
+room_min_size: 6                # Min tiles for room (2×3)
+room_max_size: 1000              # Max tiles for room (20×20)
+
+# Dynamic context assembly
+enable_dynamic_context: true   # Use query-based context (experimental)
+context_always_include: [dwarf_count, alerts, phase]
+context_max_size_bytes: 256000  # 250 KB hard limit

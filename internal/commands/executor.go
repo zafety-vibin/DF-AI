@@ -49,10 +49,12 @@ func NewCommandExecutor(logger *logging.Logger, client DFHackClient, timeout tim
 }
 
 // SendDigCommand sends a dig designation command
-func (e *CommandExecutor) SendDigCommand(x1, y1, z int16, x2, y2 int16) (*CommandResult, error) {
+// digType: DigTypeDefault (standard), DigTypeUpDownStair, DigTypeChannel, etc.
+func (e *CommandExecutor) SendDigCommand(digType uint8, x1, y1, z int16, x2, y2 int16) (*CommandResult, error) {
 	cmd := &protocol.CommandMessage{
 		CommandID:   e.tracker.GenerateCommandID(),
 		CommandType: protocol.CommandTypeDig,
+		DigType:     digType,
 		Region: protocol.Region{
 			X1: x1, Y1: y1, Z1: z,
 			X2: x2, Y2: y2, Z2: z,
