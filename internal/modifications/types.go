@@ -70,4 +70,15 @@ type ModificationInfo struct {
 	DetectedAt   time.Time        // When modification was first detected
 	CommandID    uint32           // ID of command that caused this (0 if unknown)
 	LastVerified time.Time        // Last time this modification was verified to still exist
+	GraphNode    *GraphMetadata   `json:"graph_node,omitempty"` // Optional graph node metadata (Feature 006)
+}
+
+// GraphMetadata stores graph-based planning metadata for modifications
+type GraphMetadata struct {
+	NodeID       string   `json:"node_id"`
+	NodeType     string   `json:"node_type"`
+	AgentName    string   `json:"agent_name"`
+	Dependencies []string `json:"dependencies"`
+	Status       string   `json:"status"` // "pending", "in_progress", "completed"
+	Rationale    string   `json:"rationale"`
 }

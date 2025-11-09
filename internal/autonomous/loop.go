@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/df-ai/orchestrator/internal/agents"
 	"github.com/df-ai/orchestrator/internal/commands"
 	appcontext "github.com/df-ai/orchestrator/internal/context"
 	"github.com/df-ai/orchestrator/internal/dfhack"
@@ -38,6 +39,9 @@ type AutonomousLoop struct {
 	conversationHistory *ConversationHistory
 	systemPrompt        string
 	phaseManager        *phases.PhaseManager // Fort development phases
+	agentRegistry       *agents.AgentRegistry // Goal-oriented agents (Feature 006)
+	enableGoalAgents    bool                  // Enable graph-based agents vs direct-LLM
+	graphExecutor       *agents.GraphExecutor  // Converts nodes to commands
 	logFile             *os.File
 	mu                  sync.RWMutex
 	running             bool
@@ -84,6 +88,7 @@ func NewLoop(
 		conversationHistory: NewConversationHistory(5), // Keep last 5 turns
 		systemPrompt:        systemPrompt,
 		phaseManager:        phaseManager,
+		graphExecutor:       agents.NewGraphExecutor(logger),
 		ctx:                 ctx,
 		cancel:              cancel,
 		pendingCommands:     make(map[uint32]*commands.PendingCommand),
@@ -188,6 +193,130 @@ func (al *AutonomousLoop) runCycle() error {
 
 	al.logger.Debug("assembled context",
 		logging.Field{Key: "context_size", Value: len(context)})
+
+	// Step 2.5: Agent analysis (if goal agents enabled)
+	var proposalGraph *agents.ProposalGraph
+	if al.enableGoalAgents && al.agentRegistry != nil {
+		// Compute fort metrics from current state
+		metrics := al.computeFortMetrics()
+
+		al.logger.Debug("computed fort metrics",
+			logging.Field{Key: "dwarves", Value: metrics.DwarfCount},
+			logging.Field{Key: "enemies", Value: metrics.EnemyCount},
+			logging.Field{Key: "fort_age", Value: metrics.FortAge})
+
+		// Run all enabled agents in parallel
+		proposals, agentLatency := al.analyzeAgents(metrics)
+
+		if len(proposals) > 0 {
+			// Assemble proposal graph
+			proposalGraph = al.assembleProposalGraph(proposals)
+
+			// Log agent proposals (JSON format for debugging)
+			for _, proposal := range proposals {
+				proposalJSON, _ := json.Marshal(proposal)
+				al.logger.Debug("agent proposal",
+					logging.Field{Key: "agent", Value: proposal.AgentName},
+					logging.Field{Key: "type", Value: string(proposal.Type)},
+					logging.Field{Key: "priority", Value: proposal.Priority},
+					logging.Field{Key: "urgency", Value: proposal.Urgency},
+					logging.Field{Key: "rationale", Value: proposal.Rationale},
+					logging.Field{Key: "proposal_json", Value: string(proposalJSON)})
+			}
+
+			// Log performance metrics
+			al.logger.Info("agent analysis metrics",
+				logging.Field{Key: "total_latency_ms", Value: agentLatency.Milliseconds()},
+				logging.Field{Key: "proposal_count", Value: len(proposals)},
+				logging.Field{Key: "graph_nodes", Value: len(proposalGraph.Nodes)},
+				logging.Field{Key: "conflicts_detected", Value: len(proposalGraph.ConflictEdges)})
+
+			// Send graph to arbiter for coordination
+			arbiterStart := time.Now()
+
+			// Build arbiter user message with graph JSON and fort metrics
+			graphJSON, err := proposalGraph.ToJSON()
+			if err != nil {
+				al.logger.Error("failed to serialize graph", err)
+			} else {
+				arbiterPrompt := &llm.Prompt{
+					SystemPrompt: getArbiterSystemPrompt(),
+					UserMessage:  graphJSON,
+					MaxTokens:    500,
+					Temperature:  0.7,
+				}
+
+				al.logger.Debug("sending graph to arbiter",
+					logging.Field{Key: "graph_json_size", Value: len(graphJSON)})
+
+				arbiterResp, err := al.llmProvider.SendPrompt(al.ctx, arbiterPrompt)
+				if err != nil {
+					al.logger.Error("arbiter request failed", err)
+					// TODO: Fallback to heuristic (highest priority non-conflicting proposal)
+				} else {
+					arbiterLatency := time.Since(arbiterStart)
+
+					al.logger.Info("arbiter decision received",
+						logging.Field{Key: "latency_ms", Value: arbiterLatency.Milliseconds()},
+						logging.Field{Key: "tokens_prompt", Value: arbiterResp.TokensPrompt},
+						logging.Field{Key: "tokens_completion", Value: arbiterResp.TokensCompletion})
+
+					// Log full arbiter response for analysis
+					al.logger.Debug("arbiter response", logging.Field{Key: "response", Value: arbiterResp.Text})
+
+					// Parse arbiter JSON response
+					var arbiterOutput struct {
+						Sequence  []agents.ModificationNode `json:"sequence"`
+						Synergies []string                  `json:"synergies"`
+						Deferred  []string                  `json:"deferred"`
+					}
+
+					if err := json.Unmarshal([]byte(arbiterResp.Text), &arbiterOutput); err != nil {
+						al.logger.Warn("failed to parse arbiter JSON, using fallback",
+							logging.Field{Key: "error", Value: err.Error()})
+						// TODO: Fallback to heuristic execution
+					} else {
+						// Create ArbitrationDecision from parsed output
+						decision := &agents.ArbitrationDecision{
+							ExecutionSequence: arbiterOutput.Sequence,
+							InjectedNodes:     []agents.ModificationNode{}, // Filter synergies from sequence
+							Timestamp:         time.Now(),
+							Latency:           arbiterLatency,
+							TokensUsed:        arbiterResp.TokensPrompt + arbiterResp.TokensCompletion,
+						}
+
+						al.logger.Info("arbiter decision parsed",
+							logging.Field{Key: "execution_count", Value: len(decision.ExecutionSequence)},
+							logging.Field{Key: "synergies_recognized", Value: len(arbiterOutput.Synergies)})
+
+						// Execute via GraphExecutor
+						commands, err := al.graphExecutor.Execute(decision)
+						if err != nil {
+							al.logger.Error("graph execution failed", err)
+						} else if len(commands) > 0 {
+							al.logger.Info("executing graph commands",
+								logging.Field{Key: "command_count", Value: len(commands)})
+
+							// Send commands to DFHack
+							for i, cmd := range commands {
+								cmd.CommandID = uint32(time.Now().UnixNano() + int64(i))
+								if err := al.dfhackClient.SendCommand(&cmd); err != nil {
+									al.logger.Error("failed to send command", err,
+										logging.Field{Key: "index", Value: i})
+								} else {
+									al.logger.Info("command sent",
+										logging.Field{Key: "command_id", Value: cmd.CommandID},
+										logging.Field{Key: "type", Value: cmd.CommandType})
+								}
+							}
+						}
+					}
+				}
+			}
+		} else {
+			al.logger.Info("no agent proposals this cycle (all targets met)")
+		}
+	}
 
 	// Step 3: Format prompt with system instructions, history, and context
 	prompt := al.formatPrompt(context, feedback)
@@ -726,6 +855,185 @@ func (al *AutonomousLoop) getEntities() appcontext.EntityInfoSlice {
 // GetHistory returns the conversation history
 func (al *AutonomousLoop) GetHistory() *ConversationHistory {
 	return al.conversationHistory
+}
+
+// SetAgentRegistry sets the goal agent registry and enables agent mode
+func (al *AutonomousLoop) SetAgentRegistry(registry *agents.AgentRegistry, enabled bool) {
+	al.agentRegistry = registry
+	al.enableGoalAgents = enabled
+	al.logger.Info("agent registry configured",
+		logging.Field{Key: "enabled", Value: enabled},
+		logging.Field{Key: "agent_count", Value: len(registry.List())})
+}
+
+// computeFortMetrics extracts fort metrics from current state
+func (al *AutonomousLoop) computeFortMetrics() *agents.FortMetrics {
+	metrics := &agents.FortMetrics{}
+
+	// Get entities
+	entities := al.getEntities()
+
+	// Count dwarves and enemies
+	for _, e := range entities {
+		switch e.Type {
+		case protocol.EntityTypeDwarf:
+			metrics.DwarfCount++
+		case protocol.EntityTypeEnemy:
+			metrics.EnemyCount++
+		}
+	}
+
+	// Calculate food per dwarf (placeholder - needs actual food tracking)
+	// TODO: Add food stock tracking from game state
+	metrics.FoodPerDwarf = 15.0 // Placeholder
+	metrics.DrinkPerDwarf = 15.0 // Placeholder
+
+	// Count bedrooms from modifications (chambers)
+	// TODO: Improve this by tracking actual bedroom designations
+	metrics.BedroomCount = 0 // Placeholder
+
+	// Mining metrics (placeholder - needs cycle tracking)
+	metrics.MiningTilesPerCycle = 0 // TODO: Track tiles dug per cycle
+	metrics.NoStrikeCycles = 0      // TODO: Track cycles since ore discovery
+
+	// Wealth metrics (placeholder)
+	metrics.WealthGrowthRate = 0.05 // TODO: Track wealth growth
+	metrics.TotalWealth = 0         // TODO: From fort info
+
+	// Fort age from phase manager
+	if al.phaseManager != nil {
+		metrics.FortAge = al.phaseManager.GetDaysElapsed()
+		metrics.Phase = al.phaseManager.GetPhase()
+	}
+
+	return metrics
+}
+
+// analyzeAgents runs all enabled agents in parallel and collects proposals
+func (al *AutonomousLoop) analyzeAgents(metrics *agents.FortMetrics) ([]agents.ModificationNode, time.Duration) {
+	start := time.Now()
+
+	if al.agentRegistry == nil {
+		return nil, 0
+	}
+
+	enabledAgents := al.agentRegistry.GetEnabled()
+	if len(enabledAgents) == 0 {
+		return nil, 0
+	}
+
+	// Run agents in parallel
+	type agentResult struct {
+		agentName string
+		proposals []agents.ModificationNode
+		latency   time.Duration
+	}
+
+	results := make(chan agentResult, len(enabledAgents))
+	var wg sync.WaitGroup
+
+	for _, agent := range enabledAgents {
+		wg.Add(1)
+		go func(a agents.GoalAgent) {
+			defer wg.Done()
+			agentStart := time.Now()
+			proposals := a.Analyze(metrics)
+			latency := time.Since(agentStart)
+
+			results <- agentResult{
+				agentName: a.Name(),
+				proposals: proposals,
+				latency:   latency,
+			}
+		}(agent)
+	}
+
+	// Wait for all agents to complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
+	allProposals := make([]agents.ModificationNode, 0)
+	for result := range results {
+		al.logger.Debug("agent analysis complete",
+			logging.Field{Key: "agent", Value: result.agentName},
+			logging.Field{Key: "proposals", Value: len(result.proposals)},
+			logging.Field{Key: "latency_ms", Value: result.latency.Milliseconds()})
+
+		allProposals = append(allProposals, result.proposals...)
+	}
+
+	totalLatency := time.Since(start)
+	al.logger.Info("all agents analyzed",
+		logging.Field{Key: "agent_count", Value: len(enabledAgents)},
+		logging.Field{Key: "total_proposals", Value: len(allProposals)},
+		logging.Field{Key: "latency_ms", Value: totalLatency.Milliseconds()})
+
+	return allProposals, totalLatency
+}
+
+// getArbiterSystemPrompt returns the system prompt for graph arbiter
+func getArbiterSystemPrompt() string {
+	return `You are a Dwarf Fortress fort manager coordinating 5 specialized agents.
+
+Agents propose modification nodes with spatial dependencies and conflicts.
+Your task: Perform topological sort, detect synergies, resolve conflicts.
+
+Node types: bedroom_cluster, mining_shaft, farm_plot, workshop_zone,
+            corridor_connector, seal_entrance, exploratory_tunnel, defensive_wall,
+            stair_cluster, stockpile_zone, gather_zone, production_area
+
+Dependencies: requires_access_from (needs corridor), requires_water (needs well), requires_stairs (vertical access)
+Conflicts: overlaps_spatially (same coordinates)
+
+Output: JSON execution sequence (topologically sorted node list)
+
+Recognize synergies: bedroom_cluster + dining_hall → inject corridor_connector
+                     mining_shaft + bedrooms → inject stair_cluster
+
+Output format:
+{
+  "sequence": [
+    {"id": "corridor_1", "type": "corridor_connector", "region": {...}, "rationale": "Shared access"},
+    {"id": "food_1", "rationale": "Higher priority"},
+    {"id": "housing_1", "rationale": "Parallel with food"}
+  ],
+  "synergies": ["corridor_1"],
+  "deferred": []
+}
+
+Prioritize: Food (10) > Housing (9) > Mining (7) > Wealth (6), Defense (variable 0-10)
+Resolve conflicts by priority. Recognize spatial synergies when beneficial.`
+}
+
+// assembleProposalGraph creates a graph from agent proposals
+func (al *AutonomousLoop) assembleProposalGraph(proposals []agents.ModificationNode) *agents.ProposalGraph {
+	start := time.Now()
+
+	graph := agents.NewProposalGraph()
+
+	// Add all nodes to graph
+	for _, proposal := range proposals {
+		if err := graph.AddNode(proposal); err != nil {
+			al.logger.Warn("failed to add node to graph",
+				logging.Field{Key: "node_id", Value: proposal.ID},
+				logging.Field{Key: "error", Value: err.Error()})
+			continue
+		}
+	}
+
+	// Detect spatial conflicts using AABB intersection
+	graph.DetectSpatialConflicts()
+
+	assemblyTime := time.Since(start)
+	al.logger.Debug("proposal graph assembled",
+		logging.Field{Key: "node_count", Value: len(graph.Nodes)},
+		logging.Field{Key: "conflicts", Value: len(graph.ConflictEdges)},
+		logging.Field{Key: "assembly_ms", Value: assemblyTime.Milliseconds()})
+
+	return graph
 }
 
 // Stop stops the autonomous loop

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/df-ai/orchestrator/internal/agents"
 	"github.com/df-ai/orchestrator/internal/autonomous"
 	"github.com/df-ai/orchestrator/internal/blueprints"
 	"github.com/df-ai/orchestrator/internal/commands"
@@ -413,6 +414,52 @@ func main() {
 
 			logger.Info("autonomous loop initialized",
 				logging.Field{Key: "interval", Value: loopInterval})
+
+			// Initialize goal agents if enabled (Feature 006)
+			if cfg.EnableGoalAgents {
+				agentRegistry := agents.NewAgentRegistry()
+
+				// Register FoodSecurityAgent
+				if cfg.AgentFood.Enabled {
+					foodAgent := agents.NewFoodSecurityAgent(cfg.AgentFood)
+					agentRegistry.Register(foodAgent)
+					logger.Info("registered agent", logging.Field{Key: "agent", Value: foodAgent.Name()}, logging.Field{Key: "priority", Value: foodAgent.Priority()})
+				}
+
+				// Register HousingAgent
+				if cfg.AgentHousing.Enabled {
+					housingAgent := agents.NewHousingAgent(cfg.AgentHousing)
+					agentRegistry.Register(housingAgent)
+					logger.Info("registered agent", logging.Field{Key: "agent", Value: housingAgent.Name()}, logging.Field{Key: "priority", Value: housingAgent.Priority()})
+				}
+
+				// Register MiningAgent
+				if cfg.AgentMining.Enabled {
+					miningAgent := agents.NewMiningAgent(cfg.AgentMining)
+					agentRegistry.Register(miningAgent)
+					logger.Info("registered agent", logging.Field{Key: "agent", Value: miningAgent.Name()}, logging.Field{Key: "priority", Value: miningAgent.Priority()})
+				}
+
+				// Register WealthAgent
+				if cfg.AgentWealth.Enabled {
+					wealthAgent := agents.NewWealthAgent(cfg.AgentWealth)
+					agentRegistry.Register(wealthAgent)
+					logger.Info("registered agent", logging.Field{Key: "agent", Value: wealthAgent.Name()}, logging.Field{Key: "priority", Value: wealthAgent.Priority()})
+				}
+
+				// Register DefenseAgent
+				if cfg.AgentDefense.Enabled {
+					defenseAgent := agents.NewDefenseAgent(cfg.AgentDefense)
+					agentRegistry.Register(defenseAgent)
+					logger.Info("registered agent", logging.Field{Key: "agent", Value: defenseAgent.Name()})
+				}
+
+				// Set registry on autonomous loop
+				autonomousLoop.SetAgentRegistry(agentRegistry, true)
+				logger.Info("goal agents enabled", logging.Field{Key: "agent_count", Value: len(agentRegistry.List())})
+			} else {
+				logger.Info("goal agents disabled - using direct-LLM mode (Feature 005 behavior)")
+			}
 
 			// Start autonomous loop in background
 			go func() {

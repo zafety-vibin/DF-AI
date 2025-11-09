@@ -22,6 +22,8 @@ func CreateProvider(cfg *config.Config) (Provider, error) {
 		return createOpenAIProvider(cfg)
 	case "multi_model":
 		return createMultiModelProvider(cfg)
+	case "local":
+		return createLocalProvider(cfg)
 	default:
 		return nil, fmt.Errorf("unknown LLM provider type: %s", cfg.LLMProviderType)
 	}
@@ -115,6 +117,23 @@ func createMultiModelProvider(cfg *config.Config) (Provider, error) {
 	return pipeline, nil
 }
 
+// createLocalProvider creates a local LLM provider (LM Studio) with validation
+func createLocalProvider(cfg *config.Config) (Provider, error) {
+	// Validate required configuration
+	if cfg.LocalLLMEndpoint == "" {
+		return nil, fmt.Errorf("local_llm_endpoint is required for local provider")
+	}
+	if cfg.LocalLLMModel == "" {
+		return nil, fmt.Errorf("local_llm_model is required for local provider")
+	}
+	if cfg.LLMTimeoutMS <= 0 {
+		return nil, fmt.Errorf("llm_timeout_ms must be positive for local provider")
+	}
+
+	provider := NewLocalLLMProvider(cfg.LocalLLMEndpoint, cfg.LocalLLMModel, cfg.LLMTimeoutMS)
+	return provider, nil
+}
+
 // ValidateProviderConfig checks that a provider configuration is valid
 // Returns error if critical fields are missing or invalid
 func ValidateProviderConfig(cfg *config.Config) error {
@@ -182,6 +201,16 @@ func ValidateProviderConfig(cfg *config.Config) error {
 		}
 		if cfg.LLMModel == "" {
 			return fmt.Errorf("llm_model required for multi_model (planner)")
+		}
+	case "local":
+		if cfg.LocalLLMEndpoint == "" {
+			return fmt.Errorf("local_llm_endpoint required for local provider")
+		}
+		if cfg.LocalLLMModel == "" {
+			return fmt.Errorf("local_llm_model required for local provider")
+		}
+		if cfg.LLMTimeoutMS <= 0 {
+			return fmt.Errorf("llm_timeout_ms must be positive for local provider")
 		}
 	default:
 		return fmt.Errorf("unknown llm_provider_type: %s", cfg.LLMProviderType)
