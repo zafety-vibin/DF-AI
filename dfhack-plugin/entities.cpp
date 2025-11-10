@@ -59,9 +59,20 @@ std::vector<EntityInfo> extract_entities()
         entity.z = unit->pos.z;
         entity.subtype = unit->race;
 
-        // Classify entity type
+        // Classify entity type (improved dwarf detection)
+        bool is_dwarf = false;
+
+        // Check multiple criteria for fort citizens
         if (unit->civ_id == fort_civ_id) {
-            // Fort citizen (dwarf)
+            is_dwarf = true;  // Citizen of fort civilization
+        } else if (unit->flags1.bits.fortress_guard || unit->flags2.bits.resident) {
+            is_dwarf = true;  // Fortress guard or resident
+        } else if (unit->flags2.bits.important_historical_figure && !unit->flags1.bits.merchant) {
+            // Historical figures in fort (nobles, migrants) but not merchants
+            is_dwarf = true;
+        }
+
+        if (is_dwarf) {
             entity.type = ENTITY_TYPE_DWARF;
         } else if (unit->flags1.bits.marauder || unit->flags1.bits.invader_origin ||
                    unit->flags2.bits.underworld || unit->flags2.bits.visitor_uninvited) {
