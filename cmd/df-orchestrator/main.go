@@ -499,6 +499,21 @@ func main() {
 				logger.Info("zone extraction disabled")
 			}
 
+			// Feature 007: Load blueprint metadata if enabled (T066)
+			if cfg.IncludeBlueprintMetadata && cfg.BlueprintDirectory != "" {
+				metadata, err := blueprints.LoadMetadata(cfg.BlueprintDirectory, logger)
+				if err != nil {
+					logger.Warn("failed to load blueprint metadata",
+						logging.Field{Key: "error", Value: err.Error()})
+				} else {
+					autonomousLoop.SetBlueprintMetadata(metadata)
+					logger.Info("blueprint metadata loaded for arbiter",
+						logging.Field{Key: "directory", Value: cfg.BlueprintDirectory})
+				}
+			} else {
+				logger.Info("blueprint metadata disabled")
+			}
+
 			// Start autonomous loop in background
 			go func() {
 				time.Sleep(5 * time.Second) // Wait for state to stabilize

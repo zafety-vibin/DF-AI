@@ -135,21 +135,21 @@
 
 ### Implementation for User Story 3
 
-- [ ] T061 [P] [US3] Implement LoadMetadata function in internal/blueprints/metadata.go (scan blueprint directory, parse CSV files, generate BlueprintMetadata structs)
-- [ ] T062 [P] [US3] Implement parseBlueprint helper in internal/blueprints/metadata.go (read CSV, count tiles, infer dimensions and capacity)
-- [ ] T063 [US3] Implement ToPromptString method on BlueprintMetadata in internal/blueprints/metadata.go (format as "name: description (WxH tiles, N dwarf capacity)")
-- [ ] T064 [US3] Implement FitsInSpace method on BlueprintMetadata in internal/blueprints/metadata.go (check if width/height fit in available region)
-- [ ] T065 [US3] Implement GetMetadataPrompt function in internal/blueprints/metadata.go (format all blueprints for arbiter system prompt, ~400 token budget)
-- [ ] T066 [US3] Update arbiter system prompt builder in internal/autonomous/loop.go to include blueprint metadata (load metadata at startup, append to system prompt)
-- [ ] T067 [US3] Update arbiter prompt in internal/autonomous/loop.go to add blueprint selection guidance ("Use blueprints when space matches, geometric patterns for emergency")
-- [ ] T068 [US3] Parse arbiter response in internal/autonomous/loop.go to extract blueprint_used field (JSON: {"blueprint_used": "bedroom_3x3", "instances": 4})
-- [ ] T069 [US3] Update GraphExecutor.convertNodeToCommands in internal/agents/executor.go to check if arbiter specified blueprint
-- [ ] T070 [US3] Implement sendBlueprintCommand helper in internal/agents/executor.go (if blueprint selected, send BLUEPRINT command instead of DIG+ZONE)
-- [ ] T071 [US3] Create bedroom_3x3_zones.csv in blueprints/ directory (format: x,y,z,zone_type,width,height with single bedroom zone at 0,0,0 size 3x3)
-- [ ] T072 [P] [US3] Create bedroom_cluster_10_zones.csv in blueprints/ directory (format: 10 bedroom zones + 1 dining zone with relative coordinates)
-- [ ] T073 [US3] Add logging for blueprint metadata loading in internal/blueprints/metadata.go (INFO: loaded N blueprints, DEBUG: blueprint details)
-- [ ] T074 [US3] Add logging for arbiter blueprint selection in internal/autonomous/loop.go (INFO: arbiter selected blueprint X for N dwarves, DEBUG: rationale)
-- [ ] T075 [US3] Add logging for executor blueprint command in internal/agents/executor.go (INFO: sending BLUEPRINT command, DEBUG: blueprint name and placement)
+- [X] T061 [P] [US3] Implement LoadMetadata function in internal/blueprints/metadata.go (scan blueprint directory, parse CSV files, generate BlueprintMetadata structs)
+- [X] T062 [P] [US3] Implement parseBlueprint helper in internal/blueprints/metadata.go (read CSV, count tiles, infer dimensions and capacity)
+- [X] T063 [US3] Implement ToPromptString method on BlueprintMetadata in internal/blueprints/metadata.go (format as "name: description (WxH tiles, N dwarf capacity)")
+- [X] T064 [US3] Implement FitsInSpace method on BlueprintMetadata in internal/blueprints/metadata.go (check if width/height fit in available region)
+- [X] T065 [US3] Implement GetMetadataPrompt function in internal/blueprints/metadata.go (format all blueprints for arbiter system prompt, ~400 token budget)
+- [X] T066 [US3] Update arbiter system prompt builder in internal/autonomous/loop.go to include blueprint metadata (load metadata at startup, append to system prompt)
+- [X] T067 [US3] Update arbiter prompt in internal/autonomous/loop.go to add blueprint selection guidance ("Use blueprints when space matches, geometric patterns for emergency")
+- [X] T068 [US3] Parse arbiter response in internal/autonomous/loop.go to extract blueprint_used field (JSON: {"blueprint_used": "bedroom_3x3", "instances": 4})
+- [X] T069 [US3] Update GraphExecutor.convertNodeToCommands in internal/agents/executor.go to check if arbiter specified blueprint
+- [X] T070 [US3] Implement sendBlueprintCommand helper in internal/agents/executor.go (if blueprint selected, send BLUEPRINT command instead of DIG+ZONE)
+- [X] T071 [US3] Create bedroom_3x3_zones.csv in blueprints/ directory (format: x,y,z,zone_type,width,height with single bedroom zone at 0,0,0 size 3x3)
+- [X] T072 [P] [US3] Create bedroom_cluster_10_zones.csv in blueprints/ directory (format: 10 bedroom zones + 1 dining zone with relative coordinates)
+- [X] T073 [US3] Add logging for blueprint metadata loading in internal/blueprints/metadata.go (INFO: loaded N blueprints, DEBUG: blueprint details)
+- [X] T074 [US3] Add logging for arbiter blueprint selection in internal/autonomous/loop.go (INFO: arbiter selected blueprint X for N dwarves, DEBUG: rationale)
+- [X] T075 [US3] Add logging for executor blueprint command in internal/agents/executor.go (INFO: sending BLUEPRINT command, DEBUG: blueprint name and placement)
 
 **Checkpoint**: Arbiter receives blueprint metadata, selects blueprints when appropriate, executor sends BLUEPRINT commands. Test independently per quickstart.md Test 5 & 6.
 
@@ -218,7 +218,7 @@
 
 **Purpose**: Improvements that affect multiple user stories and final validation
 
-- [ ] T109 [P] Update config/orchestrator.yaml with SVP, zone extraction, blueprint, and queue settings (use_svp: true, extract_zones: true, etc.)
+- [X] T109 [P] Update config/orchestrator.yaml with SVP, zone extraction, blueprint, and queue settings (use_svp: true, extract_zones: true, etc.)
 - [ ] T110 [P] Add unit tests for SVP terrain analysis in tests/spatial/planner_test.go (test embark Z detection, housing/workshop/farm designation, hazard avoidance)
 - [ ] T111 [P] Add unit tests for SVP persistence in tests/spatial/planner_test.go (test Save/Load, fort name handling, version migration)
 - [ ] T112 [P] Add unit tests for zone extraction in tests/zones/extractor_test.go (test CountByType, GetUnassignedCount, fallback logic)

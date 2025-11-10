@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/df-ai/orchestrator/internal/logging"
 )
 
 // BlueprintMetadata represents metadata about blueprints for arbiter context
@@ -32,15 +34,22 @@ func (bm *BlueprintMetadata) FitsInSpace(availableWidth, availableHeight int) bo
 	return bm.Width <= availableWidth && bm.Height <= availableHeight
 }
 
-// LoadMetadata generates metadata for all blueprints in directory
-func LoadMetadata(blueprintDir string) ([]*BlueprintMetadata, error) {
+// LoadMetadata generates metadata for all blueprints in directory (T073)
+func LoadMetadata(blueprintDir string, logger *logging.Logger) ([]*BlueprintMetadata, error) {
 	metadata := make([]*BlueprintMetadata, 0)
 
 	// Scan directory for .csv files
 	entries, err := os.ReadDir(blueprintDir)
 	if err != nil {
+		if logger != nil {
+			logger.Error("failed to read blueprint directory", err,
+				logging.Field{Key: "dir", Value: blueprintDir})
+		}
 		return nil, fmt.Errorf("failed to read blueprint directory: %w", err)
 	}
+
+	loadedCount := 0
+	skippedCount := 0
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -61,11 +70,31 @@ func LoadMetadata(blueprintDir string) ([]*BlueprintMetadata, error) {
 		blueprintPath := filepath.Join(blueprintDir, name)
 		bpMetadata, err := parseBlueprint(blueprintPath)
 		if err != nil {
-			// Log error but continue with other blueprints
+			skippedCount++
+			if logger != nil {
+				logger.Warn("failed to parse blueprint, skipping",
+					logging.Field{Key: "file", Value: name},
+					logging.Field{Key: "error", Value: err.Error()})
+			}
 			continue
 		}
 
 		metadata = append(metadata, bpMetadata)
+		loadedCount++
+
+		if logger != nil {
+			logger.Debug("loaded blueprint metadata",
+				logging.Field{Key: "name", Value: bpMetadata.Name},
+				logging.Field{Key: "dimensions", Value: fmt.Sprintf("%dx%d", bpMetadata.Width, bpMetadata.Height)},
+				logging.Field{Key: "capacity", Value: bpMetadata.DwarfCapacity})
+		}
+	}
+
+	if logger != nil {
+		logger.Info("blueprint metadata loading complete",
+			logging.Field{Key: "loaded", Value: loadedCount},
+			logging.Field{Key: "skipped", Value: skippedCount},
+			logging.Field{Key: "total", Value: loadedCount})
 	}
 
 	return metadata, nil

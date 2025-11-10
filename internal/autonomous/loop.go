@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/df-ai/orchestrator/internal/agents"
+	"github.com/df-ai/orchestrator/internal/blueprints"
 	"github.com/df-ai/orchestrator/internal/commands"
 	appcontext "github.com/df-ai/orchestrator/internal/context"
 	"github.com/df-ai/orchestrator/internal/dfhack"
@@ -55,6 +56,9 @@ type AutonomousLoop struct {
 	zoneExtractor *zones.ZoneExtractor   // Zone data extractor
 	cachedZones   []protocol.ZoneData    // Latest zone data from ENTITY_UPDATE
 	zonesMu       sync.RWMutex           // Protects zone cache
+
+	// Feature 007: Blueprint Integration
+	blueprintMetadata []*blueprints.BlueprintMetadata // Available blueprint designs
 
 	logFile             *os.File
 	mu                  sync.RWMutex
@@ -263,7 +267,7 @@ func (al *AutonomousLoop) runCycle() error {
 				al.logger.Error("failed to serialize graph", err)
 			} else {
 				arbiterPrompt := &llm.Prompt{
-					SystemPrompt: getArbiterSystemPrompt(),
+					SystemPrompt: al.getArbiterSystemPrompt(),
 					UserMessage:  graphJSON,
 					MaxTokens:    500,
 					Temperature:  0.7,
@@ -308,9 +312,24 @@ func (al *AutonomousLoop) runCycle() error {
 							TokensUsed:        arbiterResp.TokensPrompt + arbiterResp.TokensCompletion,
 						}
 
+						// Feature 007: Log blueprint selections (T074)
+						blueprintCount := 0
+						for _, node := range decision.ExecutionSequence {
+							if node.Metadata != nil {
+								if blueprintName, ok := node.Metadata["blueprint_used"].(string); ok && blueprintName != "" {
+									blueprintCount++
+									al.logger.Info("arbiter selected blueprint",
+										logging.Field{Key: "node_id", Value: node.ID},
+										logging.Field{Key: "blueprint", Value: blueprintName},
+										logging.Field{Key: "rationale", Value: node.Rationale})
+								}
+							}
+						}
+
 						al.logger.Info("arbiter decision parsed",
 							logging.Field{Key: "execution_count", Value: len(decision.ExecutionSequence)},
-							logging.Field{Key: "synergies_recognized", Value: len(arbiterOutput.Synergies)})
+							logging.Field{Key: "synergies_recognized", Value: len(arbiterOutput.Synergies)},
+							logging.Field{Key: "blueprints_used", Value: blueprintCount})
 
 						// Execute via GraphExecutor
 						commands, err := al.graphExecutor.Execute(decision)
@@ -903,6 +922,13 @@ func (al *AutonomousLoop) SetZoneExtractor(extractor *zones.ZoneExtractor) {
 		logging.Field{Key: "enabled", Value: extractor.IsEnabled()})
 }
 
+// SetBlueprintMetadata configures blueprint metadata for arbiter prompt
+func (al *AutonomousLoop) SetBlueprintMetadata(metadata []*blueprints.BlueprintMetadata) {
+	al.blueprintMetadata = metadata
+	al.logger.Info("blueprint metadata loaded",
+		logging.Field{Key: "blueprint_count", Value: len(metadata)})
+}
+
 // UpdateZones updates the cached zone data from ENTITY_UPDATE (Feature 007)
 func (al *AutonomousLoop) UpdateZones(zoneData []protocol.ZoneData) {
 	al.zonesMu.Lock()
@@ -1145,9 +1171,9 @@ func (al *AutonomousLoop) analyzeAgents(metrics *agents.FortMetrics) ([]agents.M
 	return allProposals, totalLatency
 }
 
-// getArbiterSystemPrompt returns the system prompt for graph arbiter
-func getArbiterSystemPrompt() string {
-	return `You are a Dwarf Fortress fort manager coordinating 5 specialized agents.
+// getArbiterSystemPrompt returns the system prompt for graph arbiter (Feature 007: includes blueprint metadata)
+func (al *AutonomousLoop) getArbiterSystemPrompt() string {
+	basePrompt := `You are a Dwarf Fortress fort manager coordinating 5 specialized agents.
 
 Agents propose modification nodes with spatial dependencies and conflicts.
 Your task: Perform topological sort, detect synergies, resolve conflicts.
@@ -1164,11 +1190,23 @@ Output: JSON execution sequence (topologically sorted node list)
 Recognize synergies: bedroom_cluster + dining_hall → inject corridor_connector
                      mining_shaft + bedrooms → inject stair_cluster
 
-Output format:
+`
+
+	// Feature 007: Add blueprint library if available (T066-T067)
+	if len(al.blueprintMetadata) > 0 {
+		basePrompt += blueprints.GetMetadataPrompt(al.blueprintMetadata)
+		basePrompt += "\nBlueprint Selection:\n"
+		basePrompt += "- When proposing bedrooms/dining halls, SELECT a blueprint that fits the available space\n"
+		basePrompt += "- Include \"blueprint_used\": \"<name>\" in the node metadata when using a blueprint\n"
+		basePrompt += "- Use geometric patterns (arbitrary rectangles) only when blueprints don't fit or for non-bedroom structures\n"
+		basePrompt += "- Prefer proven designs (blueprints) over ad-hoc patterns for housing\n\n"
+	}
+
+	basePrompt += `Output format:
 {
   "sequence": [
     {"id": "corridor_1", "type": "corridor_connector", "region": {...}, "rationale": "Shared access"},
-    {"id": "food_1", "rationale": "Higher priority"},
+    {"id": "food_1", "rationale": "Higher priority", "metadata": {"blueprint_used": "bedroom_cluster_10"}},
     {"id": "housing_1", "rationale": "Parallel with food"}
   ],
   "synergies": ["corridor_1"],
@@ -1177,6 +1215,8 @@ Output format:
 
 Prioritize: Food (10) > Housing (9) > Mining (7) > Wealth (6), Defense (variable 0-10)
 Resolve conflicts by priority. Recognize spatial synergies when beneficial.`
+
+	return basePrompt
 }
 
 // assembleProposalGraph creates a graph from agent proposals

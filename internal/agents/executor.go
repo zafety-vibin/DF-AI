@@ -98,15 +98,41 @@ func convertRegion(r modifications.Region) protocol.Region {
 	}
 }
 
-// handleBedroomCluster generates DIG commands for 3×3 bedroom grid
+// handleBedroomCluster generates BLUEPRINT or DIG commands for bedrooms (T069-T070)
 func (ge *GraphExecutor) handleBedroomCluster(node ModificationNode) ([]protocol.CommandMessage, error) {
-	// For now, dig the entire region as bedrooms
-	// TODO: Generate actual 3×3 grid pattern
+	// Feature 007: Check if arbiter selected a blueprint
+	if node.Metadata != nil {
+		if blueprintName, ok := node.Metadata["blueprint_used"].(string); ok && blueprintName != "" {
+			// Use blueprint command
+			cmd := protocol.CommandMessage{
+				CommandType:   protocol.CommandTypeBlueprint,
+				BlueprintName: blueprintName,
+				OriginX:       node.Region.XMin,
+				OriginY:       node.Region.YMin,
+				OriginZ:       node.Region.ZMin,
+			}
+
+			ge.logger.Info("sending BLUEPRINT command",
+				logging.Field{Key: "node_id", Value: node.ID},
+				logging.Field{Key: "blueprint", Value: blueprintName},
+				logging.Field{Key: "origin", Value: fmt.Sprintf("(%d,%d,%d)", node.Region.XMin, node.Region.YMin, node.Region.ZMin)})
+
+			return []protocol.CommandMessage{cmd}, nil
+		}
+	}
+
+	// Fallback: Use geometric pattern (dig entire region)
 	cmd := protocol.CommandMessage{
 		CommandType: protocol.CommandTypeDig,
 		DigType:     protocol.DigTypeDefault,
 		Region:      convertRegion(node.Region),
 	}
+
+	ge.logger.Debug("sending DIG command (no blueprint specified)",
+		logging.Field{Key: "node_id", Value: node.ID},
+		logging.Field{Key: "region", Value: fmt.Sprintf("(%d,%d,%d)-(%d,%d,%d)",
+			node.Region.XMin, node.Region.YMin, node.Region.ZMin,
+			node.Region.XMax, node.Region.YMax, node.Region.ZMax)})
 
 	return []protocol.CommandMessage{cmd}, nil
 }
