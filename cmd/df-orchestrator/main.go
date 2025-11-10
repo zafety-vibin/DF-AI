@@ -71,19 +71,40 @@ Fort State Context:
   - Check before digging to avoid disasters
 - Chambers: extracted rooms and corridors from modifications (empty until you dig)
 - Dwarves: active dwarves and their positions
-- topology_slice: Terrain map showing walls vs open space (first turn only, 60×60 area)
-  - open_tiles: Array of "X,Y" coordinates that are ALREADY OPEN (floors, air, passable)
-  - TO DIG: Choose coordinates NOT in open_tiles (those are walls/rock)
-  - IMPORTANT: Do not dig coordinates that appear in open_tiles - those are already floors!
-  - Example: If open_tiles contains "45,35", do NOT dig (45,35) - it's already open space
+- topology_slice: Terrain map showing SOLID ROCK vs ALREADY DUG (first turn only, 60×60 area)
+  - open_tiles: Array of "X,Y" coordinates that are ALREADY DUG/OPEN (floors, air, passable space)
+  - CRITICAL: open_tiles = ALREADY PASSABLE = DO NOT DIG THESE COORDINATES
+  - TO DIG: Choose coordinates NOT in open_tiles (those are SOLID ROCK walls that CAN be mined)
+  - REVERSED LOGIC: If tile is "open", it means ALREADY EXCAVATED, don't dig it again!
+  - Example: If open_tiles contains "45,35", that coordinate is ALREADY A FLOOR - dig somewhere else!
+  - Mining targets: Pick coordinates where there is NO open_tile entry (those are solid walls/rock)
+
+Spatial Validator Planner (SVP) Guidance:
+- IF SVP has analyzed terrain, you will receive designated Z-levels in fort metrics:
+  - SVPHousingZ: Designated Z-level for bedrooms (typically embark - 5)
+  - SVPWorkshopZ: Designated Z-level for workshops (typically housing - 1)
+  - SVPFarmZ: Array of Z-levels with soil for farming
+- CRITICAL: If you are at a different Z-level than SVP designations, you MUST dig stairs to reach them!
+  - Example: Dwarves at Z=130, SVPHousingZ=125 → Dig DOWN stairs from Z=130 to Z=125
+  - Use "dig stairs" command to create vertical shafts (up/down stairs)
+  - Create 3×3 stairwell at current location, then extend downward each level
+- Strategic approach:
+  1. Dig entrance/gathering area at current dwarf Z-level (embark surface)
+  2. Dig stairs DOWN to SVPHousingZ (dig stairs from current Z, repeat at each level going down)
+  3. Once at SVPHousingZ, dig bedrooms horizontally
+  4. Continue stairs to SVPWorkshopZ for workshops
+- NEVER dig bedrooms at embark Z if SVP says housing should be elsewhere!
 
 Starting Strategy (First Turn):
 - Check embark_point to see where your dwarves are located
 - Check dwarves array to see their ACTUAL Z-level (embark_point.z is average, dwarves may be higher/lower)
-- Dig at the SAME Z-level where most dwarves are clustered (check dwarves[].z)
+- Check if SVP designations exist (SVPHousingZ, SVPWorkshopZ fields in metrics)
+- If SVP exists: Plan vertical shaft to reach designated layers
+- If no SVP: Dig at the SAME Z-level where most dwarves are clustered (check dwarves[].z)
 - Survey hazards within active_region (60×60 area around embark)
 - Identify safe digging direction (away from aquifers/water/lava)
 - Start with small entrance hall (5×10 corridor) adjacent to where dwarves are standing
+- Then dig stairs DOWN if SVP designations are below current Z
 - CRITICAL: Dwarves must be able to WALK to the dig site - don't dig isolated rooms on different Z-levels!
 - Example: If dwarves at (72, 89, 155), dig entrance at (72, 80, 155) to (72, 90, 155) - SAME Z=155
 

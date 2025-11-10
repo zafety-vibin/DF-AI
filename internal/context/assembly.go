@@ -498,9 +498,11 @@ func extractTopologySlice(topoOverlay *topology.TopologyOverlay, region modifica
 
 	totalTiles := int(width * height)
 	openPct := float64(openCount) / float64(totalTiles) * 100
+	closedCount := totalTiles - openCount
+	closedPct := 100 - openPct
 
-	description := fmt.Sprintf("Embark area %dx%d at Z=%d: %d/%d tiles open (%.1f%% passable, %.1f%% walls/rock)",
-		width, height, region.ZMin, openCount, totalTiles, openPct, 100-openPct)
+	description := fmt.Sprintf("Embark area %dx%d at Z=%d: %d tiles ALREADY DUG/OPEN (%.1f%% - DO NOT DIG), %d tiles SOLID ROCK (%.1f%% - CAN DIG HERE)",
+		width, height, region.ZMin, openCount, openPct, closedCount, closedPct)
 
 	return &TopologySliceData{
 		Z:           region.ZMin,

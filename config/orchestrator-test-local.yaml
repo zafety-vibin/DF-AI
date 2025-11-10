@@ -56,7 +56,7 @@ llm_max_tokens: 2048            # CHANGED: Reduce for local LLM (faster response
 llm_timeout_seconds: 60s        # CHANGED: Increase for local LLM (slower than Claude)
 
 # Context assembly settings
-context_budget_kb: 200          # Max context size for LLM (in KB)
+context_budget_kb: 10           # CHANGED: Reduce for local LLM with 4K context (was 200)
 context_update_frequency_seconds: 100  # How often to generate new context
 
 # Viewport settings for context generation
