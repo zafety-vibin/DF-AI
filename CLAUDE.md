@@ -10,6 +10,8 @@ Auto-generated from all feature plans. Last updated: 2025-11-05
 - Go 1.21+ (server), C++17 (DFHack plugin for command execution) + Go stdlib + net/http (LLM HTTP client), existing protocol/hazards/topology packages (005-llm-integration)
 - In-memory sparse maps (modification overlay <1 MB), no persistence (research experiment) (005-llm-integration)
 - Go 1.21+ (server orchestrator) (006-local-llm-agents)
+- Go 1.21+ (orchestrator), C++17 (DFHack plugin) + Existing DF-AI packages (agents, topology, hazards, modifications, protocol), DF building module API for zone extraction (007-svp-housing-zones)
+- JSON persistence files (saves/{fortname}/svp_layout.json for SVP designations), in-memory zone queue (optional persistence for restart resilience) (007-svp-housing-zones)
 
 - Go 1.21+ (server), C++17 (DFHack plugin) (001-binary-protocol)
 
@@ -29,9 +31,9 @@ tests/
 Go 1.21+ (server), C++17 (DFHack plugin): Follow standard conventions
 
 ## Recent Changes
+- 007-svp-housing-zones: Added Go 1.21+ (orchestrator), C++17 (DFHack plugin) + Existing DF-AI packages (agents, topology, hazards, modifications, protocol), DF building module API for zone extraction
 - 006-local-llm-agents: Added Go 1.21+ (server orchestrator)
 - 005-llm-integration: Added Go 1.21+ (server), C++17 (DFHack plugin for command execution) + Go stdlib + net/http (LLM HTTP client), existing protocol/hazards/topology packages
-- 004-hazard-overlays: Added Go 1.21+ + Go stdlib only (may need protocol enhancement)
 
 
 <!-- MANUAL ADDITIONS START -->
