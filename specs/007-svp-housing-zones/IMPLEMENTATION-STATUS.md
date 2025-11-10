@@ -7,7 +7,7 @@
 
 ---
 
-## Overall Progress: 57/120 Tasks (48%)
+## Overall Progress: 83/120 Tasks (69%) + HRM Refactor (11/15)
 
 ### Phase Completion Status
 
@@ -17,7 +17,8 @@
 | Phase 2: Foundational | 16 | 16 | 0 | ✅ DONE | N/A |
 | Phase 3: US1 - SVP | 19 | 19 | 0 | ✅ DONE | ✅ YES |
 | Phase 4: US2 - Zone Extract | 20 | 16 | 4 | 🚧 80% | ⏳ Plugin |
-| Phase 5: US3 - Blueprints | 15 | 0 | 15 | ⏸️ TODO | NO |
+| Phase 5: US3 - Blueprints | 15 | 15 | 0 | ✅ DONE | ✅ YES |
+| Phase 5.5: HRM Refactor | 15 | 11 | 4 | 🚧 73% | ✅ YES |
 | Phase 6: US4 - Zone Commands | 15 | 0 | 15 | ⏸️ TODO | NO |
 | Phase 7: US5 - Zone Queue | 18 | 0 | 18 | ⏸️ TODO | NO |
 | Phase 8: Polish & Tests | 12 | 1 | 11 | 🚧 8% | NO |
@@ -122,13 +123,75 @@
 
 ---
 
-### ⏸️ Phase 5: User Story 3 - Blueprint Integration (0/15 - 0%)
+### ✅ Phase 5: User Story 3 - Blueprint Integration (15/15 - 100%)
 
 **Goal**: Arbiter selects blueprints for proven designs
 
-**Tasks**: T061-T075
-**Status**: Not started
-**Dependencies**: None (can start now)
+**Completed Tasks**:
+- [X] T061-T065 Blueprint metadata system (LoadMetadata, parseBlueprint, ToPromptString, FitsInSpace, GetMetadataPrompt)
+- [X] T066-T067 Arbiter prompt integration (blueprint library in system prompt)
+- [X] T068 Parse blueprint_used from arbiter responses
+- [X] T069-T070 GraphExecutor BLUEPRINT command support
+- [X] T071-T072 Example blueprints with zone companions (bedroom_3x3, bedroom_cluster_10)
+- [X] T073-T075 Comprehensive logging (metadata loading, arbiter selection, executor commands)
+
+**Status**: Complete and functional
+**Deliverable**: Full blueprint integration pipeline
+**Build**: ✅ Compiles
+**Testable**: ✅ YES (with coordinate-based flow)
+
+**Key Files**:
+- `internal/blueprints/metadata.go` (metadata generation)
+- `internal/agents/executor.go` (BLUEPRINT command in handleBedroomCluster)
+- `internal/autonomous/loop.go` (arbiter prompt with blueprints)
+- `blueprints/*.csv` (example blueprints with zones)
+
+---
+
+### ✅ Phase 5.5: HRM Architecture Refactor (11/15 - 73%)
+
+**Goal**: Implement intent-based planning (agents propose WHAT, arbiter decides WHERE)
+
+**Inspiration**: [Hierarchical Reasoning Model](https://arxiv.org/abs/2506.21734v3) - 27M param model solving Sudoku/ARC-AGI with 1000 examples
+
+**Completed Tasks**:
+- [X] R001 Define StrategicLayout, ZoneLayer, SpatialRegion types
+- [X] R002 Define IntentProposal, ArbiterCommand, ArbiterIntentResponse types
+- [X] R003 SVP.GetStrategicLayout() accessor
+- [X] R004 buildStrategicLayout() layer constructor
+- [X] R005 ZoneExtractor.GetZonesByZLevel() for layer analysis
+- [X] R006 analyzeLayer() + findAvailableRegions() + UpdateStrategicLayoutWithZones()
+- [X] R007 HousingAgent.AnalyzeIntent() method
+- [X] R008 collectIntentProposals() in autonomous loop
+- [X] R009 buildArbiterIntentInput() JSON formatter
+- [X] R010 parseArbiterIntentResponse() parser
+- [X] R011 convertArbiterCommandsToProtocol() + branching logic in runCycle()
+
+**Remaining Tasks**:
+- [ ] R012 Create test scenario with intent planning enabled
+- [ ] R013 Document usage examples
+- [ ] R014 Validate intent vs coordinate flow parity
+- [ ] R015 Deprecate old flow (after validation)
+
+**Status**: Core implementation complete, testing pending
+**Deliverable**: Dual-mode architecture (intent + coordinate flows coexist)
+**Build**: ✅ Compiles
+**Testable**: ✅ YES (toggle with `use_intent_planning` config)
+**Documentation**: HRM-ARCHITECTURE.md created
+
+**Key Architectural Shift**:
+```
+BEFORE: Agents → Coordinates → Arbiter sorts → Executor
+AFTER:  Agents → Intents → SVP+Arbiter reason → BLUEPRINT commands
+```
+
+**Key Files**:
+- `internal/spatial/layout.go` (StrategicLayout types, lines 61-119)
+- `internal/agents/intent.go` (IntentProposal types)
+- `internal/spatial/planner.go` (StrategicLayout generation, lines 376-568)
+- `internal/zones/extractor.go` (GetZonesByZLevel, lines 114-155)
+- `internal/agents/housing.go` (AnalyzeIntent, lines 101-156)
+- `internal/autonomous/loop.go` (intent flow, lines 236-428, 1256-1383)
 
 ---
 
@@ -263,8 +326,10 @@
 | 7 | c2e2081 | SVP complete (Phase 3) | T022-T040 |
 | 8 | 087fe6d | Zone extraction (Phase 4 orchestrator) | T041-T056 |
 | 9 | 482b30e | Config + plugin guide | T109, docs |
+| 10 | cf789d4 | Blueprint integration (Phase 5) | T061-T075, T109 |
+| 11 | 8be356a | HRM architecture refactor | R001-R011 |
 
-**Total**: 9 commits with detailed documentation
+**Total**: 11 commits with detailed documentation
 
 ---
 
@@ -313,6 +378,8 @@
 ## Current Capabilities
 
 **What Works Now** (with orchestrator only):
+
+**Coordinate-Based Flow** (`use_intent_planning: false`):
 - ✅ SVP analyzes terrain when connected to DF
 - ✅ SVP designates housing/workshop/farm Z-levels
 - ✅ SVP persists layout across restarts
@@ -320,7 +387,19 @@
 - ✅ HousingAgent queries SVP for housing Z
 - ✅ HousingAgent calculates deficits from BedroomZoneCount
 - ✅ Zone extraction processes zone data (when provided)
+- ✅ Blueprint metadata loaded and included in arbiter prompt
+- ✅ Arbiter can select blueprints (via node metadata)
+- ✅ GraphExecutor sends BLUEPRINT commands
 - ✅ Comprehensive logging throughout
+
+**Intent-Based Flow** (`use_intent_planning: true`):
+- ✅ SVP generates StrategicLayout JSON (available regions per Z-level)
+- ✅ SVP updates StrategicLayout with zone counts each cycle
+- ✅ HousingAgent.AnalyzeIntent() proposes needs without coordinates
+- ✅ Arbiter receives StrategicLayout + IntentProposals + Blueprints
+- ✅ Arbiter outputs Blueprint+Anchor commands
+- ✅ Commands converted to BLUEPRINT protocol messages
+- ✅ Dual-mode toggle (both flows coexist)
 
 **What Needs Plugin** (T057-T060):
 - ⏳ Real zone data from DF (currently empty array)
