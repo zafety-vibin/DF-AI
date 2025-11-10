@@ -44,11 +44,12 @@ func NewSpatialValidatorPlanner(fortName string, persistenceDir string, logger *
 
 // AnalyzeTerrain performs initial terrain analysis using topology and entity data
 func (svp *SpatialValidatorPlanner) AnalyzeTerrain(
-	topologyOverlay *topology.Overlay,
-	entities []*protocol.Entity,
-	hazardMgr *hazards.Manager,
+	topologyOverlay *topology.TopologyOverlay,
+	entities []*protocol.EntityInfo,
+	hazardMgr *hazards.HazardManager,
 ) error {
-	svp.logger.Info("SVP: Starting terrain analysis", "fort", svp.fortName)
+	svp.logger.Info("SVP: Starting terrain analysis",
+		logging.Field{Key: "fort", Value: svp.fortName})
 
 	// Detect embark Z from dwarf positions
 	embarkZ, err := svp.detectEmbarkZ(entities)
@@ -56,33 +57,42 @@ func (svp *SpatialValidatorPlanner) AnalyzeTerrain(
 		return fmt.Errorf("failed to detect embark Z: %w", err)
 	}
 	svp.embarkZ = embarkZ
-	svp.logger.Debug("SVP: Detected embark Z", "z", embarkZ)
+	svp.logger.Debug("SVP: Detected embark Z",
+		logging.Field{Key: "z", Value: embarkZ})
 
 	// Calculate housing layer (5 levels below embark to reach uniform horizontal layer)
 	svp.housingZ = embarkZ - 5
-	svp.logger.Debug("SVP: Designated housing Z", "z", svp.housingZ)
+	svp.logger.Debug("SVP: Designated housing Z",
+		logging.Field{Key: "z", Value: svp.housingZ})
 
 	// Calculate workshop layer (immediately below housing)
 	svp.workshopZ = svp.housingZ - 1
-	svp.logger.Debug("SVP: Designated workshop Z", "z", svp.workshopZ)
+	svp.logger.Debug("SVP: Designated workshop Z",
+		logging.Field{Key: "z", Value: svp.workshopZ})
 
 	// Detect soil layers suitable for farming
 	svp.farmZ = svp.detectSoilLayers(topologyOverlay)
-	svp.logger.Debug("SVP: Detected soil layers for farming", "count", len(svp.farmZ), "z_levels", svp.farmZ)
+	svp.logger.Debug("SVP: Detected soil layers for farming",
+		logging.Field{Key: "count", Value: len(svp.farmZ)},
+		logging.Field{Key: "z_levels", Value: svp.farmZ})
 
 	// Query hazard manager for dangerous Z-levels
 	if hazardMgr != nil {
 		svp.hazardZ = svp.detectHazardLayers(hazardMgr)
-		svp.logger.Debug("SVP: Detected hazard layers", "count", len(svp.hazardZ), "z_levels", svp.hazardZ)
+		svp.logger.Debug("SVP: Detected hazard layers",
+			logging.Field{Key: "count", Value: len(svp.hazardZ)},
+			logging.Field{Key: "z_levels", Value: svp.hazardZ})
 
 		// Validate housing/workshop don't overlap with hazards
 		if svp.isHazardZLevel(svp.housingZ) {
-			svp.logger.Warn("SVP: Housing Z conflicts with hazard, adjusting", "original_z", svp.housingZ)
+			svp.logger.Warn("SVP: Housing Z conflicts with hazard, adjusting",
+				logging.Field{Key: "original_z", Value: svp.housingZ})
 			svp.housingZ = svp.findSafeZLevel(svp.housingZ, -1, hazardMgr)
 			svp.workshopZ = svp.housingZ - 1
 		}
 		if svp.isHazardZLevel(svp.workshopZ) {
-			svp.logger.Warn("SVP: Workshop Z conflicts with hazard, adjusting", "original_z", svp.workshopZ)
+			svp.logger.Warn("SVP: Workshop Z conflicts with hazard, adjusting",
+				logging.Field{Key: "original_z", Value: svp.workshopZ})
 			svp.workshopZ = svp.findSafeZLevel(svp.workshopZ, -1, hazardMgr)
 		}
 	}
@@ -91,16 +101,16 @@ func (svp *SpatialValidatorPlanner) AnalyzeTerrain(
 	svp.ready = true
 
 	svp.logger.Info("SVP: Terrain analysis complete",
-		"embark_z", svp.embarkZ,
-		"housing_z", svp.housingZ,
-		"workshop_z", svp.workshopZ,
-		"farm_z_count", len(svp.farmZ))
+		logging.Field{Key: "embark_z", Value: svp.embarkZ},
+		logging.Field{Key: "housing_z", Value: svp.housingZ},
+		logging.Field{Key: "workshop_z", Value: svp.workshopZ},
+		logging.Field{Key: "farm_z_count", Value: len(svp.farmZ)})
 
 	return nil
 }
 
 // detectEmbarkZ calculates embark Z from dwarf initial positions (mode of Z coordinates)
-func (svp *SpatialValidatorPlanner) detectEmbarkZ(entities []*protocol.Entity) (int, error) {
+func (svp *SpatialValidatorPlanner) detectEmbarkZ(entities []*protocol.EntityInfo) (int, error) {
 	if len(entities) == 0 {
 		return 0, fmt.Errorf("no entities provided for embark detection")
 	}
@@ -130,13 +140,16 @@ func (svp *SpatialValidatorPlanner) detectEmbarkZ(entities []*protocol.Entity) (
 		}
 	}
 
-	svp.logger.Debug("SVP: Embark Z detection", "dwarf_count", dwarfCount, "unique_z_levels", len(zCounts), "mode_z", embarkZ)
+	svp.logger.Debug("SVP: Embark Z detection",
+		logging.Field{Key: "dwarf_count", Value: dwarfCount},
+		logging.Field{Key: "unique_z_levels", Value: len(zCounts)},
+		logging.Field{Key: "mode_z", Value: embarkZ})
 
 	return embarkZ, nil
 }
 
 // detectSoilLayers queries topology for Z-levels with soil
-func (svp *SpatialValidatorPlanner) detectSoilLayers(topologyOverlay *topology.Overlay) []int {
+func (svp *SpatialValidatorPlanner) detectSoilLayers(topologyOverlay *topology.TopologyOverlay) []int {
 	soilLayers := make([]int, 0)
 
 	if topologyOverlay == nil {
@@ -157,7 +170,7 @@ func (svp *SpatialValidatorPlanner) detectSoilLayers(topologyOverlay *topology.O
 }
 
 // detectHazardLayers queries hazard manager for dangerous Z-levels
-func (svp *SpatialValidatorPlanner) detectHazardLayers(hazardMgr *hazards.Manager) []int {
+func (svp *SpatialValidatorPlanner) detectHazardLayers(hazardMgr *hazards.HazardManager) []int {
 	hazardLayers := make([]int, 0)
 
 	// Query hazard manager for aquifer, lava, cavern Z-levels
@@ -179,7 +192,7 @@ func (svp *SpatialValidatorPlanner) isHazardZLevel(z int) bool {
 }
 
 // findSafeZLevel finds a nearby Z-level that's not hazardous
-func (svp *SpatialValidatorPlanner) findSafeZLevel(startZ int, direction int, hazardMgr *hazards.Manager) int {
+func (svp *SpatialValidatorPlanner) findSafeZLevel(startZ int, direction int, hazardMgr *hazards.HazardManager) int {
 	// Search in the given direction for a safe Z-level
 	safeZ := startZ
 	for i := 0; i < 10; i++ {
@@ -225,26 +238,27 @@ func (svp *SpatialValidatorPlanner) ValidateProposal(
 	}
 
 	// Check if proposal is in hazard zone
-	if svp.isHazardZLevel(region.ZMin) {
-		return false, fmt.Sprintf("Proposal at Z=%d conflicts with hazard zone", region.ZMin)
+	proposalZ := int(region.ZMin)
+	if svp.isHazardZLevel(proposalZ) {
+		return false, fmt.Sprintf("Proposal at Z=%d conflicts with hazard zone", proposalZ)
 	}
 
 	// Type-specific validation
 	switch nodeType {
 	case "bedroom_cluster":
-		if region.ZMin != svp.housingZ {
-			return false, fmt.Sprintf("Bedroom proposal should be at housing Z=%d, not Z=%d", svp.housingZ, region.ZMin)
+		if proposalZ != svp.housingZ {
+			return false, fmt.Sprintf("Bedroom proposal should be at housing Z=%d, not Z=%d", svp.housingZ, proposalZ)
 		}
 	case "farm_plot":
 		validFarmZ := false
 		for _, fz := range svp.farmZ {
-			if region.ZMin == fz {
+			if proposalZ == fz {
 				validFarmZ = true
 				break
 			}
 		}
 		if !validFarmZ {
-			return false, fmt.Sprintf("Farm proposal at Z=%d, but soil only at Z=%v", region.ZMin, svp.farmZ)
+			return false, fmt.Sprintf("Farm proposal at Z=%d, but soil only at Z=%v", proposalZ, svp.farmZ)
 		}
 	}
 
@@ -285,7 +299,8 @@ func (svp *SpatialValidatorPlanner) Save() error {
 		return fmt.Errorf("failed to write SVP layout: %w", err)
 	}
 
-	svp.logger.Info("SVP: Saved layout to disk", "path", svp.persistencePath)
+	svp.logger.Info("SVP: Saved layout to disk",
+		logging.Field{Key: "path", Value: svp.persistencePath})
 	return nil
 }
 
@@ -304,8 +319,8 @@ func (svp *SpatialValidatorPlanner) Load(fortName string) error {
 	// Validate fort name matches
 	if layout["fort_name"] != fortName {
 		svp.logger.Warn("SVP: Fort name mismatch in loaded layout",
-			"expected", fortName,
-			"found", layout["fort_name"])
+			logging.Field{Key: "expected", Value: fortName},
+			logging.Field{Key: "found", Value: layout["fort_name"]})
 	}
 
 	// Restore fields
@@ -341,10 +356,10 @@ func (svp *SpatialValidatorPlanner) Load(fortName string) error {
 	svp.ready = true
 
 	svp.logger.Info("SVP: Loaded layout from disk",
-		"path", svp.persistencePath,
-		"housing_z", svp.housingZ,
-		"workshop_z", svp.workshopZ,
-		"farm_z", svp.farmZ)
+		logging.Field{Key: "path", Value: svp.persistencePath},
+		logging.Field{Key: "housing_z", Value: svp.housingZ},
+		logging.Field{Key: "workshop_z", Value: svp.workshopZ},
+		logging.Field{Key: "farm_z", Value: svp.farmZ})
 
 	return nil
 }
