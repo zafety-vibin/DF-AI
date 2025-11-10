@@ -20,6 +20,7 @@ import (
 	"github.com/df-ai/orchestrator/internal/modifications"
 	"github.com/df-ai/orchestrator/internal/phases"
 	"github.com/df-ai/orchestrator/internal/protocol"
+	"github.com/df-ai/orchestrator/internal/spatial"
 	"github.com/df-ai/orchestrator/internal/topology"
 )
 
@@ -42,6 +43,13 @@ type AutonomousLoop struct {
 	agentRegistry       *agents.AgentRegistry // Goal-oriented agents (Feature 006)
 	enableGoalAgents    bool                  // Enable graph-based agents vs direct-LLM
 	graphExecutor       *agents.GraphExecutor  // Converts nodes to commands
+
+	// Feature 007: Spatial Validator Planner
+	svp              *spatial.SpatialValidatorPlanner // Z-level designations
+	svpState         SVPState                         // Tracks SVP initialization
+	topologyReceived bool                             // Whether RESYNC received
+	entitiesReceived bool                             // Whether ENTITY_UPDATE received
+
 	logFile             *os.File
 	mu                  sync.RWMutex
 	running             bool
@@ -57,6 +65,15 @@ type AutonomousLoop struct {
 	cachedEntities []protocol.EntityInfo
 	entityMu       sync.RWMutex
 }
+
+// SVPState tracks SVP initialization progress
+type SVPState int
+
+const (
+	SVPStateWaitingForTopology SVPState = iota
+	SVPStateWaitingForEntities
+	SVPStateReady
+)
 
 // NewLoop creates a new autonomous loop
 func NewLoop(
@@ -866,6 +883,13 @@ func (al *AutonomousLoop) SetAgentRegistry(registry *agents.AgentRegistry, enabl
 		logging.Field{Key: "agent_count", Value: len(registry.List())})
 }
 
+// SetSVP sets the Spatial Validator Planner (Feature 007)
+func (al *AutonomousLoop) SetSVP(svp *spatial.SpatialValidatorPlanner) {
+	al.svp = svp
+	al.svpState = SVPStateWaitingForTopology
+	al.logger.Info("SVP configured - waiting for topology and entity data")
+}
+
 // computeFortMetrics extracts fort metrics from current state
 func (al *AutonomousLoop) computeFortMetrics() *agents.FortMetrics {
 	metrics := &agents.FortMetrics{}
@@ -904,6 +928,13 @@ func (al *AutonomousLoop) computeFortMetrics() *agents.FortMetrics {
 	if al.phaseManager != nil {
 		metrics.FortAge = al.phaseManager.GetDaysElapsed()
 		metrics.Phase = al.phaseManager.GetPhase()
+	}
+
+	// Feature 007: Add SVP designations to metrics
+	if al.svp != nil && al.svp.IsReady() {
+		metrics.SVPHousingZ = al.svp.GetHousingZ()
+		metrics.SVPWorkshopZ = al.svp.GetWorkshopZ()
+		metrics.SVPFarmZ = al.svp.GetFarmZ()
 	}
 
 	return metrics
