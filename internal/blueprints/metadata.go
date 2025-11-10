@@ -9,6 +9,15 @@ import (
 	"github.com/df-ai/orchestrator/internal/logging"
 )
 
+// StaircaseAnchor represents a staircase location within a blueprint (relative coordinates)
+type StaircaseAnchor struct {
+	RelativeX    int    `json:"x"`          // X offset from blueprint origin
+	RelativeY    int    `json:"y"`          // Y offset from blueprint origin
+	RelativeZ    int    `json:"z"`          // Z offset (0 for single-level blueprints)
+	StairType    string `json:"type"`       // "up", "down", "updown"
+	IsEntryPoint bool   `json:"entry"`      // True if this is the main entry staircase
+}
+
 // BlueprintMetadata represents metadata about blueprints for arbiter context
 type BlueprintMetadata struct {
 	Name                string                 // Blueprint filename (without .csv)
@@ -21,12 +30,41 @@ type BlueprintMetadata struct {
 	Description         string                 // Purpose and features (max 200 chars)
 	Tags                []string               // Categories (bedroom, compact, nobles, etc.) - 0-5 elements
 	SuitabilityCriteria map[string]interface{} // Min space, constraints
+
+	// Staircase tracking for connectivity (CRITICAL)
+	StairCount     int                `json:"stair_count"`      // Total stairs in blueprint
+	StairLocations []StaircaseAnchor `json:"stair_locations"`  // Relative coordinates of stairs
 }
 
-// ToPromptString formats metadata for arbiter system prompt
+// ToPromptString formats metadata for arbiter system prompt (includes stair info)
 func (bm *BlueprintMetadata) ToPromptString() string {
-	return fmt.Sprintf("%s: %s (%d×%d tiles, %d dwarf capacity)",
-		bm.DisplayName, bm.Description, bm.Width, bm.Height, bm.DwarfCapacity)
+	stairInfo := ""
+	if bm.StairCount > 0 {
+		stairTypes := make(map[string]int)
+		for _, stair := range bm.StairLocations {
+			stairTypes[stair.StairType]++
+		}
+		stairInfo = fmt.Sprintf(", %d stair(s)", bm.StairCount)
+		if len(stairTypes) == 1 && bm.StairCount == 1 {
+			// Single stair - indicate location
+			stair := bm.StairLocations[0]
+			location := "center"
+			if stair.RelativeX < bm.Width/4 {
+				location = "west"
+			} else if stair.RelativeX > 3*bm.Width/4 {
+				location = "east"
+			}
+			if stair.RelativeY < bm.Height/4 {
+				location = "north-" + location
+			} else if stair.RelativeY > 3*bm.Height/4 {
+				location = "south-" + location
+			}
+			stairInfo = fmt.Sprintf(", 1 %s stair at %s (%d,%d)", stair.StairType, location, stair.RelativeX, stair.RelativeY)
+		}
+	}
+
+	return fmt.Sprintf("%s: %s (%d×%d tiles, %d rooms%s)",
+		bm.DisplayName, bm.Description, bm.Width, bm.Height, bm.DwarfCapacity, stairInfo)
 }
 
 // FitsInSpace checks if blueprint fits in available region

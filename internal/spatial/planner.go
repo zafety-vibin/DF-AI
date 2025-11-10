@@ -455,6 +455,10 @@ func (svp *SpatialValidatorPlanner) analyzeLayer(
 		ExistingZones:      existingZones,
 		ExistingWorkshops:  make(map[string]int),
 		ExistingStockpiles: make(map[string]int),
+		ExistingStairs:     make([]*StaircaseLocation, 0),
+		OrphanedStairs:     make([]*StaircaseLocation, 0),
+		ConnectsToZAbove:   false,
+		ConnectsToZBelow:   false,
 		Constraints:        make([]string, 0),
 	}
 

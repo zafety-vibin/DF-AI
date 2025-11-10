@@ -1425,6 +1425,33 @@ Decision Rules:
 5. Prefer blueprints over geometric patterns
 6. If blueprint doesn't fit, defer the proposal
 
+CRITICAL: Staircase Connectivity Rules
+Staircases connect Z-levels vertically. Without proper anchoring, levels become ISOLATED!
+
+Staircase Anchoring Algorithm:
+1. Check fort_layout.layers[purpose].existing_stairs for current staircase positions
+2. If existing stairs found on target layer:
+   a) Calculate anchor that ALIGNS blueprint stair with existing stair
+   b) anchor_x = existing_stair.x - blueprint.stair_locations[0].x
+   c) anchor_y = existing_stair.y - blueprint.stair_locations[0].y
+   d) This ensures stairs stack vertically (perfect (x,y) alignment)
+3. If no existing stairs on layer:
+   a) Place blueprint freely (its stair becomes the vertical shaft anchor)
+   b) NOTE: Future blueprints on adjacent Z-levels MUST align to this stair
+4. Verify connectivity:
+   - Blueprint with up_stair requires matching down_stair on Z+1
+   - Blueprint with down_stair requires matching up_stair on Z-1
+   - If mismatch detected, DEFER the proposal
+
+Anchoring Example:
+  Existing stair: (50, 50, 95) type="updown"
+  Blueprint stair offset: (9, 6) type="updown"
+  Calculated anchor: (50-9, 50-6, 95) = (41, 44, 95)
+  Verification: Blueprint stair will be at (41+9, 44+6) = (50, 50) ✓ Aligned!
+
+Priority: Connectivity > Optimal placement
+If aligning to stair forces blueprint outside region bounds, DEFER proposal
+
 Priority: Food (10) > Housing (9) > Mining (7) > Wealth (6) > Defense (variable)`
 }
 
