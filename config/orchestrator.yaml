@@ -131,3 +131,20 @@ agent_defense:
   enabled: true
   priority_base: 0       # Priority when no threats
   priority_threat: 10    # Priority when enemies detected
+
+# Feature 007: Spatial Validator Planner
+use_svp: true                      # Enable SVP for Z-level organization
+svp_persistence_dir: ./saves       # Directory for SVP layout files
+
+# Feature 007: Zone Extraction
+extract_zones: true                # Enable real zone data extraction from DF
+zone_extraction_interval_ms: 5000  # Extract zones every 5 seconds
+
+# Feature 007: Blueprint Integration
+blueprint_directory: ./blueprints           # Path to blueprint CSV files
+include_blueprint_metadata: true            # Add blueprint metadata to arbiter prompt
+
+# Feature 007: Zone Queue
+zone_queue_max_size: 50                    # Maximum queued zones
+zone_queue_max_retries: 3                  # Max retry attempts per zone
+zone_queue_timeout_cycles: 10              # Cycles before zone timeout
