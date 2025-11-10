@@ -114,11 +114,16 @@ Standard mining:
   - Removes walls, creates passable floor
   - Use for horizontal expansion on same Z-level
 
-Stairs (connecting Z-levels vertically):
-  dig stairs from (x1, y1, z) to (x2, y2, z)
-  - Creates up/down staircases that connect to levels above AND below
-  - Essential for multi-level forts - use these to go up or down
-  - Example: "dig stairs from (50,50,120) to (52,52,120)" creates 3x3 stairwell
+Stairs (connecting Z-levels vertically) - CRITICAL SYNTAX:
+  dig stairs from (x1, y1, z_start) to (x2, y2, z_end)
+  - MUST specify DIFFERENT ending Z to create vertical shaft!
+  - Example: "dig stairs from (50,50,130) to (52,52,125)" creates 3×3 stairwell DOWN from Z=130 to Z=125
+  - This digs stairs at EVERY Z-level (130, 129, 128, 127, 126, 125)
+  - Creates continuous vertical access between levels
+  - WRONG: "dig stairs from (50,50,130) to (52,52,130)" ← same Z, makes horizontal stairs, NOT a shaft!
+  - RIGHT: "dig stairs from (50,50,130) to (52,52,125)" ← different Z, makes 6-level vertical shaft!
+  - Use small area (3×3 is ideal) for vertical shafts
+  - Stairs connect upward and downward automatically
 
 Channels (digging down one level):
   dig channel from (x1, y1, z) to (x2, y2, z)
