@@ -20,9 +20,10 @@ type CommandSpec struct {
 type RegionSpec struct {
 	X1 uint16 `json:"x1"`
 	Y1 uint16 `json:"y1"`
-	Z  uint16 `json:"z"`
+	Z  uint16 `json:"z"`  // Start Z
 	X2 uint16 `json:"x2"`
 	Y2 uint16 `json:"y2"`
+	Z2 uint16 `json:"z2"` // End Z (for vertical shafts)
 }
 
 // ParsedResponse contains structured data extracted from LLM response
@@ -95,9 +96,9 @@ func parseNaturalLanguage(text string) *ParsedResponse {
 		RawText:   text,
 	}
 
-	// Pattern: dig [type] from (x1, y1, z) to (x2, y2, z)
-	// Captures: dig type (optional: stairs, updownstairs, channel, ramp, upstair, downstair, default)
-	coordPattern := regexp.MustCompile(`(?i)(dig|build)\s+(?:(stairs|updownstairs|updown|channel|ramp|upstair|downstair)\s+)?(?:from\s+)?\(?(\d+),\s*(\d+),\s*(\d+)\)?\s+(?:to\s+)?\(?(\d+),\s*(\d+)(?:,\s*\d+)?\)?`)
+	// Pattern: dig [type] from (x1, y1, z1) to (x2, y2, z2)
+	// Captures: dig type + coordinates (including ending Z for vertical shafts)
+	coordPattern := regexp.MustCompile(`(?i)(dig|build)\s+(?:(stairs|updownstairs|updown|channel|ramp|upstair|downstair)\s+)?(?:from\s+)?\(?(\d+),\s*(\d+),\s*(\d+)\)?\s+(?:to\s+)?\(?(\d+),\s*(\d+)(?:,\s*(\d+))?\)?`)
 
 	matches := coordPattern.FindAllStringSubmatch(text, -1)
 	for _, match := range matches {
@@ -115,9 +116,16 @@ func parseNaturalLanguage(text string) *ParsedResponse {
 
 			x1, _ := strconv.ParseUint(match[3], 10, 16)
 			y1, _ := strconv.ParseUint(match[4], 10, 16)
-			z, _ := strconv.ParseUint(match[5], 10, 16)
+			z1, _ := strconv.ParseUint(match[5], 10, 16)
 			x2, _ := strconv.ParseUint(match[6], 10, 16)
 			y2, _ := strconv.ParseUint(match[7], 10, 16)
+
+			// Parse ending Z if provided (match[8])
+			z2 := z1 // Default to same Z-level
+			if len(match) >= 9 && match[8] != "" {
+				z2Val, _ := strconv.ParseUint(match[8], 10, 16)
+				z2 = z2Val
+			}
 
 			cmd := CommandSpec{
 				Type:    cmdType,
@@ -125,9 +133,10 @@ func parseNaturalLanguage(text string) *ParsedResponse {
 				Region: &RegionSpec{
 					X1: uint16(x1),
 					Y1: uint16(y1),
-					Z:  uint16(z),
+					Z:  uint16(z1),
 					X2: uint16(x2),
 					Y2: uint16(y2),
+					Z2: uint16(z2),
 				},
 				Params: make(map[string]interface{}),
 			}

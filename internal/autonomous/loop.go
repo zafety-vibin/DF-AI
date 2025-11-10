@@ -525,6 +525,14 @@ func mapDigType(digType string) uint8 {
 	}
 }
 
+// abs returns absolute value of int
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // assembleContext assembles fort state context
 // Uses smart assembly: first turn shows terrain, later turns show modifications + rooms
 func (al *AutonomousLoop) assembleContext() (string, error) {
@@ -701,23 +709,70 @@ func (al *AutonomousLoop) executeCommands(specs []llm.CommandSpec) (uint32, erro
 	return lastCommandID, nil
 }
 
-// executeDig executes a dig command
+// executeDig executes a dig command (handles Z-ranges for vertical shafts)
 func (al *AutonomousLoop) executeDig(spec llm.CommandSpec) (uint32, error) {
 	region := spec.Region
 
 	// Map dig type string to protocol constant
 	digType := mapDigType(spec.DigType)
 
+	// Determine Z-range (Z2 if set, otherwise use Z)
+	z1 := int16(region.Z)
+	z2 := z1
+	if region.Z2 > 0 && region.Z2 != region.Z {
+		z2 = int16(region.Z2)
+	}
+
+	// For stairs across Z-levels, dig at each level
+	isStairCommand := spec.DigType == "stairs" || spec.DigType == "updownstairs"
+	if isStairCommand && z1 != z2 {
+		al.logger.Info("executing vertical shaft",
+			logging.Field{Key: "region", Value: fmt.Sprintf("(%d,%d,%d) to (%d,%d,%d)",
+				region.X1, region.Y1, z1, region.X2, region.Y2, z2)},
+			logging.Field{Key: "dig_type", Value: spec.DigType},
+			logging.Field{Key: "z_levels", Value: abs(int(z2-z1)) + 1})
+
+		// Dig stairs at each Z-level from z1 to z2
+		var lastCmdID uint32
+		zStart, zEnd := z1, z2
+		if z1 > z2 {
+			zStart, zEnd = z2, z1 // Swap if going down
+		}
+
+		for z := zStart; z <= zEnd; z++ {
+			result, err := al.commandExecutor.SendDigCommand(
+				digType,
+				int16(region.X1),
+				int16(region.Y1),
+				z,
+				int16(region.X2),
+				int16(region.Y2),
+			)
+			if err != nil {
+				al.logger.Warn("stair level failed",
+					logging.Field{Key: "z", Value: z},
+					logging.Field{Key: "error", Value: err.Error()})
+				continue
+			}
+			if result.Success {
+				lastCmdID = result.Response.CommandID
+			}
+		}
+
+		return lastCmdID, nil
+	}
+
+	// Single Z-level dig
 	al.logger.Info("executing dig command",
 		logging.Field{Key: "region", Value: fmt.Sprintf("(%d,%d,%d) to (%d,%d,%d)",
-			region.X1, region.Y1, region.Z, region.X2, region.Y2, region.Z)},
+			region.X1, region.Y1, z1, region.X2, region.Y2, z1)},
 		logging.Field{Key: "dig_type", Value: spec.DigType})
 
 	result, err := al.commandExecutor.SendDigCommand(
 		digType,
 		int16(region.X1),
 		int16(region.Y1),
-		int16(region.Z),
+		z1,
 		int16(region.X2),
 		int16(region.Y2),
 	)
@@ -732,8 +787,8 @@ func (al *AutonomousLoop) executeDig(spec llm.CommandSpec) (uint32, error) {
 	// Track as pending command
 	cmdID := result.Response.CommandID
 	expectedTiles := commands.CalculateExpectedTiles(protocol.Region{
-		X1: int16(region.X1), Y1: int16(region.Y1), Z1: int16(region.Z),
-		X2: int16(region.X2), Y2: int16(region.Y2), Z2: int16(region.Z),
+		X1: int16(region.X1), Y1: int16(region.Y1), Z1: z1,
+		X2: int16(region.X2), Y2: int16(region.Y2), Z2: z1,
 	})
 
 	al.pendingMu.Lock()
