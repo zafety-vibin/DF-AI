@@ -1,5 +1,12 @@
 package blueprints
 
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
 // BlueprintMetadata represents metadata about blueprints for arbiter context
 type BlueprintMetadata struct {
 	Name                string                 // Blueprint filename (without .csv)
@@ -16,12 +23,129 @@ type BlueprintMetadata struct {
 
 // ToPromptString formats metadata for arbiter system prompt
 func (bm *BlueprintMetadata) ToPromptString() string {
-	return bm.DisplayName + ": " + bm.Description +
-		" (" + string(rune(bm.Width)) + "×" + string(rune(bm.Height)) + " tiles, " +
-		string(rune(bm.DwarfCapacity)) + " dwarf capacity)"
+	return fmt.Sprintf("%s: %s (%d×%d tiles, %d dwarf capacity)",
+		bm.DisplayName, bm.Description, bm.Width, bm.Height, bm.DwarfCapacity)
 }
 
 // FitsInSpace checks if blueprint fits in available region
 func (bm *BlueprintMetadata) FitsInSpace(availableWidth, availableHeight int) bool {
 	return bm.Width <= availableWidth && bm.Height <= availableHeight
+}
+
+// LoadMetadata generates metadata for all blueprints in directory
+func LoadMetadata(blueprintDir string) ([]*BlueprintMetadata, error) {
+	metadata := make([]*BlueprintMetadata, 0)
+
+	// Scan directory for .csv files
+	entries, err := os.ReadDir(blueprintDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read blueprint directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".csv") {
+			continue
+		}
+
+		// Skip zone companion files
+		if strings.HasSuffix(name, "_zones.csv") {
+			continue
+		}
+
+		// Load blueprint and generate metadata
+		blueprintPath := filepath.Join(blueprintDir, name)
+		bpMetadata, err := parseBlueprint(blueprintPath)
+		if err != nil {
+			// Log error but continue with other blueprints
+			continue
+		}
+
+		metadata = append(metadata, bpMetadata)
+	}
+
+	return metadata, nil
+}
+
+// parseBlueprint reads CSV, counts tiles, infers dimensions and capacity
+func parseBlueprint(path string) (*BlueprintMetadata, error) {
+	// Load blueprint using existing CSV loader
+	bp, err := LoadFromCSV(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load blueprint: %w", err)
+	}
+
+	// Extract name (filename without .csv)
+	name := filepath.Base(path)
+	name = strings.TrimSuffix(name, ".csv")
+
+	// Generate display name (convert underscores to spaces, title case)
+	displayName := strings.ReplaceAll(name, "_", " ")
+	displayName = strings.Title(displayName)
+
+	// Calculate dimensions and tile count
+	width := int(bp.Width)
+	height := int(bp.Height)
+	tileCount := len(bp.Digs)
+
+	// Infer dwarf capacity from blueprint name
+	capacity := 0
+	description := ""
+	tags := make([]string, 0)
+
+	if strings.Contains(name, "bedroom") {
+		tags = append(tags, "bedroom")
+		if strings.Contains(name, "cluster") {
+			// Parse number from name (e.g., "bedroom_cluster_10" -> 10 dwarves)
+			parts := strings.Split(name, "_")
+			for _, part := range parts {
+				if n, err := fmt.Sscanf(part, "%d", &capacity); n == 1 && err == nil {
+					break
+				}
+			}
+			description = fmt.Sprintf("Bedroom cluster for %d dwarves", capacity)
+		} else if strings.Contains(name, "3x3") {
+			capacity = 1
+			description = "Compact single bedroom (3×3)"
+			tags = append(tags, "compact")
+		}
+	}
+
+	if strings.Contains(name, "nobles") {
+		tags = append(tags, "nobles")
+	}
+
+	return &BlueprintMetadata{
+		Name:          name,
+		DisplayName:   displayName,
+		Width:         width,
+		Height:        height,
+		Depth:         1, // Single Z-level for now
+		TileCount:     tileCount,
+		DwarfCapacity: capacity,
+		Description:   description,
+		Tags:          tags,
+		SuitabilityCriteria: map[string]interface{}{
+			"min_width":  width,
+			"min_height": height,
+		},
+	}, nil
+}
+
+// GetMetadataPrompt formats all blueprint metadata for arbiter system prompt
+func GetMetadataPrompt(metadata []*BlueprintMetadata) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+
+	prompt := "Available Blueprints:\n"
+	for _, bm := range metadata {
+		prompt += "- " + bm.ToPromptString() + "\n"
+	}
+
+	return prompt
 }
