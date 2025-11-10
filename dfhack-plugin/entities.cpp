@@ -4,6 +4,7 @@
 #include "Core.h"
 #include "Console.h"
 #include "protocol.h"
+#include "modules/Units.h"
 
 #include "df/world.h"
 #include "df/unit.h"
@@ -59,26 +60,22 @@ std::vector<EntityInfo> extract_entities()
         entity.z = unit->pos.z;
         entity.subtype = unit->race;
 
-        // Classify entity type (permissive: treat allied/owned as dwarves)
-        // This includes fort citizens, pets, livestock - anything under player control
-        bool is_hostile = unit->flags1.bits.marauder || unit->flags1.bits.invader_origin ||
-                         unit->flags2.bits.underworld || unit->flags2.bits.visitor_uninvited;
-
-        if (is_hostile) {
-            // Definitely hostile
-            entity.type = ENTITY_TYPE_ENEMY;
-        } else if (unit->civ_id == fort_civ_id ||
-                   unit->flags1.bits.tame ||
-                   unit->flags2.bits.resident ||
-                   unit->flags1.bits.fortress_guard) {
-            // Allied/owned by fort (includes dwarves, pets, livestock, guards)
-            // Permissive approach: if it's ours and not hostile, count it
+        // Classify entity type using DFHack Units API (proper method)
+        if (Units::isCitizen(unit)) {
+            // Fort citizen (proper DFHack check)
             entity.type = ENTITY_TYPE_DWARF;
+        } else if (Units::isFortControlled(unit)) {
+            // Fort-controlled (tame animals, pets, livestock)
+            entity.type = ENTITY_TYPE_DWARF; // Include in dwarf count for SVP
+        } else if (unit->flags1.bits.marauder || unit->flags1.bits.invader_origin ||
+                   unit->flags2.bits.underworld || unit->flags2.bits.visitor_uninvited) {
+            // Hostile
+            entity.type = ENTITY_TYPE_ENEMY;
         } else if (unit->flags1.bits.merchant || unit->flags2.bits.visitor) {
             // Merchants and visitors
             entity.type = ENTITY_TYPE_ANIMAL;
         } else {
-            // Unknown/other
+            // Other/unknown
             entity.type = ENTITY_TYPE_OTHER;
         }
 
