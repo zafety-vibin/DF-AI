@@ -102,22 +102,22 @@
 
 ### Implementation for User Story 2
 
-- [ ] T041 [P] [US2] Implement ZoneExtractor struct in internal/zones/extractor.go (plugin_client, logger, last_extract_time, zone_cache, extraction_enabled fields)
-- [ ] T042 [P] [US2] Implement NewZoneExtractor constructor in internal/zones/extractor.go
-- [ ] T043 [US2] Implement ExtractZones method in internal/zones/extractor.go (parse EntityUpdate.zones array, create ZoneInfo structs, update cache)
-- [ ] T044 [US2] Implement CountByType method in internal/zones/extractor.go (iterate zones, count by zone_type, return map[ZoneType]int)
-- [ ] T045 [US2] Implement GetUnassignedCount method in internal/zones/extractor.go (filter zones by type and assigned_to == -1, return count)
-- [ ] T046 [P] [US2] Implement IsEnabled method in internal/zones/extractor.go (returns extraction_enabled field)
-- [ ] T047 [US2] Update computeFortMetrics in internal/autonomous/loop.go to call zone extractor (extract zones, count by type, add to metrics: BedroomZoneCount, DiningZoneCount, etc.)
-- [ ] T048 [US2] Update computeFortMetrics in internal/autonomous/loop.go to calculate HousingDeficit (DwarfCount - BedroomZoneCount)
-- [ ] T049 [US2] Update computeFortMetrics in internal/autonomous/loop.go to add fallback logic (if zone extraction fails, use chamber count estimation, log warning)
-- [ ] T050 [US2] Update HousingAgent.Analyze in internal/agents/housing.go to use metrics.BedroomZoneCount instead of placeholder 0
-- [ ] T051 [US2] Update HousingAgent.Analyze in internal/agents/housing.go to calculate deficit from bedroom zone count (deficit = dwarf_count - bedroom_zone_count)
-- [ ] T052 [US2] Update HousingAgent.Analyze in internal/agents/housing.go to adjust urgency based on deficit percentage (urgency = float64(deficit) / float64(dwarf_count))
-- [ ] T053 [US2] Update HousingAgent.Analyze in internal/agents/housing.go to query SVP for housing Z-level (if SVP ready, use GetHousingZ(), else use hardcoded embark - 5)
-- [ ] T054 [US2] Add ZoneExtractor initialization in cmd/df-orchestrator/main.go (create extractor, inject into autonomous loop)
-- [ ] T055 [US2] Add logging for zone extraction in internal/zones/extractor.go (DEBUG: querying DF API, INFO: extracted N zones with type counts, WARN: extraction failed fallback)
-- [ ] T056 [US2] Add logging for HousingAgent in internal/agents/housing.go (INFO: analyzing metrics with real zone data, DEBUG: deficit calculation, SVP query result)
+- [X] T041 [P] [US2] Implement ZoneExtractor struct in internal/zones/extractor.go (logger, last_extract_time, zone_cache, extraction_enabled fields)
+- [X] T042 [P] [US2] Implement NewZoneExtractor constructor in internal/zones/extractor.go
+- [X] T043 [US2] Implement ExtractZones method in internal/zones/extractor.go (parse EntityUpdate.zones array, create ZoneInfo structs, update cache)
+- [X] T044 [US2] Implement CountByType method in internal/zones/extractor.go (iterate zones, count by zone_type, return map[ZoneType]int)
+- [X] T045 [US2] Implement GetUnassignedCount method in internal/zones/extractor.go (filter zones by type and assigned_to == -1, return count)
+- [X] T046 [P] [US2] Implement IsEnabled method in internal/zones/extractor.go (returns extraction_enabled field)
+- [X] T047 [US2] Update computeFortMetrics in internal/autonomous/loop.go to call zone extractor (extract zones, count by type, add to metrics: BedroomZoneCount, DiningZoneCount, etc.)
+- [X] T048 [US2] Update computeFortMetrics in internal/autonomous/loop.go to calculate HousingDeficit (DwarfCount - BedroomZoneCount)
+- [X] T049 [US2] Update computeFortMetrics in internal/autonomous/loop.go to add fallback logic (if zone extraction fails, use chamber count estimation, log warning)
+- [X] T050 [US2] Update HousingAgent.Analyze in internal/agents/housing.go to use metrics.BedroomZoneCount instead of placeholder 0
+- [X] T051 [US2] Update HousingAgent.Analyze in internal/agents/housing.go to calculate deficit from bedroom zone count (deficit = dwarf_count - bedroom_zone_count)
+- [X] T052 [US2] Update HousingAgent.Analyze in internal/agents/housing.go to adjust urgency based on deficit percentage (urgency = float64(deficit) / float64(dwarf_count))
+- [X] T053 [US2] Update HousingAgent.Analyze in internal/agents/housing.go to query SVP for housing Z-level (if SVP ready, use GetHousingZ(), else use hardcoded embark - 5)
+- [X] T054 [US2] Add ZoneExtractor initialization in cmd/df-orchestrator/main.go (create extractor, inject into autonomous loop)
+- [X] T055 [US2] Add logging for zone extraction in internal/zones/extractor.go (DEBUG: querying DF API, INFO: extracted N zones with type counts, WARN: extraction failed fallback)
+- [X] T056 [US2] Add logging for HousingAgent in internal/agents/housing.go (INFO: analyzing metrics with real zone data, DEBUG: deficit calculation, SVP query result)
 - [ ] T057 [US2] Implement plugin zone extraction in plugin/df-ai-plugin.cpp (iterate df.global.world.buildings.other.ZONE, extract zone data, add to EntityUpdate message)
 - [ ] T058 [US2] Implement MapZoneType helper in plugin/df-ai-plugin.cpp (convert DF zone type enum to protocol ZoneType enum)
 - [ ] T059 [US2] Implement getAssignedDwarfID helper in plugin/df-ai-plugin.cpp (extract owner dwarf ID from zone, return -1 if unassigned)

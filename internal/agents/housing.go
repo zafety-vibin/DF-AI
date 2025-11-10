@@ -48,32 +48,50 @@ func (a *HousingAgent) Analyze(metrics *FortMetrics) []ModificationNode {
 	bedroomsPerDwarf := getFloatTarget(a.targets, "bedrooms_per_dwarf", 1.0)
 	requiredBedrooms := int(float64(metrics.DwarfCount) * bedroomsPerDwarf)
 
-	// Check if bedroom deficit exists
-	deficit := requiredBedrooms - metrics.BedroomCount
+	// Feature 007: Use real bedroom zone count instead of placeholder
+	currentBedrooms := metrics.BedroomZoneCount
+	if currentBedrooms == 0 {
+		// Fallback to old BedroomCount if zone extraction not available
+		currentBedrooms = metrics.BedroomCount
+	}
+
+	// Feature 007: Calculate deficit from real zone data
+	deficit := requiredBedrooms - currentBedrooms
 	if deficit <= 0 {
 		return nil // All dwarves have bedrooms
 	}
 
-	// Calculate urgency based on deficit percentage
+	// Feature 007: Calculate urgency based on deficit percentage (unhoused dwarf ratio)
 	deficitRatio := float64(deficit) / float64(metrics.DwarfCount)
 	urgency := deficitRatio // 1.0 if all dwarves lack bedrooms, 0.5 if half do
 
-	// Propose bedroom cluster
-	// TODO: Better coordinate selection based on topology and existing rooms
+	// Feature 007: Use SVP housing Z-level if available
+	housingZ := int16(125) // Default: arbitrary Z-level
+	if metrics.SVPHousingZ != 0 {
+		housingZ = int16(metrics.SVPHousingZ)
+	} else {
+		// Fallback heuristic if SVP not available
+		housingZ = int16(125) // Assume mid-level embark
+	}
+
+	// Propose bedroom cluster at SVP-designated housing Z
 	node := ModificationNode{
 		ID:           fmt.Sprintf("housing_%d", metrics.FortAge),
 		AgentName:    a.Name(),
 		Type:         NodeTypeBedroom,
-		Region:       modifications.Region{XMin: 60, YMin: 30, ZMin: 125, XMax: 70, YMax: 40, ZMax: 125},
+		Region:       modifications.Region{XMin: 60, YMin: 30, ZMin: housingZ, XMax: 70, YMax: 40, ZMax: housingZ},
 		Dependencies: []DependencyType{DependencyAccess},
 		Conflicts:    []string{},
 		Priority:     a.priority,
 		Urgency:      urgency,
-		Rationale:    fmt.Sprintf("%d dwarves, only %d bedrooms (%d deficit)", metrics.DwarfCount, metrics.BedroomCount, deficit),
+		Rationale: fmt.Sprintf("%d dwarves, %d bedroom zones, %d deficit (housing Z=%d)",
+			metrics.DwarfCount, currentBedrooms, deficit, housingZ),
 		Metadata: map[string]interface{}{
 			"deficit":          deficit,
 			"bedrooms_needed":  requiredBedrooms,
-			"current_bedrooms": metrics.BedroomCount,
+			"current_bedrooms": currentBedrooms,
+			"housing_z":        housingZ,
+			"using_svp":        metrics.SVPHousingZ != 0,
 		},
 	}
 

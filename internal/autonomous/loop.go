@@ -22,6 +22,7 @@ import (
 	"github.com/df-ai/orchestrator/internal/protocol"
 	"github.com/df-ai/orchestrator/internal/spatial"
 	"github.com/df-ai/orchestrator/internal/topology"
+	"github.com/df-ai/orchestrator/internal/zones"
 )
 
 // AutonomousLoop orchestrates the main decision cycle
@@ -49,6 +50,11 @@ type AutonomousLoop struct {
 	svpState         SVPState                         // Tracks SVP initialization
 	topologyReceived bool                             // Whether RESYNC received
 	entitiesReceived bool                             // Whether ENTITY_UPDATE received
+
+	// Feature 007: Zone Extraction
+	zoneExtractor *zones.ZoneExtractor   // Zone data extractor
+	cachedZones   []protocol.ZoneData    // Latest zone data from ENTITY_UPDATE
+	zonesMu       sync.RWMutex           // Protects zone cache
 
 	logFile             *os.File
 	mu                  sync.RWMutex
@@ -890,6 +896,29 @@ func (al *AutonomousLoop) SetSVP(svp *spatial.SpatialValidatorPlanner) {
 	al.logger.Info("SVP configured - waiting for topology and entity data")
 }
 
+// SetZoneExtractor sets the zone extractor (Feature 007)
+func (al *AutonomousLoop) SetZoneExtractor(extractor *zones.ZoneExtractor) {
+	al.zoneExtractor = extractor
+	al.logger.Info("zone extractor configured",
+		logging.Field{Key: "enabled", Value: extractor.IsEnabled()})
+}
+
+// UpdateZones updates the cached zone data from ENTITY_UPDATE (Feature 007)
+func (al *AutonomousLoop) UpdateZones(zoneData []protocol.ZoneData) {
+	al.zonesMu.Lock()
+	defer al.zonesMu.Unlock()
+	al.cachedZones = zoneData
+}
+
+// getZones returns a copy of cached zones (thread-safe)
+func (al *AutonomousLoop) getZones() []protocol.ZoneData {
+	al.zonesMu.RLock()
+	defer al.zonesMu.RUnlock()
+	zonesCopy := make([]protocol.ZoneData, len(al.cachedZones))
+	copy(zonesCopy, al.cachedZones)
+	return zonesCopy
+}
+
 // OnTopologyReceived notifies the loop that topology (RESYNC) has been received (Feature 007)
 func (al *AutonomousLoop) OnTopologyReceived() {
 	if al.svp == nil {
@@ -1006,6 +1035,46 @@ func (al *AutonomousLoop) computeFortMetrics() *agents.FortMetrics {
 		metrics.SVPHousingZ = al.svp.GetHousingZ()
 		metrics.SVPWorkshopZ = al.svp.GetWorkshopZ()
 		metrics.SVPFarmZ = al.svp.GetFarmZ()
+	}
+
+	// Feature 007: Extract zone counts from DF
+	if al.zoneExtractor != nil && al.zoneExtractor.IsEnabled() {
+		zoneData := al.getZones()
+		extractedZones, err := al.zoneExtractor.ExtractZones(zoneData)
+
+		if err == nil && len(extractedZones) > 0 {
+			// Count zones by type
+			zoneCounts := al.zoneExtractor.CountByType(extractedZones)
+			metrics.BedroomZoneCount = zoneCounts[zones.ZoneTypeBedroom]
+			metrics.DiningZoneCount = zoneCounts[zones.ZoneTypeDining]
+			metrics.DormitoryZoneCount = zoneCounts[zones.ZoneTypeDormitory]
+			metrics.OfficeZoneCount = zoneCounts[zones.ZoneTypeOffice]
+
+			// Count unassigned bedrooms
+			metrics.UnassignedBedroomCount = al.zoneExtractor.GetUnassignedCount(extractedZones, zones.ZoneTypeBedroom)
+
+			// Calculate housing deficit
+			metrics.HousingDeficit = metrics.DwarfCount - metrics.BedroomZoneCount
+
+			al.logger.Debug("zone metrics computed",
+				logging.Field{Key: "bedroom_zones", Value: metrics.BedroomZoneCount},
+				logging.Field{Key: "dining_zones", Value: metrics.DiningZoneCount},
+				logging.Field{Key: "housing_deficit", Value: metrics.HousingDeficit})
+		} else {
+			if err != nil {
+				al.logger.Warn("zone extraction failed, using fallback",
+					logging.Field{Key: "error", Value: err.Error()})
+			}
+
+			// Fallback to chamber count estimation (Feature 005 behavior)
+			// BedroomCount remains 0 (placeholder)
+			metrics.BedroomZoneCount = 0
+			metrics.HousingDeficit = metrics.DwarfCount
+		}
+	} else {
+		// Zone extraction disabled - use placeholder
+		metrics.BedroomZoneCount = 0
+		metrics.HousingDeficit = metrics.DwarfCount
 	}
 
 	return metrics

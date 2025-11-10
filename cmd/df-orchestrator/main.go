@@ -25,6 +25,7 @@ import (
 	"github.com/df-ai/orchestrator/internal/protocol"
 	"github.com/df-ai/orchestrator/internal/spatial"
 	"github.com/df-ai/orchestrator/internal/topology"
+	"github.com/df-ai/orchestrator/internal/zones"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -488,6 +489,16 @@ func main() {
 				logger.Info("SVP disabled")
 			}
 
+			// Feature 007: Initialize zone extractor if enabled
+			if cfg.ExtractZones {
+				zoneExtractor := zones.NewZoneExtractor(logger, true)
+				autonomousLoop.SetZoneExtractor(zoneExtractor)
+				logger.Info("zone extraction enabled",
+					logging.Field{Key: "interval_ms", Value: cfg.ZoneExtractionIntervalMS})
+			} else {
+				logger.Info("zone extraction disabled")
+			}
+
 			// Start autonomous loop in background
 			go func() {
 				time.Sleep(5 * time.Second) // Wait for state to stabilize
@@ -759,6 +770,13 @@ func main() {
 				// Update autonomous loop entity cache
 				if autonomousLoop != nil {
 					autonomousLoop.UpdateEntities(update.Entities)
+
+					// Feature 007: Cache zone data from ENTITY_UPDATE
+					if len(update.Zones) > 0 {
+						autonomousLoop.UpdateZones(update.Zones)
+						logger.Debug("zones cached from entity update",
+							logging.Field{Key: "zone_count", Value: len(update.Zones)})
+					}
 
 					// Feature 007: Notify SVP that entities received
 					autonomousLoop.OnEntitiesReceived()
