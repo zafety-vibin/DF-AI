@@ -1,0 +1,153 @@
+# DF AI Orchestrator Configuration
+# Feature: 002-foundation-infrastructure
+
+# Network settings
+listen_port: 5001
+http_port: 8081
+enable_http_api: true
+read_timeout: 30s
+write_timeout: 10s
+
+# Protocol settings
+heartbeat_interval: 10s
+heartbeat_timeout: 15s
+max_message_size: 104857600  # 100 MB (for large forts)
+
+# Reconnection settings
+reconnect_delay: 1s
+reconnect_max_delay: 30s
+reconnect_backoff_factor: 2.0
+
+# Logging
+log_level: info      # debug, info, warn, error
+log_format: json     # json or text
+
+# Topology overlay compression
+topology_compression_mode: full  # full, active_z_levels, custom_bounds
+topology_center_z: 0             # For active_z_levels mode
+topology_z_radius: 3             # ±3 levels from center
+
+# LLM Provider Configuration
+llm_provider_type: openai_compatible  # CHANGED: Use local LLM (LM Studio)
+
+# Claude API settings (unused when using openai_compatible)
+claude_api_key: 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
+claude_model: claude-haiku-4-5-20251001
+
+# OpenAI-compatible endpoint settings (ACTIVE FOR LOCAL LLM)
+llm_endpoint: http://localhost:1234/v1  # LM Studio default port
+llm_model: qwen2.5-7b-instruct-q4_k_m   # VERIFY: Check LM Studio for exact model name
+llm_api_key: ""                          # Empty for local servers
+
+# Multi-model pipeline (when llm_provider_type: multi_model)
+extractor_provider_type: openai_compatible
+extractor_endpoint: http://localhost:11434/v1  # Ollama for fast feature extraction
+extractor_model: qwen2.5:7b
+extractor_temperature: 0.2              # Low for deterministic extraction
+
+planner_provider_type: claude           # Claude for reasoning, or openai_compatible for local
+planner_api_key: ${CLAUDE_API_KEY}
+planner_model: claude-haiku-4-5-20251001  # Haiku for cheap planning
+planner_temperature: 0.7                # Higher for creative planning
+
+# LLM Request tuning
+llm_temperature: 0.7            # Randomness (0.0-1.0)
+llm_max_tokens: 2048            # CHANGED: Reduce for local LLM (faster response)
+llm_timeout_seconds: 60s        # CHANGED: Increase for local LLM (slower than Claude)
+
+# Context assembly settings
+context_budget_kb: 200          # Max context size for LLM (in KB)
+context_update_frequency_seconds: 100  # How often to generate new context
+
+# Viewport settings for context generation
+viewport_active_z_margin: 3     # Z-levels above/below active level to include
+viewport_hazard_margin_tiles: 5 # Tile margin around hazards to include
+
+# Fort phase system
+enable_phase_system: true       # Enable phase-based AI strategies
+phase_embark_days: 7            # Days in embark phase (survival focus)
+phase_establish_days: 30        # Days before expand phase (infrastructure)
+phase_expand_days: 100          # Days before fortify phase (growth)
+
+# Task queue system
+enable_task_queue: true        # Multi-step planning (experimental)
+max_queued_tasks: 20            # Maximum tasks in queue
+task_timeout_seconds: 300       # 5 minutes per task
+enable_task_dependencies: true # Allow dependent tasks
+
+# Persistence
+enable_persistence: true        # Save modifications to disk
+persistence_path: saves         # Directory for saved state
+autosave_interval_sec: 300      # Auto-save every 5 minutes
+load_on_startup: true           # Load saved modifications on boot
+
+# Spatial reasoning
+enable_room_detection: true     # Infer room types from dimensions
+enable_area_clustering: true   # Group rooms into areas (experimental)
+room_min_size: 6                # Min tiles for room (2×3)
+room_max_size: 1000              # Max tiles for room (20×20)
+
+# Dynamic context assembly
+enable_dynamic_context: true   # Use query-based context (experimental)
+context_always_include: [dwarf_count, alerts, phase]
+context_max_size_bytes: 256000  # 250 KB hard limit
+
+# Goal Agent System (Feature 006)
+enable_goal_agents: true       # CHANGED: Enable agents for testing
+
+# HRM Architecture (Feature 007 Refactor)
+use_intent_planning: true      # CHANGED: Enable HRM intent-based planning
+
+# Local LLM Configuration
+local_llm_endpoint: http://localhost:1234/v1  # LM Studio default endpoint
+local_llm_model: qwen2.5-7b-instruct-q4_k_m   # Model name
+llm_timeout_ms: 5000                           # Request timeout (5 seconds)
+
+# Agent Configuration (only used when enable_goal_agents: true)
+agent_food:
+  enabled: true
+  priority: 10
+  targets:
+    food_per_dwarf: 20
+    drink_per_dwarf: 15
+
+agent_housing:
+  enabled: true
+  priority: 9
+  targets:
+    bedrooms_per_dwarf: 1
+
+agent_mining:
+  enabled: true
+  priority: 7
+  targets:
+    tiles_per_cycle: 50
+    no_strike_cycles: 20
+
+agent_wealth:
+  enabled: true
+  priority: 6
+  targets:
+    growth_threshold: 0.10  # 10% growth per 10 cycles
+
+agent_defense:
+  enabled: true
+  priority_base: 0       # Priority when no threats
+  priority_threat: 10    # Priority when enemies detected
+
+# Feature 007: Spatial Validator Planner
+use_svp: true                      # Enable SVP for Z-level organization
+svp_persistence_dir: ./saves       # Directory for SVP layout files
+
+# Feature 007: Zone Extraction
+extract_zones: true                # Enable real zone data extraction from DF
+zone_extraction_interval_ms: 5000  # Extract zones every 5 seconds
+
+# Feature 007: Blueprint Integration
+blueprint_directory: ./blueprints           # Path to blueprint CSV files
+include_blueprint_metadata: true            # Add blueprint metadata to arbiter prompt
+
+# Feature 007: Zone Queue
+zone_queue_max_size: 50                    # Maximum queued zones
+zone_queue_max_retries: 3                  # Max retry attempts per zone
+zone_queue_timeout_cycles: 10              # Cycles before zone timeout
