@@ -3,7 +3,7 @@ package zones
 import (
 	"time"
 
-	"github.com/yourusername/df-ai/internal/protocol"
+	"github.com/df-ai/orchestrator/internal/protocol"
 )
 
 // QueueStatus represents the current state of a queued zone
