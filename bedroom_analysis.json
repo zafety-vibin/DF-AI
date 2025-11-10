@@ -1,0 +1,1790 @@
+Skipping 26-9-Meeker_Apartments.csv: parse error on line 1, column 111: bare " in non-quoted-field
+Skipping 28-3-Modified_Windmill_Villas.csv: record on line 2: wrong number of fields
+Skipping 75-3-Living Pods_DebugVer.csv: record on line 2: wrong number of fields
+[
+  {
+    "filename": "100-4-Vherid.csv",
+    "width": 48,
+    "height": 49,
+    "total_tiles": 1357,
+    "dig_tiles": 1357,
+    "stair_count": 9,
+    "stair_locations": [
+      {
+        "x": 24,
+        "y": 23,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 25,
+        "y": 23,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 26,
+        "y": 23,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 24,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 25,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 26,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 24,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 25,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 26,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 149
+  },
+  {
+    "filename": "108-6-Raynard1_dig.csv",
+    "width": 84,
+    "height": 83,
+    "total_tiles": 1957,
+    "dig_tiles": 1957,
+    "stair_count": 9,
+    "stair_locations": [
+      {
+        "x": 40,
+        "y": 40,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 41,
+        "y": 40,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 42,
+        "y": 40,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 40,
+        "y": 41,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 41,
+        "y": 41,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 42,
+        "y": 41,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 40,
+        "y": 42,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 41,
+        "y": 42,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 42,
+        "y": 42,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 216
+  },
+  {
+    "filename": "112-9-Raynard_Square-build(doors only).csv",
+    "width": 82,
+    "height": 78,
+    "total_tiles": 113,
+    "dig_tiles": 113,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 12
+  },
+  {
+    "filename": "112-9-Raynard_Square-dig.csv",
+    "width": 82,
+    "height": 78,
+    "total_tiles": 1955,
+    "dig_tiles": 1955,
+    "stair_count": 5,
+    "stair_locations": [
+      {
+        "x": 40,
+        "y": 35,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 39,
+        "y": 36,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 40,
+        "y": 36,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 41,
+        "y": 36,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 40,
+        "y": 37,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 216
+  },
+  {
+    "filename": "120-6-Caramels_Circular_Bedroom_Plan.csv",
+    "width": 66,
+    "height": 75,
+    "total_tiles": 1408,
+    "dig_tiles": 1408,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 156
+  },
+  {
+    "filename": "128-4-Vherid.csv",
+    "width": 52,
+    "height": 51,
+    "total_tiles": 941,
+    "dig_tiles": 941,
+    "stair_count": 9,
+    "stair_locations": [
+      {
+        "x": 25,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 26,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 27,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 25,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 26,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 27,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 25,
+        "y": 26,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 26,
+        "y": 26,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 27,
+        "y": 26,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 103
+  },
+  {
+    "filename": "132-4-Vherid.csv",
+    "width": 56,
+    "height": 48,
+    "total_tiles": 1225,
+    "dig_tiles": 1225,
+    "stair_count": 9,
+    "stair_locations": [
+      {
+        "x": 27,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 28,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 29,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 27,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 28,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 29,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 27,
+        "y": 26,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 28,
+        "y": 26,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 29,
+        "y": 26,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 135
+  },
+  {
+    "filename": "148-6-Vherid_Mayan.csv",
+    "width": 66,
+    "height": 65,
+    "total_tiles": 1653,
+    "dig_tiles": 1653,
+    "stair_count": 9,
+    "stair_locations": [
+      {
+        "x": 32,
+        "y": 31,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 33,
+        "y": 31,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 34,
+        "y": 31,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 32,
+        "y": 32,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 33,
+        "y": 32,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 34,
+        "y": 32,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 32,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 33,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 34,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 182
+  },
+  {
+    "filename": "16-4-Shaft_Bedroom_Design.csv",
+    "width": 39,
+    "height": 38,
+    "total_tiles": 701,
+    "dig_tiles": 701,
+    "stair_count": 48,
+    "stair_locations": [
+      {
+        "x": 5,
+        "y": 5,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 6,
+        "y": 5,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 12,
+        "y": 5,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 13,
+        "y": 5,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 24,
+        "y": 5,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 25,
+        "y": 5,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 31,
+        "y": 5,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 32,
+        "y": 5,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 5,
+        "y": 6,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 13,
+        "y": 6,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 24,
+        "y": 6,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 32,
+        "y": 6,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 5,
+        "y": 12,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 13,
+        "y": 12,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 24,
+        "y": 12,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 32,
+        "y": 12,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 5,
+        "y": 13,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 6,
+        "y": 13,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 12,
+        "y": 13,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 13,
+        "y": 13,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 24,
+        "y": 13,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 25,
+        "y": 13,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 31,
+        "y": 13,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 32,
+        "y": 13,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 5,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 6,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 12,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 13,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 24,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 25,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 31,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 32,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 5,
+        "y": 26,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 13,
+        "y": 26,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 24,
+        "y": 26,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 32,
+        "y": 26,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 5,
+        "y": 32,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 13,
+        "y": 32,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 24,
+        "y": 32,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 32,
+        "y": 32,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 5,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 6,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 12,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 13,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 24,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 25,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 31,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 32,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 72
+  },
+  {
+    "filename": "160-4-Vherid.csv",
+    "width": 52,
+    "height": 47,
+    "total_tiles": 1195,
+    "dig_tiles": 1195,
+    "stair_count": 9,
+    "stair_locations": [
+      {
+        "x": 25,
+        "y": 23,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 26,
+        "y": 23,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 27,
+        "y": 23,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 25,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 26,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 27,
+        "y": 24,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 25,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 26,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 27,
+        "y": 25,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 131
+  },
+  {
+    "filename": "224-3-Housing_By_Marble_Dice.csv",
+    "width": 62,
+    "height": 61,
+    "total_tiles": 2192,
+    "dig_tiles": 2192,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 243
+  },
+  {
+    "filename": "256-14-Tenebrous_HTree.csv",
+    "width": 97,
+    "height": 96,
+    "total_tiles": 5602,
+    "dig_tiles": 5602,
+    "stair_count": 9,
+    "stair_locations": [
+      {
+        "x": 48,
+        "y": 47,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 49,
+        "y": 47,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 50,
+        "y": 47,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 48,
+        "y": 48,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 49,
+        "y": 48,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 50,
+        "y": 48,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 48,
+        "y": 49,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 49,
+        "y": 49,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 50,
+        "y": 49,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 621
+  },
+  {
+    "filename": "256-3-Tenebrous_HTree.csv",
+    "width": 61,
+    "height": 94,
+    "total_tiles": 2255,
+    "dig_tiles": 2255,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 250
+  },
+  {
+    "filename": "256-9-Hactar1_Mandelbrot_Tree-dig.csv",
+    "width": 102,
+    "height": 105,
+    "total_tiles": 5071,
+    "dig_tiles": 5071,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 563
+  },
+  {
+    "filename": "256-9-Tenebrous_HTree.csv",
+    "width": 97,
+    "height": 96,
+    "total_tiles": 4249,
+    "dig_tiles": 4249,
+    "stair_count": 9,
+    "stair_locations": [
+      {
+        "x": 48,
+        "y": 47,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 49,
+        "y": 47,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 50,
+        "y": 47,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 48,
+        "y": 48,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 49,
+        "y": 48,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 50,
+        "y": 48,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 48,
+        "y": 49,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 49,
+        "y": 49,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 50,
+        "y": 49,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 471
+  },
+  {
+    "filename": "30-25-Marklrar_Ribbon.csv",
+    "width": 67,
+    "height": 26,
+    "total_tiles": 996,
+    "dig_tiles": 996,
+    "stair_count": 9,
+    "stair_locations": [
+      {
+        "x": 33,
+        "y": 12,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 34,
+        "y": 12,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 35,
+        "y": 12,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 33,
+        "y": 13,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 34,
+        "y": 13,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 35,
+        "y": 13,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 33,
+        "y": 14,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 34,
+        "y": 14,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 35,
+        "y": 14,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 109
+  },
+  {
+    "filename": "324-6-OasiS_Mega_Raynard_Design.csv",
+    "width": 160,
+    "height": 160,
+    "total_tiles": 6008,
+    "dig_tiles": 6008,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 667
+  },
+  {
+    "filename": "42-3-Cluster_Bedrooms-dig.csv",
+    "width": 41,
+    "height": 30,
+    "total_tiles": 209,
+    "dig_tiles": 209,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 23
+  },
+  {
+    "filename": "48-20-Decentralized-build.csv",
+    "width": 55,
+    "height": 61,
+    "total_tiles": 108,
+    "dig_tiles": 108,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 12
+  },
+  {
+    "filename": "48-20-Decentralized-dig.csv",
+    "width": 56,
+    "height": 63,
+    "total_tiles": 1782,
+    "dig_tiles": 1782,
+    "stair_count": 14,
+    "stair_locations": [
+      {
+        "x": 0,
+        "y": 15,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 54,
+        "y": 15,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 0,
+        "y": 16,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 54,
+        "y": 16,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 27,
+        "y": 23,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 0,
+        "y": 30,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 54,
+        "y": 30,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 0,
+        "y": 31,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 54,
+        "y": 31,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 27,
+        "y": 38,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 0,
+        "y": 45,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 54,
+        "y": 45,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 0,
+        "y": 46,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 54,
+        "y": 46,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 196
+  },
+  {
+    "filename": "48-3-Vaniver_Greek_Cross.csv",
+    "width": 38,
+    "height": 37,
+    "total_tiles": 344,
+    "dig_tiles": 344,
+    "stair_count": 8,
+    "stair_locations": [
+      {
+        "x": 17,
+        "y": 17,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 18,
+        "y": 17,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 19,
+        "y": 17,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 17,
+        "y": 18,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 19,
+        "y": 18,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 17,
+        "y": 19,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 18,
+        "y": 19,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 19,
+        "y": 19,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 37
+  },
+  {
+    "filename": "48-4-Raynard_Whirlpool_Housing-build.csv",
+    "width": 32,
+    "height": 32,
+    "total_tiles": 96,
+    "dig_tiles": 96,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 10
+  },
+  {
+    "filename": "48-4-Raynard_Whirlpool_Housing-dig.csv",
+    "width": 32,
+    "height": 32,
+    "total_tiles": 471,
+    "dig_tiles": 471,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 52
+  },
+  {
+    "filename": "48-4-Raynard_Whirlpool_Housing-query.csv",
+    "width": 32,
+    "height": 32,
+    "total_tiles": 0,
+    "dig_tiles": 0,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 0
+  },
+  {
+    "filename": "56-4-Palin88_Bedroom_Design-build(doors).csv",
+    "width": 38,
+    "height": 38,
+    "total_tiles": 56,
+    "dig_tiles": 56,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 6
+  },
+  {
+    "filename": "56-4-Palin88_Bedroom_Design-dig.csv",
+    "width": 39,
+    "height": 39,
+    "total_tiles": 836,
+    "dig_tiles": 836,
+    "stair_count": 10,
+    "stair_locations": [
+      {
+        "x": 10,
+        "y": 1,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 28,
+        "y": 1,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 1,
+        "y": 10,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 19,
+        "y": 10,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 37,
+        "y": 10,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 10,
+        "y": 19,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 28,
+        "y": 19,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 19,
+        "y": 27,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 10,
+        "y": 37,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 28,
+        "y": 37,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 91
+  },
+  {
+    "filename": "75-3-Living Pods_Fix.csv",
+    "width": 14,
+    "height": 70,
+    "total_tiles": 353,
+    "dig_tiles": 353,
+    "stair_count": 20,
+    "stair_locations": [
+      {
+        "x": 3,
+        "y": 3,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 9,
+        "y": 3,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 3,
+        "y": 9,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 9,
+        "y": 9,
+        "z": 0,
+        "type": "down",
+        "entry": false
+      },
+      {
+        "x": 3,
+        "y": 17,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 9,
+        "y": 17,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 3,
+        "y": 23,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 9,
+        "y": 23,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 3,
+        "y": 31,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 9,
+        "y": 31,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 3,
+        "y": 37,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 9,
+        "y": 37,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 3,
+        "y": 45,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 9,
+        "y": 45,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 3,
+        "y": 51,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 9,
+        "y": 51,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 3,
+        "y": 59,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 9,
+        "y": 59,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 3,
+        "y": 65,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 9,
+        "y": 65,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 37
+  },
+  {
+    "filename": "76-3-Andrelius_Windmill_Villas.csv",
+    "width": 46,
+    "height": 46,
+    "total_tiles": 968,
+    "dig_tiles": 968,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 107
+  },
+  {
+    "filename": "76-3-Andrelius_Windmill_Villas_Flipped.csv",
+    "width": 52,
+    "height": 48,
+    "total_tiles": 968,
+    "dig_tiles": 968,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 107
+  },
+  {
+    "filename": "76-6-Nautikus_Blossom.csv",
+    "width": 67,
+    "height": 66,
+    "total_tiles": 1285,
+    "dig_tiles": 1285,
+    "stair_count": 9,
+    "stair_locations": [
+      {
+        "x": 33,
+        "y": 32,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 34,
+        "y": 32,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 35,
+        "y": 32,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 33,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 34,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 35,
+        "y": 33,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 33,
+        "y": 34,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 34,
+        "y": 34,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 35,
+        "y": 34,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 141
+  },
+  {
+    "filename": "80-4-MLegion_Simple.csv",
+    "width": 37,
+    "height": 36,
+    "total_tiles": 737,
+    "dig_tiles": 737,
+    "stair_count": 9,
+    "stair_locations": [
+      {
+        "x": 18,
+        "y": 17,
+        "z": 0,
+        "type": "updown",
+        "entry": true
+      },
+      {
+        "x": 19,
+        "y": 17,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 20,
+        "y": 17,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 18,
+        "y": 18,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 19,
+        "y": 18,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 20,
+        "y": 18,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 18,
+        "y": 19,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 19,
+        "y": 19,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      },
+      {
+        "x": 20,
+        "y": 19,
+        "z": 0,
+        "type": "updown",
+        "entry": false
+      }
+    ],
+    "room_count_estimate": 80
+  },
+  {
+    "filename": "81-3-Savokis_Leaf-dig.csv",
+    "width": 111,
+    "height": 51,
+    "total_tiles": 551,
+    "dig_tiles": 551,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 61
+  },
+  {
+    "filename": "96-3-Andrelius_Windmill_Villas_Lobbyless.csv",
+    "width": 45,
+    "height": 47,
+    "total_tiles": 912,
+    "dig_tiles": 912,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 101
+  },
+  {
+    "filename": "97-9-Hactar1_3_Branch_Tree-dig.csv",
+    "width": 72,
+    "height": 75,
+    "total_tiles": 1511,
+    "dig_tiles": 1511,
+    "stair_count": 0,
+    "stair_locations": [],
+    "room_count_estimate": 167
+  }
+]

@@ -6,16 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/df-ai/orchestrator/internal/modifications"
 )
 
-// LoadFromCSV loads a dig blueprint from CSV file
-// Format: x,y,z,dig_type
-// Example: 0,0,0,default
-//          1,0,0,default
-//          5,5,0,stairs
+// LoadFromCSV loads a dig blueprint from CSV file (supports quickfort grid format)
+// Quickfort format (community standard):
+//   #dig start(26;25)
+//   ,,,d,d,,d,d
+//   ,,,d,d,,d,d
+// Each cell = dig designation (d, i, j, u, h, r, #, or empty)
 func LoadFromCSV(path string) (*DigBlueprint, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -35,13 +37,20 @@ func LoadFromCSV(path string) (*DigBlueprint, error) {
 
 	bp := &DigBlueprint{
 		Name: filepath.Base(path),
-		Digs: make([]DigEntry, 0, len(records)),
+		Digs: make([]DigEntry, 0),
 	}
 
-	// Parse header if exists (check if first row is "x,y,z,dig_type")
+	// Detect format: quickfort (grid) vs coordinate list
 	startRow := 0
-	if len(records) > 0 && records[0][0] == "x" {
-		startRow = 1 // Skip header
+	if len(records) > 0 && len(records[0]) > 0 {
+		firstCell := strings.TrimSpace(records[0][0])
+		if strings.HasPrefix(firstCell, "#") {
+			// Quickfort format - parse as grid
+			return parseQuickfortGrid(records, filepath.Base(path))
+		} else if firstCell == "x" {
+			// Coordinate list format - skip header
+			startRow = 1
+		}
 	}
 
 	var minX, maxX, minY, maxY, minZ, maxZ int16
@@ -213,6 +222,100 @@ func CreateBlueprintFromModifications(
 	bp.Width = region.XMax - region.XMin + 1
 	bp.Height = region.YMax - region.YMin + 1
 	bp.Depth = region.ZMax - region.ZMin + 1
+
+	return bp, nil
+}
+
+// parseQuickfortGrid parses community quickfort grid format
+// Format: #dig start(x;y) followed by grid of cells with dig designations
+func parseQuickfortGrid(records [][]string, filename string) (*DigBlueprint, error) {
+	if len(records) == 0 {
+		return nil, fmt.Errorf("empty quickfort blueprint")
+	}
+
+	bp := &DigBlueprint{
+		Name: filename,
+		Digs: make([]DigEntry, 0),
+	}
+
+	// Skip header row (starts with #)
+	startRow := 0
+	if len(records[0]) > 0 && strings.HasPrefix(strings.TrimSpace(records[0][0]), "#") {
+		startRow = 1
+	}
+
+	var minX, maxX, minY, maxY int16
+	firstEntry := true
+
+	// Parse grid: each cell is a designation at (column, row) position
+	for y := startRow; y < len(records); y++ {
+		row := records[y]
+		for x := 0; x < len(row); x++ {
+			cell := strings.TrimSpace(strings.ToLower(row[x]))
+			if cell == "" || cell == "#" {
+				continue // Skip empty cells and comments
+			}
+
+			// Map quickfort designation to dig type
+			digType := ""
+			switch cell {
+			case "d":
+				digType = "default"
+			case "i":
+				digType = "updown_stair"
+			case "j":
+				digType = "down_stair"
+			case "u":
+				digType = "up_stair"
+			case "h":
+				digType = "channel"
+			case "r":
+				digType = "ramp"
+			case "x":
+				digType = "remove_ramp"
+			default:
+				// Unknown designation, skip
+				continue
+			}
+
+			entry := DigEntry{
+				X:       int16(x),
+				Y:       int16(y - startRow),
+				Z:       0, // Single-level blueprints default to Z=0
+				DigType: digType,
+			}
+
+			bp.Digs = append(bp.Digs, entry)
+
+			// Track bounds
+			if firstEntry {
+				minX, maxX = entry.X, entry.X
+				minY, maxY = entry.Y, entry.Y
+				firstEntry = false
+			} else {
+				if entry.X < minX {
+					minX = entry.X
+				}
+				if entry.X > maxX {
+					maxX = entry.X
+				}
+				if entry.Y < minY {
+					minY = entry.Y
+				}
+				if entry.Y > maxY {
+					maxY = entry.Y
+				}
+			}
+		}
+	}
+
+	if len(bp.Digs) == 0 {
+		return nil, fmt.Errorf("no dig entries found in quickfort blueprint")
+	}
+
+	bp.Width = maxX - minX + 1
+	bp.Height = maxY - minY + 1
+	bp.Depth = 1 // Single Z-level
 
 	return bp, nil
 }

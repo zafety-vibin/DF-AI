@@ -59,30 +59,26 @@ std::vector<EntityInfo> extract_entities()
         entity.z = unit->pos.z;
         entity.subtype = unit->race;
 
-        // Classify entity type (improved dwarf detection)
-        bool is_dwarf = false;
+        // Classify entity type (permissive: treat allied/owned as dwarves)
+        // This includes fort citizens, pets, livestock - anything under player control
+        bool is_hostile = unit->flags1.bits.marauder || unit->flags1.bits.invader_origin ||
+                         unit->flags2.bits.underworld || unit->flags2.bits.visitor_uninvited;
 
-        // Check multiple criteria for fort citizens
-        if (unit->civ_id == fort_civ_id) {
-            is_dwarf = true;  // Citizen of fort civilization
-        } else if (unit->flags1.bits.fortress_guard || unit->flags2.bits.resident) {
-            is_dwarf = true;  // Fortress guard or resident
-        } else if (unit->flags2.bits.important_historical_figure && !unit->flags1.bits.merchant) {
-            // Historical figures in fort (nobles, migrants) but not merchants
-            is_dwarf = true;
-        }
-
-        if (is_dwarf) {
-            entity.type = ENTITY_TYPE_DWARF;
-        } else if (unit->flags1.bits.marauder || unit->flags1.bits.invader_origin ||
-                   unit->flags2.bits.underworld || unit->flags2.bits.visitor_uninvited) {
-            // Hostile entity
+        if (is_hostile) {
+            // Definitely hostile
             entity.type = ENTITY_TYPE_ENEMY;
-        } else if (unit->flags1.bits.tame || unit->flags1.bits.merchant) {
-            // Friendly animal or merchant
+        } else if (unit->civ_id == fort_civ_id ||
+                   unit->flags1.bits.tame ||
+                   unit->flags2.bits.resident ||
+                   unit->flags1.bits.fortress_guard) {
+            // Allied/owned by fort (includes dwarves, pets, livestock, guards)
+            // Permissive approach: if it's ours and not hostile, count it
+            entity.type = ENTITY_TYPE_DWARF;
+        } else if (unit->flags1.bits.merchant || unit->flags2.bits.visitor) {
+            // Merchants and visitors
             entity.type = ENTITY_TYPE_ANIMAL;
         } else {
-            // Other/unknown
+            // Unknown/other
             entity.type = ENTITY_TYPE_OTHER;
         }
 
