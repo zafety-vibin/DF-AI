@@ -464,6 +464,9 @@ func main() {
 				// Set registry on autonomous loop
 				autonomousLoop.SetAgentRegistry(agentRegistry, true)
 				logger.Info("goal agents enabled", logging.Field{Key: "agent_count", Value: len(agentRegistry.List())})
+
+				// Feature 007: Configure intent-based planning (HRM architecture)
+				autonomousLoop.SetUseIntentPlanning(cfg.UseIntentPlanning)
 			} else {
 				logger.Info("goal agents disabled - using direct-LLM mode (Feature 005 behavior)")
 			}

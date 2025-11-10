@@ -27,6 +27,9 @@ type SpatialValidatorPlanner struct {
 	persistencePath string    // File path for saving layout
 	logger          *logging.Logger
 	ready           bool // Whether analysis has been completed
+
+	// HRM Architecture: Rich spatial context for arbiter (R001)
+	strategicLayout *StrategicLayout // Structured layout with regions and infrastructure counts
 }
 
 // NewSpatialValidatorPlanner creates a new SVP instance
@@ -100,11 +103,17 @@ func (svp *SpatialValidatorPlanner) AnalyzeTerrain(
 	svp.analyzedAt = time.Now()
 	svp.ready = true
 
+	// HRM Architecture: Build StrategicLayout with empty zone counts (R004)
+	// Zone counts will be populated later via UpdateStrategicLayoutWithZones()
+	emptyZones := make(map[int]map[string]int)
+	svp.strategicLayout = svp.buildStrategicLayout(topologyOverlay, hazardMgr, emptyZones)
+
 	svp.logger.Info("SVP: Terrain analysis complete",
 		logging.Field{Key: "embark_z", Value: svp.embarkZ},
 		logging.Field{Key: "housing_z", Value: svp.housingZ},
 		logging.Field{Key: "workshop_z", Value: svp.workshopZ},
-		logging.Field{Key: "farm_z_count", Value: len(svp.farmZ)})
+		logging.Field{Key: "farm_z_count", Value: len(svp.farmZ)},
+		logging.Field{Key: "layout_layers", Value: len(svp.strategicLayout.Layers)})
 
 	return nil
 }
@@ -362,4 +371,199 @@ func (svp *SpatialValidatorPlanner) Load(fortName string) error {
 		logging.Field{Key: "farm_z", Value: svp.farmZ})
 
 	return nil
+}
+
+// ===== HRM Architecture: StrategicLayout Generation (R003-R006) =====
+
+// GetStrategicLayout returns the rich spatial context for arbiter (R003)
+// Returns nil if SVP analysis not complete
+func (svp *SpatialValidatorPlanner) GetStrategicLayout() *StrategicLayout {
+	return svp.strategicLayout
+}
+
+// buildStrategicLayout constructs StrategicLayout from SVP analysis (R004)
+// This is called at the end of AnalyzeTerrain()
+func (svp *SpatialValidatorPlanner) buildStrategicLayout(
+	topologyOverlay *topology.TopologyOverlay,
+	hazardMgr *hazards.HazardManager,
+	existingZones map[int]map[string]int, // Z-level → zone type → count
+) *StrategicLayout {
+	layout := &StrategicLayout{
+		FortName:   svp.fortName,
+		AnalyzedAt: svp.analyzedAt.Format(time.RFC3339),
+		Version:    svp.layoutVersion,
+		Layers:     make(map[string]*ZoneLayer),
+	}
+
+	// Analyze housing layer
+	housingZones := make(map[string]int)
+	if zones, ok := existingZones[svp.housingZ]; ok {
+		housingZones = zones
+	}
+	layout.Layers["housing"] = svp.analyzeLayer(
+		svp.housingZ,
+		"housing",
+		topologyOverlay,
+		hazardMgr,
+		housingZones,
+	)
+
+	// Analyze workshop layer
+	workshopZones := make(map[string]int)
+	if zones, ok := existingZones[svp.workshopZ]; ok {
+		workshopZones = zones
+	}
+	layout.Layers["workshop"] = svp.analyzeLayer(
+		svp.workshopZ,
+		"workshop",
+		topologyOverlay,
+		hazardMgr,
+		workshopZones,
+	)
+
+	// Analyze farm layers
+	for i, farmZ := range svp.farmZ {
+		farmZones := make(map[string]int)
+		if zones, ok := existingZones[farmZ]; ok {
+			farmZones = zones
+		}
+		layerName := fmt.Sprintf("farm_%d", i+1)
+		layout.Layers[layerName] = svp.analyzeLayer(
+			farmZ,
+			"farm",
+			topologyOverlay,
+			hazardMgr,
+			farmZones,
+		)
+	}
+
+	return layout
+}
+
+// analyzeLayer scans a Z-level and identifies available construction regions (R005)
+func (svp *SpatialValidatorPlanner) analyzeLayer(
+	z int,
+	purpose string,
+	topologyOverlay *topology.TopologyOverlay,
+	hazardMgr *hazards.HazardManager,
+	existingZones map[string]int,
+) *ZoneLayer {
+	layer := &ZoneLayer{
+		ZLevel:             z,
+		Purpose:            purpose,
+		Regions:            make([]*SpatialRegion, 0),
+		ExistingZones:      existingZones,
+		ExistingWorkshops:  make(map[string]int),
+		ExistingStockpiles: make(map[string]int),
+		Constraints:        make([]string, 0),
+	}
+
+	// Add constraints based on purpose and hazards
+	if purpose == "farm" {
+		layer.Constraints = append(layer.Constraints, "requires_soil")
+	}
+	if svp.isHazardZLevel(z) {
+		layer.Constraints = append(layer.Constraints, "hazard_zone")
+	}
+
+	// Find available construction regions on this Z-level (R006)
+	regions := svp.findAvailableRegions(z, topologyOverlay, hazardMgr)
+	layer.Regions = regions
+
+	svp.logger.Debug("SVP: Analyzed layer",
+		logging.Field{Key: "z", Value: z},
+		logging.Field{Key: "purpose", Value: purpose},
+		logging.Field{Key: "region_count", Value: len(regions)},
+		logging.Field{Key: "existing_zones", Value: len(existingZones)})
+
+	return layer
+}
+
+// findAvailableRegions scans topology for contiguous open/dug areas (R006)
+// This is a placeholder - full implementation would use flood-fill/connected-components
+func (svp *SpatialValidatorPlanner) findAvailableRegions(
+	z int,
+	topologyOverlay *topology.TopologyOverlay,
+	hazardMgr *hazards.HazardManager,
+) []*SpatialRegion {
+	regions := make([]*SpatialRegion, 0)
+
+	// Placeholder: Create one large available region per layer
+	// Real implementation would:
+	// 1. Scan all tiles at Z-level from topology
+	// 2. Find contiguous "open" (dug, walkable) areas via flood-fill
+	// 3. Generate bounding boxes for each contiguous region
+	// 4. Filter out hazard zones, too-small regions (<9 tiles)
+
+	// For now, assume embark has a large central area available
+	width := 200  // Map width (from topology)
+	height := 200 // Map height (from topology)
+	if topologyOverlay != nil {
+		w, h, _ := topologyOverlay.GetDimensions()
+		width = int(w)
+		height = int(h)
+	}
+
+	// Create one large region representing "somewhere on this layer can be built"
+	// This gives arbiter freedom to place blueprints anywhere
+	region := &SpatialRegion{
+		ID:     fmt.Sprintf("%s_region_1", svp.getPurposePrefix(z)),
+		BBox:   [6]int{10, 10, z, width - 10, height - 10, z}, // Leave 10-tile margin
+		Status: "available",
+		Area:   (width - 20) * (height - 20), // Available area
+		Features: []string{"open_space"},
+	}
+
+	regions = append(regions, region)
+	return regions
+}
+
+// getPurposePrefix returns a short prefix for region IDs
+func (svp *SpatialValidatorPlanner) getPurposePrefix(z int) string {
+	if z == svp.housingZ {
+		return "housing"
+	} else if z == svp.workshopZ {
+		return "workshop"
+	}
+	for _, fz := range svp.farmZ {
+		if z == fz {
+			return "farm"
+		}
+	}
+	return "misc"
+}
+
+// UpdateStrategicLayoutWithZones updates existing zone counts in StrategicLayout (R006)
+// Called periodically when zone extraction data is available
+func (svp *SpatialValidatorPlanner) UpdateStrategicLayoutWithZones(zonesByZ map[int]map[string]int) {
+	if svp.strategicLayout == nil {
+		return
+	}
+
+	// Update housing layer
+	if layer := svp.strategicLayout.Layers["housing"]; layer != nil {
+		if zones, ok := zonesByZ[svp.housingZ]; ok {
+			layer.ExistingZones = zones
+		}
+	}
+
+	// Update workshop layer
+	if layer := svp.strategicLayout.Layers["workshop"]; layer != nil {
+		if zones, ok := zonesByZ[svp.workshopZ]; ok {
+			layer.ExistingZones = zones
+		}
+	}
+
+	// Update farm layers
+	for i, farmZ := range svp.farmZ {
+		layerName := fmt.Sprintf("farm_%d", i+1)
+		if layer := svp.strategicLayout.Layers[layerName]; layer != nil {
+			if zones, ok := zonesByZ[farmZ]; ok {
+				layer.ExistingZones = zones
+			}
+		}
+	}
+
+	svp.logger.Debug("SVP: Updated StrategicLayout with zone counts",
+		logging.Field{Key: "z_levels_updated", Value: len(zonesByZ)})
 }

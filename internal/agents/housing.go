@@ -97,3 +97,60 @@ func (a *HousingAgent) Analyze(metrics *FortMetrics) []ModificationNode {
 
 	return []ModificationNode{node}
 }
+
+// AnalyzeIntent examines fort metrics and proposes housing INTENT (no coordinates) - HRM Architecture (R007)
+func (a *HousingAgent) AnalyzeIntent(metrics *FortMetrics) []IntentProposal {
+	if metrics.DwarfCount == 0 {
+		return nil
+	}
+
+	// Get target from config
+	bedroomsPerDwarf := getFloatTarget(a.targets, "bedrooms_per_dwarf", 1.0)
+	requiredBedrooms := int(float64(metrics.DwarfCount) * bedroomsPerDwarf)
+
+	// Use real bedroom zone count
+	currentBedrooms := metrics.BedroomZoneCount
+	if currentBedrooms == 0 {
+		currentBedrooms = metrics.BedroomCount // Fallback
+	}
+
+	// Calculate deficit
+	deficit := requiredBedrooms - currentBedrooms
+	if deficit <= 0 {
+		return nil // All dwarves have bedrooms
+	}
+
+	// Calculate urgency
+	deficitRatio := float64(deficit) / float64(metrics.DwarfCount)
+	urgency := deficitRatio
+
+	// Select blueprint hint based on deficit size
+	blueprintHint := ""
+	if deficit >= 10 {
+		blueprintHint = "bedroom_cluster_10"
+	} else if deficit >= 3 {
+		blueprintHint = "bedroom_3x3"
+	}
+
+	// Propose intent WITHOUT coordinates - arbiter decides WHERE
+	proposal := IntentProposal{
+		Agent:         a.Name(),
+		Intent:        "provide_housing",
+		Purpose:       "housing",
+		Quantity:      deficit,
+		Priority:      a.priority,
+		Urgency:       urgency,
+		Constraints:   []string{"safe_layer", "avoid_aquifer"},
+		BlueprintHint: blueprintHint,
+		Rationale: fmt.Sprintf("%d dwarves, %d bedrooms, %d deficit",
+			metrics.DwarfCount, currentBedrooms, deficit),
+		Metadata: map[string]interface{}{
+			"deficit":          deficit,
+			"bedrooms_needed":  requiredBedrooms,
+			"current_bedrooms": currentBedrooms,
+			"using_svp":        metrics.SVPHousingZ != 0,
+		},
+	}
+
+	return []IntentProposal{proposal}
+}

@@ -60,6 +60,9 @@ type AutonomousLoop struct {
 	// Feature 007: Blueprint Integration
 	blueprintMetadata []*blueprints.BlueprintMetadata // Available blueprint designs
 
+	// Feature 007: Intent-based planning (HRM architecture)
+	useIntentPlanning bool // Enable intent-based planning vs coordinate-based
+
 	logFile             *os.File
 	mu                  sync.RWMutex
 	running             bool
@@ -232,131 +235,199 @@ func (al *AutonomousLoop) runCycle() error {
 			logging.Field{Key: "enemies", Value: metrics.EnemyCount},
 			logging.Field{Key: "fort_age", Value: metrics.FortAge})
 
-		// Run all enabled agents in parallel
-		proposals, agentLatency := al.analyzeAgents(metrics)
+		// Branch: Intent-based flow vs coordinate-based flow
+		if al.useIntentPlanning {
+			// HRM Architecture: Intent-based planning (R011)
+			intentProposals := al.collectIntentProposals(metrics)
 
-		if len(proposals) > 0 {
-			// Assemble proposal graph
-			proposalGraph = al.assembleProposalGraph(proposals)
-
-			// Log agent proposals (JSON format for debugging)
-			for _, proposal := range proposals {
-				proposalJSON, _ := json.Marshal(proposal)
-				al.logger.Debug("agent proposal",
-					logging.Field{Key: "agent", Value: proposal.AgentName},
-					logging.Field{Key: "type", Value: string(proposal.Type)},
-					logging.Field{Key: "priority", Value: proposal.Priority},
-					logging.Field{Key: "urgency", Value: proposal.Urgency},
-					logging.Field{Key: "rationale", Value: proposal.Rationale},
-					logging.Field{Key: "proposal_json", Value: string(proposalJSON)})
-			}
-
-			// Log performance metrics
-			al.logger.Info("agent analysis metrics",
-				logging.Field{Key: "total_latency_ms", Value: agentLatency.Milliseconds()},
-				logging.Field{Key: "proposal_count", Value: len(proposals)},
-				logging.Field{Key: "graph_nodes", Value: len(proposalGraph.Nodes)},
-				logging.Field{Key: "conflicts_detected", Value: len(proposalGraph.ConflictEdges)})
-
-			// Send graph to arbiter for coordination
-			arbiterStart := time.Now()
-
-			// Build arbiter user message with graph JSON and fort metrics
-			graphJSON, err := proposalGraph.ToJSON()
-			if err != nil {
-				al.logger.Error("failed to serialize graph", err)
-			} else {
-				arbiterPrompt := &llm.Prompt{
-					SystemPrompt: al.getArbiterSystemPrompt(),
-					UserMessage:  graphJSON,
-					MaxTokens:    500,
-					Temperature:  0.7,
-				}
-
-				al.logger.Debug("sending graph to arbiter",
-					logging.Field{Key: "graph_json_size", Value: len(graphJSON)})
-
-				arbiterResp, err := al.llmProvider.SendPrompt(al.ctx, arbiterPrompt)
-				if err != nil {
-					al.logger.Error("arbiter request failed", err)
-					// TODO: Fallback to heuristic (highest priority non-conflicting proposal)
+			if len(intentProposals) > 0 {
+				layout := al.svp.GetStrategicLayout()
+				if layout == nil {
+					al.logger.Warn("SVP layout not available for intent planning")
 				} else {
-					arbiterLatency := time.Since(arbiterStart)
+					// Build arbiter input
+					arbiterInput := al.buildArbiterIntentInput(layout, intentProposals)
 
-					al.logger.Info("arbiter decision received",
-						logging.Field{Key: "latency_ms", Value: arbiterLatency.Milliseconds()},
-						logging.Field{Key: "tokens_prompt", Value: arbiterResp.TokensPrompt},
-						logging.Field{Key: "tokens_completion", Value: arbiterResp.TokensCompletion})
-
-					// Log full arbiter response for analysis
-					al.logger.Debug("arbiter response", logging.Field{Key: "response", Value: arbiterResp.Text})
-
-					// Parse arbiter JSON response
-					var arbiterOutput struct {
-						Sequence  []agents.ModificationNode `json:"sequence"`
-						Synergies []string                  `json:"synergies"`
-						Deferred  []string                  `json:"deferred"`
+					// Query arbiter
+					arbiterPrompt := &llm.Prompt{
+						SystemPrompt: al.getIntentArbiterSystemPrompt(),
+						UserMessage:  arbiterInput,
+						MaxTokens:    1000,
+						Temperature:  0.7,
 					}
 
-					if err := json.Unmarshal([]byte(arbiterResp.Text), &arbiterOutput); err != nil {
-						al.logger.Warn("failed to parse arbiter JSON, using fallback",
-							logging.Field{Key: "error", Value: err.Error()})
-						// TODO: Fallback to heuristic execution
+					al.logger.Debug("sending intent proposals to arbiter",
+						logging.Field{Key: "proposal_count", Value: len(intentProposals)},
+						logging.Field{Key: "input_size", Value: len(arbiterInput)})
+
+					arbiterResp, err := al.llmProvider.SendPrompt(al.ctx, arbiterPrompt)
+					if err != nil {
+						al.logger.Error("arbiter intent request failed", err)
 					} else {
-						// Create ArbitrationDecision from parsed output
-						decision := &agents.ArbitrationDecision{
-							ExecutionSequence: arbiterOutput.Sequence,
-							InjectedNodes:     []agents.ModificationNode{}, // Filter synergies from sequence
-							Timestamp:         time.Now(),
-							Latency:           arbiterLatency,
-							TokensUsed:        arbiterResp.TokensPrompt + arbiterResp.TokensCompletion,
-						}
+						al.logger.Info("arbiter intent response received",
+							logging.Field{Key: "tokens_prompt", Value: arbiterResp.TokensPrompt},
+							logging.Field{Key: "tokens_completion", Value: arbiterResp.TokensCompletion})
 
-						// Feature 007: Log blueprint selections (T074)
-						blueprintCount := 0
-						for _, node := range decision.ExecutionSequence {
-							if node.Metadata != nil {
-								if blueprintName, ok := node.Metadata["blueprint_used"].(string); ok && blueprintName != "" {
-									blueprintCount++
-									al.logger.Info("arbiter selected blueprint",
-										logging.Field{Key: "node_id", Value: node.ID},
-										logging.Field{Key: "blueprint", Value: blueprintName},
-										logging.Field{Key: "rationale", Value: node.Rationale})
-								}
-							}
-						}
+						// Log full arbiter response for debugging
+						al.logger.Debug("arbiter intent response", logging.Field{Key: "response", Value: arbiterResp.Text})
 
-						al.logger.Info("arbiter decision parsed",
-							logging.Field{Key: "execution_count", Value: len(decision.ExecutionSequence)},
-							logging.Field{Key: "synergies_recognized", Value: len(arbiterOutput.Synergies)},
-							logging.Field{Key: "blueprints_used", Value: blueprintCount})
-
-						// Execute via GraphExecutor
-						commands, err := al.graphExecutor.Execute(decision)
+						// Parse response
+						response, err := al.parseArbiterIntentResponse(arbiterResp.Text)
 						if err != nil {
-							al.logger.Error("graph execution failed", err)
-						} else if len(commands) > 0 {
-							al.logger.Info("executing graph commands",
-								logging.Field{Key: "command_count", Value: len(commands)})
+							al.logger.Warn("failed to parse arbiter intent response",
+								logging.Field{Key: "error", Value: err.Error()})
+						} else {
+							// Convert to protocol commands
+							commands := al.convertArbiterCommandsToProtocol(response.Commands)
+
+							al.logger.Info("arbiter intent decision parsed",
+								logging.Field{Key: "command_count", Value: len(commands)},
+								logging.Field{Key: "deferred_count", Value: len(response.Deferred)})
 
 							// Send commands to DFHack
 							for i, cmd := range commands {
 								cmd.CommandID = uint32(time.Now().UnixNano() + int64(i))
 								if err := al.dfhackClient.SendCommand(&cmd); err != nil {
-									al.logger.Error("failed to send command", err,
-										logging.Field{Key: "index", Value: i})
+									al.logger.Error("failed to send command", err)
 								} else {
-									al.logger.Info("command sent",
+									al.logger.Info("blueprint command sent",
 										logging.Field{Key: "command_id", Value: cmd.CommandID},
-										logging.Field{Key: "type", Value: cmd.CommandType})
+										logging.Field{Key: "blueprint", Value: cmd.BlueprintName})
 								}
 							}
 						}
 					}
 				}
+			} else {
+				al.logger.Info("no intent proposals this cycle (all targets met)")
 			}
 		} else {
-			al.logger.Info("no agent proposals this cycle (all targets met)")
+			// Existing coordinate-based flow
+			proposals, agentLatency := al.analyzeAgents(metrics)
+
+			if len(proposals) > 0 {
+				// Assemble proposal graph
+				proposalGraph = al.assembleProposalGraph(proposals)
+
+				// Log agent proposals (JSON format for debugging)
+				for _, proposal := range proposals {
+					proposalJSON, _ := json.Marshal(proposal)
+					al.logger.Debug("agent proposal",
+						logging.Field{Key: "agent", Value: proposal.AgentName},
+						logging.Field{Key: "type", Value: string(proposal.Type)},
+						logging.Field{Key: "priority", Value: proposal.Priority},
+						logging.Field{Key: "urgency", Value: proposal.Urgency},
+						logging.Field{Key: "rationale", Value: proposal.Rationale},
+						logging.Field{Key: "proposal_json", Value: string(proposalJSON)})
+				}
+
+				// Log performance metrics
+				al.logger.Info("agent analysis metrics",
+					logging.Field{Key: "total_latency_ms", Value: agentLatency.Milliseconds()},
+					logging.Field{Key: "proposal_count", Value: len(proposals)},
+					logging.Field{Key: "graph_nodes", Value: len(proposalGraph.Nodes)},
+					logging.Field{Key: "conflicts_detected", Value: len(proposalGraph.ConflictEdges)})
+
+				// Send graph to arbiter for coordination
+				arbiterStart := time.Now()
+
+				// Build arbiter user message with graph JSON and fort metrics
+				graphJSON, err := proposalGraph.ToJSON()
+				if err != nil {
+					al.logger.Error("failed to serialize graph", err)
+				} else {
+					arbiterPrompt := &llm.Prompt{
+						SystemPrompt: al.getArbiterSystemPrompt(),
+						UserMessage:  graphJSON,
+						MaxTokens:    500,
+						Temperature:  0.7,
+					}
+
+					al.logger.Debug("sending graph to arbiter",
+						logging.Field{Key: "graph_json_size", Value: len(graphJSON)})
+
+					arbiterResp, err := al.llmProvider.SendPrompt(al.ctx, arbiterPrompt)
+					if err != nil {
+						al.logger.Error("arbiter request failed", err)
+						// TODO: Fallback to heuristic (highest priority non-conflicting proposal)
+					} else {
+						arbiterLatency := time.Since(arbiterStart)
+
+						al.logger.Info("arbiter decision received",
+							logging.Field{Key: "latency_ms", Value: arbiterLatency.Milliseconds()},
+							logging.Field{Key: "tokens_prompt", Value: arbiterResp.TokensPrompt},
+							logging.Field{Key: "tokens_completion", Value: arbiterResp.TokensCompletion})
+
+						// Log full arbiter response for analysis
+						al.logger.Debug("arbiter response", logging.Field{Key: "response", Value: arbiterResp.Text})
+
+						// Parse arbiter JSON response
+						var arbiterOutput struct {
+							Sequence  []agents.ModificationNode `json:"sequence"`
+							Synergies []string                  `json:"synergies"`
+							Deferred  []string                  `json:"deferred"`
+						}
+
+						if err := json.Unmarshal([]byte(arbiterResp.Text), &arbiterOutput); err != nil {
+							al.logger.Warn("failed to parse arbiter JSON, using fallback",
+								logging.Field{Key: "error", Value: err.Error()})
+							// TODO: Fallback to heuristic execution
+						} else {
+							// Create ArbitrationDecision from parsed output
+							decision := &agents.ArbitrationDecision{
+								ExecutionSequence: arbiterOutput.Sequence,
+								InjectedNodes:     []agents.ModificationNode{}, // Filter synergies from sequence
+								Timestamp:         time.Now(),
+								Latency:           arbiterLatency,
+								TokensUsed:        arbiterResp.TokensPrompt + arbiterResp.TokensCompletion,
+							}
+
+							// Feature 007: Log blueprint selections (T074)
+							blueprintCount := 0
+							for _, node := range decision.ExecutionSequence {
+								if node.Metadata != nil {
+									if blueprintName, ok := node.Metadata["blueprint_used"].(string); ok && blueprintName != "" {
+										blueprintCount++
+										al.logger.Info("arbiter selected blueprint",
+											logging.Field{Key: "node_id", Value: node.ID},
+											logging.Field{Key: "blueprint", Value: blueprintName},
+											logging.Field{Key: "rationale", Value: node.Rationale})
+									}
+								}
+							}
+
+							al.logger.Info("arbiter decision parsed",
+								logging.Field{Key: "execution_count", Value: len(decision.ExecutionSequence)},
+								logging.Field{Key: "synergies_recognized", Value: len(arbiterOutput.Synergies)},
+								logging.Field{Key: "blueprints_used", Value: blueprintCount})
+
+							// Execute via GraphExecutor
+							commands, err := al.graphExecutor.Execute(decision)
+							if err != nil {
+								al.logger.Error("graph execution failed", err)
+							} else if len(commands) > 0 {
+								al.logger.Info("executing graph commands",
+									logging.Field{Key: "command_count", Value: len(commands)})
+
+								// Send commands to DFHack
+								for i, cmd := range commands {
+									cmd.CommandID = uint32(time.Now().UnixNano() + int64(i))
+									if err := al.dfhackClient.SendCommand(&cmd); err != nil {
+										al.logger.Error("failed to send command", err,
+											logging.Field{Key: "index", Value: i})
+									} else {
+										al.logger.Info("command sent",
+											logging.Field{Key: "command_id", Value: cmd.CommandID},
+											logging.Field{Key: "type", Value: cmd.CommandType})
+									}
+								}
+							}
+						}
+					}
+				}
+			} else {
+				al.logger.Info("no agent proposals this cycle (all targets met)")
+			}
 		}
 	}
 
@@ -929,6 +1000,16 @@ func (al *AutonomousLoop) SetBlueprintMetadata(metadata []*blueprints.BlueprintM
 		logging.Field{Key: "blueprint_count", Value: len(metadata)})
 }
 
+// SetUseIntentPlanning enables or disables intent-based planning (HRM architecture)
+func (al *AutonomousLoop) SetUseIntentPlanning(enabled bool) {
+	al.useIntentPlanning = enabled
+	if enabled {
+		al.logger.Info("intent-based planning enabled (HRM architecture)")
+	} else {
+		al.logger.Info("coordinate-based planning enabled (legacy mode)")
+	}
+}
+
 // UpdateZones updates the cached zone data from ENTITY_UPDATE (Feature 007)
 func (al *AutonomousLoop) UpdateZones(zoneData []protocol.ZoneData) {
 	al.zonesMu.Lock()
@@ -1086,6 +1167,12 @@ func (al *AutonomousLoop) computeFortMetrics() *agents.FortMetrics {
 				logging.Field{Key: "bedroom_zones", Value: metrics.BedroomZoneCount},
 				logging.Field{Key: "dining_zones", Value: metrics.DiningZoneCount},
 				logging.Field{Key: "housing_deficit", Value: metrics.HousingDeficit})
+
+			// HRM Architecture: Update StrategicLayout with zone counts (R006)
+			if al.svp != nil && al.svp.IsReady() {
+				zonesByZ := al.zoneExtractor.GetZonesByZLevel(extractedZones)
+				al.svp.UpdateStrategicLayoutWithZones(zonesByZ)
+			}
 		} else {
 			if err != nil {
 				al.logger.Warn("zone extraction failed, using fallback",
@@ -1245,6 +1332,135 @@ func (al *AutonomousLoop) assembleProposalGraph(proposals []agents.ModificationN
 		logging.Field{Key: "assembly_ms", Value: assemblyTime.Milliseconds()})
 
 	return graph
+}
+
+// collectIntentProposals runs agents in intent mode (R008)
+func (al *AutonomousLoop) collectIntentProposals(metrics *agents.FortMetrics) []agents.IntentProposal {
+	proposals := make([]agents.IntentProposal, 0)
+
+	// Currently only HousingAgent supports intent mode
+	if housing, ok := al.agentRegistry.Get("Housing"); ok {
+		if housingAgent, ok := housing.(*agents.HousingAgent); ok {
+			intents := housingAgent.AnalyzeIntent(metrics)
+			proposals = append(proposals, intents...)
+		}
+	}
+
+	return proposals
+}
+
+// buildArbiterIntentInput constructs JSON input for intent-based arbiter (R009)
+func (al *AutonomousLoop) buildArbiterIntentInput(
+	layout *spatial.StrategicLayout,
+	proposals []agents.IntentProposal,
+) string {
+	input := map[string]interface{}{
+		"fort_layout": layout,
+		"proposals":   proposals,
+		"blueprints":  al.blueprintMetadata,
+	}
+
+	jsonBytes, _ := json.MarshalIndent(input, "", "  ")
+	return string(jsonBytes)
+}
+
+// getIntentArbiterSystemPrompt returns prompt for intent-based planning (R008)
+func (al *AutonomousLoop) getIntentArbiterSystemPrompt() string {
+	return `You are a Dwarf Fortress spatial planning arbiter (HRM H-module).
+
+You receive:
+1. StrategicLayout JSON: Available construction regions per Z-level with existing infrastructure counts
+2. Agent Intent Proposals: High-level needs WITHOUT coordinates (quantity, purpose, constraints)
+3. Blueprint Library: Proven spatial designs
+
+Your task: Map intents → blueprint placements with anchor points
+
+Input Format:
+{
+  "fort_layout": {
+    "layers": {
+      "housing": {
+        "z_level": 95,
+        "regions": [{"id": "housing_1", "bbox": [40,30,95,60,45,95], "area": 300, "status": "available"}],
+        "existing_zones": {"bedroom": 5, "dining": 1}
+      },
+      "workshop": {"z_level": 94, "regions": [...]}
+    }
+  },
+  "proposals": [
+    {
+      "agent": "Housing",
+      "intent": "provide_housing",
+      "purpose": "housing",
+      "quantity": 7,
+      "blueprint_hint": "bedroom_cluster_10",
+      "constraints": ["safe_layer"]
+    }
+  ],
+  "blueprints": [
+    {"name": "bedroom_3x3", "width": 3, "height": 3, "capacity": 1},
+    {"name": "bedroom_cluster_10", "width": 18, "height": 12, "capacity": 10}
+  ]
+}
+
+Output Format:
+{
+  "commands": [
+    {
+      "type": "apply_blueprint",
+      "blueprint": "bedroom_cluster_10",
+      "anchor": [42, 31, 95],
+      "rotation": 0,
+      "reasoning": "Housing layer has 300 tiles available in housing_1. Cluster_10 needs 216 tiles (18x12). Placed at anchor [42,31,95] with margin. Addresses 7-bedroom deficit."
+    }
+  ],
+  "deferred": []
+}
+
+Decision Rules:
+1. Check region.area >= (blueprint.width * blueprint.height) before placement
+2. Respect layer purposes (housing blueprints only on housing layers)
+3. Avoid overlapping existing zones
+4. Use blueprint_hint when provided
+5. Prefer blueprints over geometric patterns
+6. If blueprint doesn't fit, defer the proposal
+
+Priority: Food (10) > Housing (9) > Mining (7) > Wealth (6) > Defense (variable)`
+}
+
+// parseArbiterIntentResponse parses arbiter's blueprint+anchor commands (R010)
+func (al *AutonomousLoop) parseArbiterIntentResponse(responseText string) (*agents.ArbiterIntentResponse, error) {
+	var response agents.ArbiterIntentResponse
+
+	if err := json.Unmarshal([]byte(responseText), &response); err != nil {
+		return nil, fmt.Errorf("failed to parse arbiter intent response: %w", err)
+	}
+
+	return &response, nil
+}
+
+// convertArbiterCommandsToProtocol converts arbiter commands to protocol messages (R011)
+func (al *AutonomousLoop) convertArbiterCommandsToProtocol(commands []agents.ArbiterCommand) []protocol.CommandMessage {
+	protocolCommands := make([]protocol.CommandMessage, 0, len(commands))
+
+	for _, cmd := range commands {
+		if cmd.Type == "apply_blueprint" {
+			protocolCommands = append(protocolCommands, protocol.CommandMessage{
+				CommandType:   protocol.CommandTypeBlueprint,
+				BlueprintName: cmd.Blueprint,
+				OriginX:       int16(cmd.Anchor[0]),
+				OriginY:       int16(cmd.Anchor[1]),
+				OriginZ:       int16(cmd.Anchor[2]),
+			})
+
+			al.logger.Info("arbiter blueprint command",
+				logging.Field{Key: "blueprint", Value: cmd.Blueprint},
+				logging.Field{Key: "anchor", Value: cmd.Anchor},
+				logging.Field{Key: "reasoning", Value: cmd.Reasoning})
+		}
+	}
+
+	return protocolCommands
 }
 
 // Stop stops the autonomous loop

@@ -1,16 +1,22 @@
 package entities
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/df-ai/orchestrator/internal/protocol"
 )
 
+// Coordinate represents a 3D position in the fort
+type Coordinate struct {
+	X, Y, Z int16
+}
+
 // DwarfDetails contains extended dwarf information
 type DwarfDetails struct {
 	ID       uint32
-	Position protocol.Coordinate
+	Position Coordinate
 
 	// TODO: Extract from DFHack in future
 	Name       string
@@ -22,11 +28,6 @@ type DwarfDetails struct {
 	CurrentTask string
 	IdleTime    time.Duration
 	LastSeen    time.Time
-}
-
-// Coordinate helper (compatibility with protocol)
-type Coordinate struct {
-	X, Y, Z int16
 }
 
 // EnhancedEntityCache tracks detailed entity information
@@ -92,7 +93,7 @@ func (eec *EnhancedEntityCache) Update(entities []protocol.EntityInfo) {
 		case protocol.EntityTypeDwarf:
 			dwarf := &DwarfDetails{
 				ID:       entity.ID,
-				Position: protocol.Coordinate{X: entity.X, Y: entity.Y, Z: entity.Z},
+				Position: Coordinate{X: entity.X, Y: entity.Y, Z: entity.Z},
 				LastSeen: time.Now(),
 			}
 			eec.dwarves[entity.ID] = dwarf

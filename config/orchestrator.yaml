@@ -95,6 +95,9 @@ context_max_size_bytes: 256000  # 250 KB hard limit
 # Goal Agent System (Feature 006)
 enable_goal_agents: false      # Enable graph-based agents (true) or direct-LLM mode (false)
 
+# HRM Architecture (Feature 007 Refactor)
+use_intent_planning: false     # Enable intent-based planning (agents propose needs, arbiter decides placement)
+
 # Local LLM Configuration
 local_llm_endpoint: http://localhost:1234/v1  # LM Studio default endpoint
 local_llm_model: qwen2.5-7b-instruct-q4_k_m   # Model name

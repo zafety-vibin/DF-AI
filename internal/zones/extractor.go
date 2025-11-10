@@ -110,3 +110,46 @@ func (ze *ZoneExtractor) GetUnassignedCount(zones []*ZoneInfo, zoneType ZoneType
 func (ze *ZoneExtractor) IsEnabled() bool {
 	return ze.enabled
 }
+
+// GetZonesByZLevel groups zones by Z-level and type for FortLayout (R005)
+// Returns: map[Z-level]map[zone_type_string]count
+func (ze *ZoneExtractor) GetZonesByZLevel(zones []*ZoneInfo) map[int]map[string]int {
+	zonesByZ := make(map[int]map[string]int)
+
+	for _, zone := range zones {
+		z := int(zone.Region.Z1) // Use Z1 as zone's Z-level
+
+		// Initialize map for this Z-level if needed
+		if zonesByZ[z] == nil {
+			zonesByZ[z] = make(map[string]int)
+		}
+
+		// Increment count for this zone type
+		typeName := zone.TypeString()
+		zonesByZ[z][typeName]++
+	}
+
+	return zonesByZ
+}
+
+// TypeString returns the zone type as a string (R005 helper)
+func (z *ZoneInfo) TypeString() string {
+	switch z.ZoneType {
+	case ZoneTypeBedroom:
+		return "bedroom"
+	case ZoneTypeDining:
+		return "dining"
+	case ZoneTypeDormitory:
+		return "dormitory"
+	case ZoneTypeOffice:
+		return "office"
+	case ZoneTypeBarracks:
+		return "barracks"
+	case ZoneTypeWorkshop:
+		return "workshop"
+	case ZoneTypeStockpile:
+		return "stockpile"
+	default:
+		return "unknown"
+	}
+}

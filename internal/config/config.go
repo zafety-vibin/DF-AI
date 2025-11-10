@@ -91,6 +91,10 @@ type Config struct {
 
 	// Goal Agent System (Feature 006)
 	EnableGoalAgents bool                `yaml:"enable_goal_agents"` // Enable graph-based agents (true) or direct-LLM mode (false)
+
+	// HRM Architecture (Feature 007 Refactor)
+	UseIntentPlanning bool                `yaml:"use_intent_planning"` // Enable intent-based planning (HRM-style) vs coordinate-based
+
 	AgentFood        AgentConfig         `yaml:"agent_food"`
 	AgentHousing     AgentConfig         `yaml:"agent_housing"`
 	AgentMining      AgentConfig         `yaml:"agent_mining"`

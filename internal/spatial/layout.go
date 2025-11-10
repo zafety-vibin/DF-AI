@@ -57,3 +57,64 @@ func (d *ZLevelDesignation) CanAccommodate(purpose DesignationPurpose) bool {
 
 	return true
 }
+
+// ===== HRM Architecture: StrategicLayout JSON Output (R001) =====
+
+// StrategicLayout is the rich spatial context for arbiter (HRM H-module input)
+// Replaces simple int fields with structured region data and infrastructure counts
+// Note: Different from FortLayout in types.go (room detection) - this is for strategic planning
+type StrategicLayout struct {
+	FortName   string                `json:"fort_name"`
+	AnalyzedAt string                `json:"analyzed_at"` // RFC3339 format
+	Version    string                `json:"version"`
+	Layers     map[string]*ZoneLayer `json:"layers"` // "housing", "workshop", "farm"
+}
+
+// ZoneLayer represents a functional Z-level with available regions and existing infrastructure
+type ZoneLayer struct {
+	ZLevel  int              `json:"z_level"`
+	Purpose string           `json:"purpose"` // "housing", "workshop", "farm", "storage"
+	Regions []*SpatialRegion `json:"regions"` // Available construction areas
+
+	// Existing infrastructure counts (from zone extraction)
+	ExistingZones      map[string]int `json:"existing_zones"`      // "bedroom": 5, "dining": 1
+	ExistingWorkshops  map[string]int `json:"existing_workshops"`  // "craftsdwarf": 2 (future)
+	ExistingStockpiles map[string]int `json:"existing_stockpiles"` // "stone": 3 (future)
+
+	Constraints []string `json:"constraints"` // "avoid_aquifer", "requires_soil", "hazard_zone"
+}
+
+// SpatialRegion is an available construction area within a layer
+type SpatialRegion struct {
+	ID       string   `json:"id"`       // "housing_1", "workshop_2"
+	BBox     [6]int   `json:"bbox"`     // [x1, y1, z1, x2, y2, z2]
+	Status   string   `json:"status"`   // "available", "partial", "occupied"
+	Area     int      `json:"area"`     // Tile count (for blueprint fitting)
+	Features []string `json:"features"` // "smooth_walls", "no_hazards", "near_stairs"
+}
+
+// GetLayer returns a specific layer by purpose, or nil if not found
+func (sl *StrategicLayout) GetLayer(purpose string) *ZoneLayer {
+	return sl.Layers[purpose]
+}
+
+// GetAvailableArea returns total available area on a layer
+func (zl *ZoneLayer) GetAvailableArea() int {
+	total := 0
+	for _, region := range zl.Regions {
+		if region.Status == "available" {
+			total += region.Area
+		}
+	}
+	return total
+}
+
+// HasConstraint checks if a constraint is present
+func (zl *ZoneLayer) HasConstraint(constraint string) bool {
+	for _, c := range zl.Constraints {
+		if c == constraint {
+			return true
+		}
+	}
+	return false
+}
