@@ -41,3 +41,6 @@ Thumbs.db
 # Test artifacts
 /coverage/
 *.prof
+
+# Feature 007: SVP and zone persistence
+/saves/

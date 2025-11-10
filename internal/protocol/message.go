@@ -99,10 +99,11 @@ func (t *TileState) ClearFlag(flag uint8) {
 
 // FullStateMessage contains complete map state
 type FullStateMessage struct {
-	Width  uint16
-	Height uint16
-	Depth  uint16
-	Tiles  []TileState
+	Width       uint16
+	Height      uint16
+	Depth       uint16
+	Tiles       []TileState
+	IsSoilLayer []bool // Feature 007: Per Z-level soil flags (200 bools, 1 per Z-level)
 }
 
 func (m *FullStateMessage) Type() uint8 { return MessageTypeFullState }
@@ -246,11 +247,21 @@ type FortInfo struct {
 	Year          uint32 // Current year
 }
 
-// EntityUpdateMessage contains entity position updates + optional fort info
+// ZoneData represents a DF zone extracted from game state (Feature 007)
+type ZoneData struct {
+	ZoneID     uint32 // Unique zone identifier from DF
+	ZoneType   uint8  // Zone category (ZoneTypeBedroom, ZoneTypeDining, etc.)
+	X1, Y1, Z1 int16  // Start coordinates
+	X2, Y2, Z2 int16  // End coordinates
+	AssignedTo int32  // Dwarf ID if assigned, -1 if unassigned
+}
+
+// EntityUpdateMessage contains entity position updates + optional fort info + zones
 type EntityUpdateMessage struct {
 	Count    uint32
 	Entities []EntityInfo
-	FortInfo *FortInfo // Optional (nil if not included)
+	FortInfo *FortInfo   // Optional (nil if not included)
+	Zones    []ZoneData  // Feature 007: Zone data (empty if zone extraction disabled)
 }
 
 func (m *EntityUpdateMessage) Type() uint8 { return MessageTypeEntityUpdate }
@@ -265,12 +276,13 @@ func (m *EntityUpdateMessage) Validate() error {
 
 // CommandType constants for command messages
 const (
-	CommandTypeDig    uint8 = 0x01
-	CommandTypeBuild  uint8 = 0x02
-	CommandTypeCancel uint8 = 0x03
-	CommandTypeChop   uint8 = 0x04
-	CommandTypeGather uint8 = 0x05
-	CommandTypeZone   uint8 = 0x06 // NEW: Designate zones (bedroom, dining, etc.)
+	CommandTypeDig       uint8 = 0x01
+	CommandTypeBuild     uint8 = 0x02
+	CommandTypeCancel    uint8 = 0x03
+	CommandTypeChop      uint8 = 0x04
+	CommandTypeGather    uint8 = 0x05
+	CommandTypeZone      uint8 = 0x06 // Designate zones (bedroom, dining, etc.)
+	CommandTypeBlueprint uint8 = 0x07 // Feature 007: Apply blueprint pattern with zones
 )
 
 // ZoneType constants for zone designations
@@ -280,6 +292,9 @@ const (
 	ZoneTypeMeetingHall uint8 = 0x03 // Meeting area
 	ZoneTypeBarracks    uint8 = 0x04 // Military training
 	ZoneTypeDormitory   uint8 = 0x05 // Shared sleeping
+	ZoneTypeOffice      uint8 = 0x06 // Feature 007: Office
+	ZoneTypeWorkshop    uint8 = 0x07 // Feature 007: Workshop
+	ZoneTypeStockpile   uint8 = 0x08 // Feature 007: Stockpile
 )
 
 // DigType constants (matches df::tile_dig_designation enum)
@@ -330,11 +345,17 @@ type ZoneDesignation struct {
 // CommandMessage represents a command from server to DFHack
 type CommandMessage struct {
 	CommandID   uint32           // Unique command identifier
-	CommandType uint8            // Type of command (dig/build/cancel/zone)
+	CommandType uint8            // Type of command (dig/build/cancel/zone/blueprint)
 	DigType     uint8            // For DIG: dig designation type (Default=1, UpDownStair=2, Channel=3, etc)
 	Region      Region           // For DIG and CANCEL commands
 	Build       BuildDesignation // For BUILD commands
 	Zone        ZoneDesignation  // For ZONE commands
+
+	// Feature 007: Blueprint command fields
+	BlueprintName string // For BLUEPRINT: blueprint filename (without .csv)
+	OriginX       int16  // For BLUEPRINT: placement X coordinate
+	OriginY       int16  // For BLUEPRINT: placement Y coordinate
+	OriginZ       int16  // For BLUEPRINT: placement Z coordinate
 }
 
 func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }

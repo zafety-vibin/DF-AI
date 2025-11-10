@@ -101,6 +101,23 @@ type Config struct {
 	LocalLLMEndpoint string `yaml:"local_llm_endpoint"` // LM Studio endpoint (http://localhost:1234/v1)
 	LocalLLMModel    string `yaml:"local_llm_model"`    // Model name (qwen2.5-7b-instruct-q4_k_m)
 	LLMTimeoutMS     int    `yaml:"llm_timeout_ms"`     // Request timeout in milliseconds
+
+	// Feature 007: SVP Configuration
+	UseSVP             bool   `yaml:"use_svp"`              // Enable Spatial Validator Planner
+	SVPPersistenceDir  string `yaml:"svp_persistence_dir"`  // Directory for SVP layout files (saves/)
+
+	// Feature 007: Zone Extraction Configuration
+	ExtractZones             bool `yaml:"extract_zones"`              // Enable zone extraction from DF
+	ZoneExtractionIntervalMS int  `yaml:"zone_extraction_interval_ms"` // Zone extraction frequency (milliseconds)
+
+	// Feature 007: Blueprint Configuration
+	BlueprintDirectory       string `yaml:"blueprint_directory"`        // Path to blueprint CSV files
+	IncludeBlueprintMetadata bool   `yaml:"include_blueprint_metadata"` // Add blueprint metadata to arbiter prompt
+
+	// Feature 007: Zone Queue Configuration
+	ZoneQueueMaxSize      int `yaml:"zone_queue_max_size"`      // Maximum queued zones
+	ZoneQueueMaxRetries   int `yaml:"zone_queue_max_retries"`   // Max retry attempts per zone
+	ZoneQueueTimeoutCycles int `yaml:"zone_queue_timeout_cycles"` // Cycles before zone timeout
 }
 
 // AgentConfig holds configuration for a goal agent

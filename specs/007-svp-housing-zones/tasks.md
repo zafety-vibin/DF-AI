@@ -27,11 +27,11 @@
 
 **Purpose**: Project initialization and package structure for SVP and zones
 
-- [ ] T001 Create internal/spatial/ package directory for SVP component
-- [ ] T002 Create internal/zones/ package directory for zone extraction and queue
-- [ ] T003 [P] Create tests/spatial/ directory for SVP tests
-- [ ] T004 [P] Create tests/zones/ directory for zone extraction tests
-- [ ] T005 [P] Create saves/ directory for fort-specific persistence (svp_layout.json, zone_queue.json)
+- [X] T001 Create internal/spatial/ package directory for SVP component
+- [X] T002 Create internal/zones/ package directory for zone extraction and queue
+- [X] T003 [P] Create tests/spatial/ directory for SVP tests
+- [X] T004 [P] Create tests/zones/ directory for zone extraction tests
+- [X] T005 [P] Create saves/ directory for fort-specific persistence (svp_layout.json, zone_queue.json)
 
 ---
 
@@ -41,22 +41,22 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T006 Define ZLevelDesignation struct in internal/spatial/layout.go (z_level, purpose enum, capacity enum, hazard flags, soil flag)
-- [ ] T007 Define ZoneInfo struct in internal/zones/types.go (zone_id, zone_type enum, region, assigned_to, size, created_at)
-- [ ] T008 Define QueuedZone struct in internal/zones/queue.go (zone_type, region, command_id, retry_count, timeout_cycles, status enum, timestamps)
-- [ ] T009 Define BlueprintMetadata struct in internal/blueprints/metadata.go (name, display_name, dimensions, tile_count, dwarf_capacity, description, tags, suitability_criteria)
-- [ ] T010 [P] Add Config fields for SVP in internal/config/config.go (use_svp, svp_persistence_dir)
-- [ ] T011 [P] Add Config fields for zone extraction in internal/config/config.go (extract_zones, zone_extraction_interval_ms)
-- [ ] T012 [P] Add Config fields for blueprints in internal/config/config.go (blueprint_directory, include_blueprint_metadata)
-- [ ] T013 [P] Add Config fields for zone queue in internal/config/config.go (zone_queue_max_size, zone_queue_max_retries, zone_queue_timeout_cycles)
-- [ ] T014 Extend FortMetrics struct in internal/agents/agent.go with zone counts (BedroomZoneCount, DiningZoneCount, DormitoryZoneCount, OfficeZoneCount, UnassignedBedroomCount, HousingDeficit)
-- [ ] T015 Extend FortMetrics struct in internal/agents/agent.go with SVP designations (SVPHousingZ, SVPWorkshopZ, SVPFarmZ []int)
-- [ ] T016 Add BLUEPRINT command type to protocol.CommandType enum in internal/protocol/types.go
-- [ ] T017 Extend CommandMessage in internal/protocol/types.go with blueprint fields (blueprint_name, origin_x, origin_y, origin_z)
-- [ ] T018 Define ZoneType enum in internal/protocol/types.go (ZONE_BEDROOM, ZONE_DINING, ZONE_DORMITORY, ZONE_OFFICE, ZONE_BARRACKS, ZONE_WORKSHOP, ZONE_STOCKPILE)
-- [ ] T019 Extend EntityUpdate message in internal/protocol/types.go with zones array (repeated ZoneData)
-- [ ] T020 Define ZoneData struct in internal/protocol/types.go (zone_id, zone_type, coordinates x1-z2, assigned_to)
-- [ ] T021 Extend TopologyMessage in internal/protocol/types.go with is_soil_layer array (200 bools)
+- [X] T006 Define ZLevelDesignation struct in internal/spatial/layout.go (z_level, purpose enum, capacity enum, hazard flags, soil flag)
+- [X] T007 Define ZoneInfo struct in internal/zones/types.go (zone_id, zone_type enum, region, assigned_to, size, created_at)
+- [X] T008 Define QueuedZone struct in internal/zones/queue.go (zone_type, region, command_id, retry_count, timeout_cycles, status enum, timestamps)
+- [X] T009 Define BlueprintMetadata struct in internal/blueprints/metadata.go (name, display_name, dimensions, tile_count, dwarf_capacity, description, tags, suitability_criteria)
+- [X] T010 [P] Add Config fields for SVP in internal/config/config.go (use_svp, svp_persistence_dir)
+- [X] T011 [P] Add Config fields for zone extraction in internal/config/config.go (extract_zones, zone_extraction_interval_ms)
+- [X] T012 [P] Add Config fields for blueprints in internal/config/config.go (blueprint_directory, include_blueprint_metadata)
+- [X] T013 [P] Add Config fields for zone queue in internal/config/config.go (zone_queue_max_size, zone_queue_max_retries, zone_queue_timeout_cycles)
+- [X] T014 Extend FortMetrics struct in internal/agents/agent.go with zone counts (BedroomZoneCount, DiningZoneCount, DormitoryZoneCount, OfficeZoneCount, UnassignedBedroomCount, HousingDeficit)
+- [X] T015 Extend FortMetrics struct in internal/agents/agent.go with SVP designations (SVPHousingZ, SVPWorkshopZ, SVPFarmZ []int)
+- [X] T016 Add BLUEPRINT command type to protocol.CommandType enum in internal/protocol/message.go
+- [X] T017 Extend CommandMessage in internal/protocol/message.go with blueprint fields (blueprint_name, origin_x, origin_y, origin_z)
+- [X] T018 Define ZoneType enum in internal/protocol/message.go (ZONE_BEDROOM, ZONE_DINING, ZONE_DORMITORY, ZONE_OFFICE, ZONE_BARRACKS, ZONE_WORKSHOP, ZONE_STOCKPILE)
+- [X] T019 Extend EntityUpdate message in internal/protocol/message.go with zones array (repeated ZoneData)
+- [X] T020 Define ZoneData struct in internal/protocol/message.go (zone_id, zone_type, coordinates x1-z2, assigned_to)
+- [X] T021 Extend TopologyMessage in internal/protocol/message.go with is_soil_layer array (200 bools)
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
