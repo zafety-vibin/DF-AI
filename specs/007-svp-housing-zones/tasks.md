@@ -70,25 +70,25 @@
 
 ### Implementation for User Story 1
 
-- [ ] T022 [P] [US1] Implement SpatialValidatorPlanner struct in internal/spatial/planner.go (embark_z, housing_z, workshop_z, farm_z, hazard_z, fort_name, analyzed_at, layout_version, persistence_path fields)
-- [ ] T023 [P] [US1] Implement NewSpatialValidatorPlanner constructor in internal/spatial/planner.go
-- [ ] T024 [US1] Implement AnalyzeTerrain method in internal/spatial/planner.go (detect embark Z from dwarf positions, calculate housing Z = embark - 5, workshop Z = housing - 1, query topology for soil layers, query hazard manager for hazards)
-- [ ] T025 [US1] Implement detectEmbarkZ helper in internal/spatial/planner.go (mode of dwarf Z coordinates from entity list)
-- [ ] T026 [US1] Implement detectSoilLayers helper in internal/spatial/planner.go (query topology.is_soil_layer array, return Z-levels with soil)
-- [ ] T027 [US1] Implement GetHousingZ method in internal/spatial/planner.go (returns housing_z field)
-- [ ] T028 [P] [US1] Implement GetWorkshopZ method in internal/spatial/planner.go (returns workshop_z field)
-- [ ] T029 [P] [US1] Implement GetFarmZ method in internal/spatial/planner.go (returns farm_z array)
-- [ ] T030 [P] [US1] Implement IsReady method in internal/spatial/planner.go (returns true if analyzed_at not zero)
-- [ ] T031 [US1] Implement Save method in internal/spatial/planner.go (marshal to JSON, write to saves/{fortname}/svp_layout.json)
-- [ ] T032 [US1] Implement Load method in internal/spatial/planner.go (read saves/{fortname}/svp_layout.json, unmarshal, restore fields)
-- [ ] T033 [US1] Implement ValidateProposal method in internal/spatial/planner.go (check node type matches Z-level purpose, verify not in hazard zones)
-- [ ] T034 [US1] Add SVP state tracking to AutonomousLoop in internal/autonomous/loop.go (WAITING_FOR_TOPOLOGY, WAITING_FOR_ENTITIES, READY states)
-- [ ] T035 [US1] Update RESYNC handler in internal/autonomous/loop.go to transition state to WAITING_FOR_ENTITIES after topology loaded
-- [ ] T036 [US1] Update ENTITY_UPDATE handler in internal/autonomous/loop.go to trigger SVP analysis when both topology and entities available
-- [ ] T037 [US1] Add SVP initialization in cmd/df-orchestrator/main.go (create SVP instance, inject into autonomous loop)
-- [ ] T038 [US1] Update computeFortMetrics in internal/autonomous/loop.go to add SVP designations to metrics (SVPHousingZ, SVPWorkshopZ, SVPFarmZ)
-- [ ] T039 [US1] Add logging for SVP analysis in internal/spatial/planner.go (DEBUG: embark Z detected, housing/workshop/farm designations, hazards avoided; INFO: analysis complete, saved to disk)
-- [ ] T040 [US1] Add logging for SVP load in internal/spatial/planner.go (INFO: loaded existing layout, DEBUG: designation values)
+- [X] T022 [P] [US1] Implement SpatialValidatorPlanner struct in internal/spatial/planner.go (embark_z, housing_z, workshop_z, farm_z, hazard_z, fort_name, analyzed_at, layout_version, persistence_path fields)
+- [X] T023 [P] [US1] Implement NewSpatialValidatorPlanner constructor in internal/spatial/planner.go
+- [X] T024 [US1] Implement AnalyzeTerrain method in internal/spatial/planner.go (detect embark Z from dwarf positions, calculate housing Z = embark - 5, workshop Z = housing - 1, query topology for soil layers, query hazard manager for hazards)
+- [X] T025 [US1] Implement detectEmbarkZ helper in internal/spatial/planner.go (mode of dwarf Z coordinates from entity list)
+- [X] T026 [US1] Implement detectSoilLayers helper in internal/spatial/planner.go (query topology.is_soil_layer array, return Z-levels with soil)
+- [X] T027 [US1] Implement GetHousingZ method in internal/spatial/planner.go (returns housing_z field)
+- [X] T028 [P] [US1] Implement GetWorkshopZ method in internal/spatial/planner.go (returns workshop_z field)
+- [X] T029 [P] [US1] Implement GetFarmZ method in internal/spatial/planner.go (returns farm_z array)
+- [X] T030 [P] [US1] Implement IsReady method in internal/spatial/planner.go (returns true if analyzed_at not zero)
+- [X] T031 [US1] Implement Save method in internal/spatial/planner.go (marshal to JSON, write to saves/{fortname}/svp_layout.json)
+- [X] T032 [US1] Implement Load method in internal/spatial/planner.go (read saves/{fortname}/svp_layout.json, unmarshal, restore fields)
+- [X] T033 [US1] Implement ValidateProposal method in internal/spatial/planner.go (check node type matches Z-level purpose, verify not in hazard zones)
+- [X] T034 [US1] Add SVP state tracking to AutonomousLoop in internal/autonomous/loop.go (WAITING_FOR_TOPOLOGY, WAITING_FOR_ENTITIES, READY states)
+- [X] T035 [US1] Update RESYNC handler in cmd/df-orchestrator/main.go to call OnTopologyReceived after topology loaded
+- [X] T036 [US1] Update ENTITY_UPDATE handler in cmd/df-orchestrator/main.go to call OnEntitiesReceived, trigger SVP analysis when both available
+- [X] T037 [US1] Add SVP initialization in cmd/df-orchestrator/main.go (create SVP instance, inject into autonomous loop)
+- [X] T038 [US1] Update computeFortMetrics in internal/autonomous/loop.go to add SVP designations to metrics (SVPHousingZ, SVPWorkshopZ, SVPFarmZ)
+- [X] T039 [US1] Add logging for SVP analysis in internal/spatial/planner.go (DEBUG: embark Z detected, housing/workshop/farm designations, hazards avoided; INFO: analysis complete, saved to disk)
+- [X] T040 [US1] Add logging for SVP load in internal/spatial/planner.go (INFO: loaded existing layout, DEBUG: designation values)
 
 **Checkpoint**: SVP analyzes terrain, designates Z-levels, persists to disk, loads on reconnection. Test independently per quickstart.md Test 1 & 2.
 

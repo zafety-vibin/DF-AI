@@ -23,6 +23,7 @@ import (
 	"github.com/df-ai/orchestrator/internal/modifications"
 	"github.com/df-ai/orchestrator/internal/phases"
 	"github.com/df-ai/orchestrator/internal/protocol"
+	"github.com/df-ai/orchestrator/internal/spatial"
 	"github.com/df-ai/orchestrator/internal/topology"
 	"golang.org/x/sync/errgroup"
 )
@@ -336,6 +337,11 @@ func main() {
 			logging.Field{Key: "baseline_tiles", Value: modificationDetector.GetBaselineCount()},
 			logging.Field{Key: "memory_kb", Value: modificationOverlay.GetMemoryUsage() / 1024})
 
+		// Feature 007: Notify autonomous loop that topology received
+		if autonomousLoop != nil {
+			autonomousLoop.OnTopologyReceived()
+		}
+
 		// Initialize context assembler
 		contextAssembler = appcontext.NewAssembler()
 
@@ -459,6 +465,27 @@ func main() {
 				logger.Info("goal agents enabled", logging.Field{Key: "agent_count", Value: len(agentRegistry.List())})
 			} else {
 				logger.Info("goal agents disabled - using direct-LLM mode (Feature 005 behavior)")
+			}
+
+			// Feature 007: Initialize SVP if enabled
+			if cfg.UseSVP {
+				// Fort name will be set when we receive fort info
+				// For now use placeholder - will be updated when fort info available
+				fortName := "unknown_fort"
+				svp := spatial.NewSpatialValidatorPlanner(fortName, cfg.SVPPersistenceDir, logger)
+
+				// Try to load existing layout
+				if err := svp.Load(fortName); err != nil {
+					logger.Debug("SVP: No existing layout found, will analyze on first connection",
+						logging.Field{Key: "error", Value: err.Error()})
+				} else {
+					logger.Info("SVP: Loaded existing layout from disk")
+				}
+
+				autonomousLoop.SetSVP(svp)
+				logger.Info("SVP enabled", logging.Field{Key: "persistence_dir", Value: cfg.SVPPersistenceDir})
+			} else {
+				logger.Info("SVP disabled")
 			}
 
 			// Start autonomous loop in background
@@ -732,6 +759,9 @@ func main() {
 				// Update autonomous loop entity cache
 				if autonomousLoop != nil {
 					autonomousLoop.UpdateEntities(update.Entities)
+
+					// Feature 007: Notify SVP that entities received
+					autonomousLoop.OnEntitiesReceived()
 				}
 
 				hazardManager.BuildFromEntities(update.Entities)

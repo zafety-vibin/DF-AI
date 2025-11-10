@@ -890,6 +890,77 @@ func (al *AutonomousLoop) SetSVP(svp *spatial.SpatialValidatorPlanner) {
 	al.logger.Info("SVP configured - waiting for topology and entity data")
 }
 
+// OnTopologyReceived notifies the loop that topology (RESYNC) has been received (Feature 007)
+func (al *AutonomousLoop) OnTopologyReceived() {
+	if al.svp == nil {
+		return
+	}
+
+	al.topologyReceived = true
+
+	if al.svpState == SVPStateWaitingForTopology {
+		al.svpState = SVPStateWaitingForEntities
+		al.logger.Info("SVP: Topology received, waiting for entity data")
+	}
+
+	// Check if we can analyze now (if entities already received)
+	al.tryAnalyzeSVP()
+}
+
+// OnEntitiesReceived notifies the loop that entities (ENTITY_UPDATE) have been received (Feature 007)
+func (al *AutonomousLoop) OnEntitiesReceived() {
+	if al.svp == nil {
+		return
+	}
+
+	al.entitiesReceived = true
+
+	// Check if we can analyze now (if topology already received)
+	al.tryAnalyzeSVP()
+}
+
+// tryAnalyzeSVP triggers SVP analysis if both topology and entities are available
+func (al *AutonomousLoop) tryAnalyzeSVP() {
+	if al.svp == nil || al.svp.IsReady() {
+		return // SVP not configured or already analyzed
+	}
+
+	if !al.topologyReceived || !al.entitiesReceived {
+		return // Still waiting for data
+	}
+
+	// Both topology and entities available - trigger analysis
+	al.logger.Info("SVP: Both topology and entities received, triggering terrain analysis")
+
+	// Get entities for analysis
+	entities := al.getEntities()
+	if len(entities) == 0 {
+		al.logger.Warn("SVP: No entities available for embark detection, deferring analysis")
+		return
+	}
+
+	// Convert to EntityInfo pointers for SVP
+	entityPtrs := make([]*protocol.EntityInfo, len(entities))
+	for i := range entities {
+		entityPtrs[i] = &entities[i]
+	}
+
+	// Perform SVP terrain analysis
+	if err := al.svp.AnalyzeTerrain(al.topoOverlay, entityPtrs, al.hazardMgr); err != nil {
+		al.logger.Error("SVP: Terrain analysis failed", err)
+		return
+	}
+
+	// Save SVP layout to disk
+	if err := al.svp.Save(); err != nil {
+		al.logger.Warn("SVP: Failed to save layout",
+			logging.Field{Key: "error", Value: err.Error()})
+	}
+
+	al.svpState = SVPStateReady
+	al.logger.Info("SVP: Terrain analysis complete and saved")
+}
+
 // computeFortMetrics extracts fort metrics from current state
 func (al *AutonomousLoop) computeFortMetrics() *agents.FortMetrics {
 	metrics := &agents.FortMetrics{}
