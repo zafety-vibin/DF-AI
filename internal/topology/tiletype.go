@@ -1,26 +1,16 @@
 package topology
 
 // IsPathable determines if a DF tiletype allows movement
-// This is a simplified heuristic for MVP - may need refinement based on
-// actual DF tiletype enum structure from DFHack
+// INVERTED HEURISTIC: Testing revealed original logic was backwards
 //
-// Classification:
-//   - 0: Undigged rock (closed)
-//   - 1-299: Floors, ramps, stairs (open)
-//   - 300+: Walls, fortifications (closed)
+// Classification (CORRECTED):
+//   - 0: Undigged rock/walls (closed - CAN DIG)
+//   - 1-299: More walls, solid tiles (closed - CAN DIG)
+//   - 300+: Floors, open space, ramps, stairs (open - DO NOT DIG)
 //
-// TODO: Replace with proper DF tiletype enum parsing if heuristic proves inaccurate
+// TODO: Replace with proper DF tiletype enum from DFHack once confirmed
 func IsPathable(tileType uint16) bool {
-	// Undigged rock
-	if tileType == 0 {
-		return false
-	}
-
-	// Floors, ramps, stairs (typical range)
-	if tileType < 300 {
-		return true
-	}
-
-	// Walls, fortifications
-	return false
+	// Inverted: High values (300+) are open/passable (floors, air, ramps)
+	// Low values (0-299) are solid/closed (walls, rock)
+	return tileType >= 300
 }
