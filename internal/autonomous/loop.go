@@ -227,6 +227,20 @@ func (al *AutonomousLoop) runCycle() error {
 	// Step 2.5: Agent analysis (if goal agents enabled)
 	var proposalGraph *agents.ProposalGraph
 	if al.enableGoalAgents && al.agentRegistry != nil {
+		// CRITICAL: Block until SVP analyzes (no point running agents without it)
+		if al.svp != nil && !al.svp.IsReady() {
+			// Retry SVP analysis
+			al.tryAnalyzeSVP()
+
+			// If still not ready, skip this cycle
+			if !al.svp.IsReady() {
+				al.logger.Info("skipping cycle - waiting for SVP terrain analysis",
+					logging.Field{Key: "topology_received", Value: al.topologyReceived},
+					logging.Field{Key: "entities_received", Value: al.entitiesReceived})
+				return nil
+			}
+		}
+
 		// Compute fort metrics from current state
 		metrics := al.computeFortMetrics()
 
@@ -239,6 +253,15 @@ func (al *AutonomousLoop) runCycle() error {
 		if al.useIntentPlanning {
 			// HRM Architecture: Intent-based planning (R011)
 			intentProposals := al.collectIntentProposals(metrics)
+
+			if len(intentProposals) == 0 {
+				// NO FALLBACK - if agents don't propose, we FAIL LOUDLY
+				al.logger.Error("NO AGENT PROPOSALS - SYSTEM HALTED",
+					nil,
+					logging.Field{Key: "dwarf_count", Value: metrics.DwarfCount},
+					logging.Field{Key: "reason", Value: "Agents require dwarves to propose. Check entity detection in plugin."})
+				return fmt.Errorf("agent system failure: dwarf_count=%d, cannot generate proposals", metrics.DwarfCount)
+			}
 
 			if len(intentProposals) > 0 {
 				layout := al.svp.GetStrategicLayout()
@@ -539,16 +562,19 @@ func (al *AutonomousLoop) assembleContext() (string, error) {
 	// Get entities from cached entities (updated via ENTITY_UPDATE)
 	entities := al.getEntities()
 
-	// DEBUG: Log entity count
+	// DEBUG: Log entity count and types
 	dwarfCount := 0
+	typeMap := make(map[uint8]int)
 	for _, e := range entities {
+		typeMap[e.Type]++
 		if e.Type == protocol.EntityTypeDwarf {
 			dwarfCount++
 		}
 	}
 	al.logger.Info("assembling context",
 		logging.Field{Key: "total_entities", Value: len(entities)},
-		logging.Field{Key: "dwarf_count", Value: dwarfCount})
+		logging.Field{Key: "dwarf_count", Value: dwarfCount},
+		logging.Field{Key: "entity_types", Value: typeMap})
 
 	// Smart context assembly based on fort state
 	// First turn (no mods): Show embark point + terrain + dwarves

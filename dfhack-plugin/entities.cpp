@@ -37,12 +37,16 @@ const uint8_t ENTITY_TYPE_OTHER = 0x04;
 std::vector<EntityInfo> extract_entities()
 {
     std::vector<EntityInfo> entities;
+    auto &console = Core::getInstance().getConsole();
 
     // Access world units
     auto &units = df::global::world->units.active;
 
     // Get fort civ ID for dwarf detection
     int32_t fort_civ_id = df::global::plotinfo->civ_id;
+
+    // Debug counters
+    int total = 0, citizens = 0, fort_controlled = 0, hostile = 0, other = 0;
 
     for (auto unit : units) {
         if (!unit) continue;
@@ -53,6 +57,8 @@ std::vector<EntityInfo> extract_entities()
         // Get position
         if (unit->pos.x == -30000) continue; // Invalid/off-map position
 
+        total++;
+
         EntityInfo entity;
         entity.id = unit->id;
         entity.x = unit->pos.x;
@@ -60,27 +66,37 @@ std::vector<EntityInfo> extract_entities()
         entity.z = unit->pos.z;
         entity.subtype = unit->race;
 
-        // Classify entity type using DFHack Units API (proper method)
-        if (Units::isCitizen(unit)) {
-            // Fort citizen (proper DFHack check)
+        // Classify with debug output for first 3 units
+        bool is_citizen = Units::isCitizen(unit);
+        bool is_fort_ctrl = Units::isFortControlled(unit);
+
+        if (total <= 3) {
+            console.print("Unit %d: civ_id=%d (fort=%d), citizen=%d, fort_ctrl=%d, race=%d\n",
+                unit->id, unit->civ_id, fort_civ_id, is_citizen, is_fort_ctrl, unit->race);
+        }
+
+        if (is_citizen) {
             entity.type = ENTITY_TYPE_DWARF;
-        } else if (Units::isFortControlled(unit)) {
-            // Fort-controlled (tame animals, pets, livestock)
-            entity.type = ENTITY_TYPE_DWARF; // Include in dwarf count for SVP
+            citizens++;
+        } else if (is_fort_ctrl) {
+            entity.type = ENTITY_TYPE_DWARF;
+            fort_controlled++;
         } else if (unit->flags1.bits.marauder || unit->flags1.bits.invader_origin ||
                    unit->flags2.bits.underworld || unit->flags2.bits.visitor_uninvited) {
-            // Hostile
             entity.type = ENTITY_TYPE_ENEMY;
+            hostile++;
         } else if (unit->flags1.bits.merchant || unit->flags2.bits.visitor) {
-            // Merchants and visitors
             entity.type = ENTITY_TYPE_ANIMAL;
         } else {
-            // Other/unknown
             entity.type = ENTITY_TYPE_OTHER;
+            other++;
         }
 
         entities.push_back(entity);
     }
+
+    console.print("Entity summary: %d total, %d citizens, %d fort-controlled, %d hostile, %d other\n",
+        total, citizens, fort_controlled, hostile, other);
 
     return entities;
 }
