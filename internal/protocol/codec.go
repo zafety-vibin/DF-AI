@@ -789,6 +789,27 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		if err := binary.Write(w, binary.BigEndian, msg.Build.BuildType); err != nil {
 			return err
 		}
+	case CommandTypeBlueprint:
+		// [2: NameLen] [N: Name] [2: OriginX] [2: OriginY] [2: OriginZ]
+		nameBytes := []byte(msg.BlueprintName)
+		if len(nameBytes) > 255 {
+			return errors.New("blueprint name too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(nameBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(nameBytes); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.OriginX); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.OriginY); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.OriginZ); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -847,6 +868,28 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 			return nil, err
 		}
 		if err := binary.Read(buf, binary.BigEndian, &msg.Build.BuildType); err != nil {
+			return nil, err
+		}
+	case CommandTypeBlueprint:
+		// Read blueprint name (2 bytes length + N bytes name)
+		var nameLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &nameLen); err != nil {
+			return nil, err
+		}
+		nameBytes := make([]byte, nameLen)
+		if _, err := io.ReadFull(buf, nameBytes); err != nil {
+			return nil, err
+		}
+		msg.BlueprintName = string(nameBytes)
+
+		// Read origin coordinates (3 x 2 bytes)
+		if err := binary.Read(buf, binary.BigEndian, &msg.OriginX); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.OriginY); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.OriginZ); err != nil {
 			return nil, err
 		}
 	default:

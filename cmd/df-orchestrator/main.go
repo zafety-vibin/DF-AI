@@ -71,13 +71,40 @@ Fort State Context:
   - Check before digging to avoid disasters
 - Chambers: extracted rooms and corridors from modifications (empty until you dig)
 - Dwarves: active dwarves and their positions
-- topology_slice: Terrain map showing SOLID ROCK vs ALREADY DUG (first turn only, 60×60 area)
-  - open_tiles: Array of "X,Y" coordinates that are ALREADY DUG/OPEN (floors, air, passable space)
-  - CRITICAL: open_tiles = ALREADY PASSABLE = DO NOT DIG THESE COORDINATES
-  - TO DIG: Choose coordinates NOT in open_tiles (those are SOLID ROCK walls that CAN be mined)
-  - REVERSED LOGIC: If tile is "open", it means ALREADY EXCAVATED, don't dig it again!
-  - Example: If open_tiles contains "45,35", that coordinate is ALREADY A FLOOR - dig somewhere else!
-  - Mining targets: Pick coordinates where there is NO open_tile entry (those are solid walls/rock)
+
+TERRAIN INTERPRETATION (CRITICAL - READ CAREFULLY):
+Tiles are classified into 4 types based on DFHack analysis:
+
+1. WALL (solid rock/constructed wall):
+   - Can DIG to remove and create passable space
+   - Example: Undigged stone, solid rock formations
+   - These are your digging targets for creating rooms/tunnels
+
+2. FLOOR (walkable surface with ground):
+   - Can WALK on these tiles safely
+   - CANNOT DIG (there's no wall to remove)
+   - CAN CHANNEL to remove the floor and create a hole/ramp down
+   - Example: Natural stone floors, soil, constructed floors, ramps, stairs
+   - On first turn: "open_tiles" array contains Floor coordinates
+
+3. VOID (open air, missing floor):
+   - CANNOT WALK (entities fall multiple Z-levels!)
+   - CANNOT DIG (nothing there to dig)
+   - Example: Open air, empty space, already-channeled holes
+   - Dangerous - dwarves will fall if they path here
+
+4. LIQUID (7/7 depth water or magma):
+   - DISASTER if breached! Floods or burns your fort
+   - At surface Z-levels: Almost always WATER (ponds, rivers)
+   - In deep cavern layers: May be MAGMA
+   - DO NOT DIG adjacent to liquids unless you understand the risk
+
+VALIDATION BEFORE COMMANDS:
+Before issuing dig/channel commands, check tile classification:
+- DIG targets: Must be WALL tiles (solid rock)
+- CHANNEL targets: Must be FLOOR tiles (to create ramp/hole down)
+- Avoid: VOID (nothing to dig) and LIQUID (disaster)
+- Dwarves must be able to WALK to the work site (Floor tiles only)
 
 Spatial Validator Planner (SVP) Guidance:
 - IF SVP has analyzed terrain, you will receive designated Z-levels in fort metrics:
@@ -116,20 +143,29 @@ Standard mining:
 
 Stairs (connecting Z-levels vertically) - CRITICAL SYNTAX:
   dig stairs from (x1, y1, z_start) to (x2, y2, z_end)
-  - MUST specify DIFFERENT ending Z to create vertical shaft!
-  - Example: "dig stairs from (50,50,130) to (52,52,125)" creates 3×3 stairwell DOWN from Z=130 to Z=125
-  - This digs stairs at EVERY Z-level (130, 129, 128, 127, 126, 125)
-  - Creates continuous vertical access between levels
-  - WRONG: "dig stairs from (50,50,130) to (52,52,130)" ← same Z, makes horizontal stairs, NOT a shaft!
-  - RIGHT: "dig stairs from (50,50,130) to (52,52,125)" ← different Z, makes 6-level vertical shaft!
-  - Use small area (3×3 is ideal) for vertical shafts
-  - Stairs connect upward and downward automatically
+  - VERTICAL SHAFTS: For multi-level stairs, z_start MUST differ from z_end!
+  - MUST BE SINGLE COLUMN: x1 must equal x2, and y1 must equal y2 for vertical shafts
+  - Example: "dig stairs from (50,50,130) to (50,50,125)" creates single-column stairwell DOWN from Z=130 to Z=125
+  - This automatically creates connected stairs at EVERY Z-level (130, 129, 128, 127, 126, 125)
+  - The system creates proper Up/Down/UpDown stair types for you automatically
+  - WRONG: "dig stairs from (50,50,130) to (52,52,125)" <- 3×3 area, must be SINGLE TILE (50,50) for vertical!
+  - WRONG: "dig stairs from (50,50,130) to (50,50,130)" <- same Z, doesn't create vertical shaft!
+  - WRONG: Multiple separate dig commands on different Z-levels <- Won't connect properly!
+  - RIGHT: "dig stairs from (50,50,130) to (50,50,125)" <- Single tile (50,50), different Z values!
+  - Vertical shafts are single-column only - for larger stairwells, dig multiple adjacent columns
+  - Example for 3×3 stairwell: Issue 9 separate commands, one for each X,Y coordinate
+  - Stairs automatically connect upward and downward across all Z-levels in range
 
-Channels (digging down one level):
+Channels (excavate/remove floors):
   dig channel from (x1, y1, z) to (x2, y2, z)
-  - Removes floor, creates hole to level below
-  - Useful for creating openings between floors
-  - WARNING: Don't channel where dwarves are standing!
+  - Removes FLOOR tiles, creates hole/ramp down to level below
+  - Use when you have natural FLOOR but need vertical access
+  - Example: Surface has soil/stone floor, channel it to create entrance ramp into fort
+  - Example: Create wagon-accessible ramp from surface into fortress
+  - Only works on FLOOR tiles (cannot channel WALL or VOID)
+  - Creates natural ramps if channeling from above, or holes if channeling the tile itself
+  - WARNING: Don't channel where dwarves are standing (they'll fall!)
+  - Use Case: Caravan access - wagons need ramps, not just stairs
 
 Ramps (sloped access):
   dig ramp from (x1, y1, z) to (x2, y2, z)
@@ -364,11 +400,6 @@ func main() {
 			logging.Field{Key: "baseline_tiles", Value: modificationDetector.GetBaselineCount()},
 			logging.Field{Key: "memory_kb", Value: modificationOverlay.GetMemoryUsage() / 1024})
 
-		// Feature 007: Notify autonomous loop that topology received
-		if autonomousLoop != nil {
-			autonomousLoop.OnTopologyReceived()
-		}
-
 		// Initialize context assembler
 		contextAssembler = appcontext.NewAssembler()
 
@@ -380,27 +411,37 @@ func main() {
 				logging.Field{Key: "max_size", Value: cfg.RoomMaxSize})
 		}
 
-		// Load blueprint library
-		blueprintLib := blueprints.NewBlueprintLibrary("blueprints")
+		// Load blueprint library (ALWAYS load for expansion, even if metadata disabled)
+		// We expand blueprints into dig commands on the Go side to avoid DFHack threading issues
+		var blueprintLib *blueprints.BlueprintLibrary
+		blueprintLib = blueprints.NewBlueprintLibrary("blueprints")
 		blueprintList := blueprintLib.ListBlueprints()
 		if len(blueprintList) > 0 {
-			// Convert to BlueprintInfo for context
-			bpInfos := make([]appcontext.BlueprintInfo, 0, len(blueprintList))
-			for _, name := range blueprintList {
-				bp := blueprintLib.GetBlueprint(name)
-				if bp != nil {
-					bpInfos = append(bpInfos, appcontext.BlueprintInfo{
-						Name:       name,
-						Description: bp.Description,
-						Dimensions: fmt.Sprintf("%dx%dx%d", bp.Width, bp.Height, bp.Depth),
-						TileCount:  len(bp.Digs),
-						Tags:       bp.Tags,
-					})
-				}
-			}
-			contextAssembler.SetBlueprints(bpInfos)
-			logger.Info("blueprints loaded",
+			logger.Info("blueprint library loaded for expansion",
 				logging.Field{Key: "count", Value: len(blueprintList)})
+
+			// Only include in context if metadata enabled
+			if cfg.IncludeBlueprintMetadata && cfg.BlueprintDirectory != "" {
+				// Convert to BlueprintInfo for context
+				bpInfos := make([]appcontext.BlueprintInfo, 0, len(blueprintList))
+				for _, name := range blueprintList {
+					bp := blueprintLib.GetBlueprint(name)
+					if bp != nil {
+						bpInfos = append(bpInfos, appcontext.BlueprintInfo{
+							Name:       name,
+							Description: bp.Description,
+							Dimensions: fmt.Sprintf("%dx%dx%d", bp.Width, bp.Height, bp.Depth),
+							TileCount:  len(bp.Digs),
+							Tags:       bp.Tags,
+						})
+					}
+				}
+				contextAssembler.SetBlueprints(bpInfos)
+				logger.Info("blueprints added to context",
+					logging.Field{Key: "count", Value: len(blueprintList)})
+			} else {
+				logger.Info("blueprints disabled in context (will be used via expansion only)")
+			}
 		}
 
 		queryExecutor = appcontext.NewQueryExecutor(topologyOverlay, hazardManager, modificationOverlay)
@@ -514,6 +555,12 @@ func main() {
 
 				autonomousLoop.SetSVP(svp)
 				logger.Info("SVP enabled", logging.Field{Key: "persistence_dir", Value: cfg.SVPPersistenceDir})
+
+				// Notify SVP that topology is ready (if already received)
+				if topologyOverlay != nil {
+					autonomousLoop.OnTopologyReceived()
+					logger.Info("SVP: Notified of topology availability")
+				}
 			} else {
 				logger.Info("SVP disabled")
 			}
@@ -541,6 +588,11 @@ func main() {
 				}
 			} else {
 				logger.Info("blueprint metadata disabled")
+			}
+
+			// Set blueprint library for expansion (even if metadata disabled)
+			if blueprintLib != nil {
+				autonomousLoop.SetBlueprintLibrary(blueprintLib)
 			}
 
 			// Start autonomous loop in background
@@ -742,7 +794,7 @@ func main() {
 			if topologyOverlay != nil && update.Count > 0 {
 				updateCount := 0
 				for _, tile := range update.Tiles {
-					isOpen := topology.IsPathable(tile.TileType)
+					isOpen := topology.IsPathable(tile.Flags)
 					if err := topologyOverlay.SetTile(tile.X, tile.Y, tile.Z, isOpen); err != nil {
 						logger.Error("failed to update topology tile", err,
 							logging.Field{Key: "x", Value: tile.X},

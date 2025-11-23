@@ -20,18 +20,34 @@ type IntentProposal struct {
 	Metadata  map[string]interface{} `json:"metadata"`  // Additional context
 }
 
-// ArbiterCommand is the output from arbiter (blueprint + anchor point)
+// ArbiterCommand is the output from arbiter (blueprint + anchor point OR dig command)
 type ArbiterCommand struct {
-	Type      string   `json:"type"`      // "apply_blueprint", "dig_region"
+	Type      string   `json:"type"`      // "apply_blueprint", "dig"
 	Blueprint string   `json:"blueprint"` // Blueprint name (if type=apply_blueprint)
-	Anchor    [3]int   `json:"anchor"`    // [x, y, z] origin point
-	Rotation  int      `json:"rotation"`  // 0, 90, 180, 270 degrees
+	Anchor    [3]int   `json:"anchor"`    // [x, y, z] origin point (for blueprints)
+	Rotation  int      `json:"rotation"`  // 0, 90, 180, 270 degrees (for blueprints)
+
+	// Dig command fields
+	Region  *ArbiterRegion `json:"region,omitempty"`  // Region to dig (if type=dig)
+	DigType string         `json:"dig_type,omitempty"` // "default", "channel", "ramp", "updown_stair"
+
 	Reasoning string   `json:"reasoning"` // Arbiter's rationale
 	Metadata  map[string]interface{} `json:"metadata,omitempty"` // Additional data
 }
 
+// ArbiterRegion defines a region for dig commands
+type ArbiterRegion struct {
+	X1 int `json:"x1"`
+	Y1 int `json:"y1"`
+	Z  int `json:"z"`
+	X2 int `json:"x2"`
+	Y2 int `json:"y2"`
+	Z2 int `json:"z2"`
+}
+
 // ArbiterIntentResponse is the full arbiter output for intent-based planning
 type ArbiterIntentResponse struct {
-	Commands []ArbiterCommand `json:"commands"` // Ordered list of blueprint placements
-	Deferred []string         `json:"deferred"` // Proposal IDs that couldn't be placed
+	Commands  []ArbiterCommand `json:"commands"`  // Ordered list of blueprint placements
+	Deferred  []string         `json:"deferred"`  // Proposal IDs that couldn't be placed
+	Reasoning string           `json:"reasoning"` // Overall strategic rationale for this decision
 }

@@ -4,6 +4,7 @@
 #include "Core.h"
 #include "Console.h"
 #include "modules/Maps.h"
+#include "modules/MapCache.h"
 
 #include "df/map_block.h"
 #include "df/tile_dig_designation.h"
@@ -15,11 +16,15 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <algorithm>
 
 using namespace DFHack;
 
 // External global socket
 extern std::unique_ptr<CActiveSocket> g_socket;
+
+// External functions from df_ai_protocol.cpp
+extern void sendCommandAck(uint32_t cmdID, uint8_t status, const std::string &error);
 
 // Helper function to read big-endian uint32
 uint32_t read_uint32_be(const std::vector<uint8_t> &data, size_t offset)
@@ -38,63 +43,25 @@ int16_t read_int16_be(const std::vector<uint8_t> &data, size_t offset)
     return static_cast<int16_t>(value);
 }
 
-// Send command acknowledgment back to server
-void sendCommandAck(uint32_t cmdID, uint8_t status, const std::string &error)
-{
-    if (!g_socket || !g_socket->IsSocketValid()) {
-        return;
-    }
-
-    std::vector<uint8_t> msg;
-    msg.resize(4, 0);  // Length header (filled later)
-
-    // Version + Type
-    msg.push_back(PROTOCOL_VERSION);
-    msg.push_back(MSG_TYPE_COMMAND_ACK);
-
-    // Payload: [4: CommandID] [1: Status] [2: ErrorMsgLen] [N: ErrorMsg]
-    write_uint32_be(msg, cmdID);
-    msg.push_back(status);
-
-    // Error message
-    uint16_t errorLen = error.empty() ? 0 : static_cast<uint16_t>(error.size());
-    write_uint16_be(msg, errorLen);
-    if (errorLen > 0) {
-        msg.insert(msg.end(), error.begin(), error.end());
-    }
-
-    // Fill length header
-    uint32_t length = msg.size();
-    msg[0] = (length >> 24) & 0xFF;
-    msg[1] = (length >> 16) & 0xFF;
-    msg[2] = (length >> 8) & 0xFF;
-    msg[3] = length & 0xFF;
-
-    // Send
-    g_socket->Send(msg.data(), msg.size());
-}
-
 // Apply dig designation to a region
 bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error)
 {
-    // Parse region: [2:X1] [2:Y1] [2:Z1] [2:X2] [2:Y2] [2:Z2]
-    if (payload.size() < 17) {  // 4(cmdID) + 1(type) + 12(region)
+    // Parse: [4:CmdID] [1:CmdType] [1:DigType] [2:X1] [2:Y1] [2:Z1] [2:X2] [2:Y2] [2:Z2]
+    if (payload.size() < 18) {  // 4(cmdID) + 1(type) + 1(digType) + 12(region)
         error = "Invalid dig payload size";
         return false;
     }
 
-    int16_t x1 = read_int16_be(payload, 5);
-    int16_t y1 = read_int16_be(payload, 7);
-    int16_t z1 = read_int16_be(payload, 9);
-    int16_t x2 = read_int16_be(payload, 11);
-    int16_t y2 = read_int16_be(payload, 13);
-    int16_t z2 = read_int16_be(payload, 15);
+    // Read DigType byte (CRITICAL FIX: was being skipped!)
+    uint8_t digType = payload[5];
 
-    // Validate Z-level requirement (single level)
-    if (z1 != z2) {
-        error = "Region must be on single Z-level";
-        return false;
-    }
+    // Read coordinates (offset by 1 to account for DigType byte)
+    int16_t x1 = read_int16_be(payload, 6);
+    int16_t y1 = read_int16_be(payload, 8);
+    int16_t z1 = read_int16_be(payload, 10);
+    int16_t x2 = read_int16_be(payload, 12);
+    int16_t y2 = read_int16_be(payload, 14);
+    int16_t z2 = read_int16_be(payload, 16);
 
     // Validate bounds
     if (!Maps::isValidTilePos(x1, y1, z1) || !Maps::isValidTilePos(x2, y2, z2)) {
@@ -107,33 +74,89 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
         return false;
     }
 
-    int16_t z = z1;
+    // Map protocol DigType to DFHack tile_dig_designation
+    // Protocol: 0x01=Default, 0x02=UpDownStair, 0x03=Channel, 0x04=Ramp, 0x05=DownStair, 0x06=UpStair
+    df::tile_dig_designation dfDigType;
+    switch (digType) {
+        case 0x01: dfDigType = df::tile_dig_designation::Default; break;
+        case 0x03: dfDigType = df::tile_dig_designation::Channel; break;
+        case 0x04: dfDigType = df::tile_dig_designation::Ramp; break;
+        case 0x05: dfDigType = df::tile_dig_designation::DownStair; break;
+        case 0x06: dfDigType = df::tile_dig_designation::UpStair; break;
+        case 0x02: // UpDownStair handled by vertical shaft logic below
+        default:
+            dfDigType = df::tile_dig_designation::Default;
+            break;
+    }
+
+    // Initialize MapCache for thread-safe map access
+    MapExtras::MapCache cache;
+
     int designated = 0;
     int blocked = 0;
 
-    // Apply designation to each tile in region
-    for (int16_t x = x1; x <= x2; x++) {
-        for (int16_t y = y1; y <= y2; y++) {
-            df::map_block *block = Maps::getTileBlock(x, y, z);
-            if (!block) {
+    // Handle vertical shaft (staircase) if z1 != z2
+    if (z1 != z2) {
+        // Vertical shafts must be single column
+        if (x1 != x2 || y1 != y2) {
+            error = "Vertical regions must be single column (x1==x2, y1==y2) for staircases";
+            return false;
+        }
+
+        // Ensure z1 <= z2
+        if (z1 > z2) std::swap(z1, z2);
+
+        // Designate staircase from z1 (bottom) to z2 (top)
+        for (int16_t z = z1; z <= z2; z++) {
+            df::coord pos(x1, y1, z);
+            df::tile_designation des = cache.designationAt(pos);
+
+            if (des.bits.hidden) {
                 blocked++;
                 continue;
             }
 
-            // Get local coordinates within block (0-15)
-            int local_x = x & 0x0F;
-            int local_y = y & 0x0F;
-
-            // Check if tile is hidden (fog of war)
-            if (block->designation[local_x][local_y].bits.hidden) {
-                blocked++;
-                continue;
+            // Set appropriate stair type based on position in shaft
+            if (z == z1) {
+                // Bottom of shaft: UpStair
+                des.bits.dig = df::tile_dig_designation::UpStair;
+            } else if (z == z2) {
+                // Top of shaft: DownStair
+                des.bits.dig = df::tile_dig_designation::DownStair;
+            } else {
+                // Middle levels: UpDownStair
+                des.bits.dig = df::tile_dig_designation::UpDownStair;
             }
 
-            // Set dig designation to Default (standard mining)
-            block->designation[local_x][local_y].bits.dig = df::tile_dig_designation::Default;
+            cache.setDesignationAt(pos, des);
             designated++;
         }
+    } else {
+        // Single z-level region: use specified dig type
+        int16_t z = z1;
+
+        for (int16_t x = x1; x <= x2; x++) {
+            for (int16_t y = y1; y <= y2; y++) {
+                df::coord pos(x, y, z);
+                df::tile_designation des = cache.designationAt(pos);
+
+                if (des.bits.hidden) {
+                    blocked++;
+                    continue;
+                }
+
+                // Set dig designation based on DigType parameter
+                des.bits.dig = dfDigType;
+                cache.setDesignationAt(pos, des);
+                designated++;
+            }
+        }
+    }
+
+    // CRITICAL: Commit all changes to game state
+    if (!cache.WriteAll()) {
+        error = "Failed to commit designations to map";
+        return false;
     }
 
     if (designated == 0) {
@@ -182,24 +205,23 @@ bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &err
 // Apply cancel designation to a region
 bool applyCancelDesignation(const std::vector<uint8_t> &payload, std::string &error)
 {
-    // Parse region (same as dig): [2:X1] [2:Y1] [2:Z1] [2:X2] [2:Y2] [2:Z2]
-    if (payload.size() < 17) {
+    // Parse: [4:CmdID] [1:CmdType] [1:DigType] [2:X1] [2:Y1] [2:Z1] [2:X2] [2:Y2] [2:Z2]
+    if (payload.size() < 18) {
         error = "Invalid cancel payload size";
         return false;
     }
 
-    int16_t x1 = read_int16_be(payload, 5);
-    int16_t y1 = read_int16_be(payload, 7);
-    int16_t z1 = read_int16_be(payload, 9);
-    int16_t x2 = read_int16_be(payload, 11);
-    int16_t y2 = read_int16_be(payload, 13);
-    int16_t z2 = read_int16_be(payload, 15);
+    // DigType byte is present but ignored for cancel (offset 5)
+    // uint8_t digType = payload[5];  // Not used for cancel
 
-    // Validate Z-level requirement
-    if (z1 != z2) {
-        error = "Region must be on single Z-level";
-        return false;
-    }
+    int16_t x1 = read_int16_be(payload, 6);
+    int16_t y1 = read_int16_be(payload, 8);
+    int16_t z1 = read_int16_be(payload, 10);
+    int16_t x2 = read_int16_be(payload, 12);
+    int16_t y2 = read_int16_be(payload, 14);
+    int16_t z2 = read_int16_be(payload, 16);
+
+    // Note: Cancel can work across z-levels (no restriction like old code had)
 
     // Validate bounds
     if (!Maps::isValidTilePos(x1, y1, z1) || !Maps::isValidTilePos(x2, y2, z2)) {
@@ -207,33 +229,39 @@ bool applyCancelDesignation(const std::vector<uint8_t> &payload, std::string &er
         return false;
     }
 
-    if (x2 < x1 || y2 < y1) {
+    if (x2 < x1 || y2 < y1 || z2 < z1) {
         error = "Invalid region bounds";
         return false;
     }
 
-    int16_t z = z1;
+    // Initialize MapCache for thread-safe map access
+    MapExtras::MapCache cache;
+
     int cancelled = 0;
 
-    // Clear designations in region
-    for (int16_t x = x1; x <= x2; x++) {
-        for (int16_t y = y1; y <= y2; y++) {
-            df::map_block *block = Maps::getTileBlock(x, y, z);
-            if (!block) {
-                continue;
+    // Clear designations in region (support multi-level cancellation)
+    for (int16_t z = z1; z <= z2; z++) {
+        for (int16_t x = x1; x <= x2; x++) {
+            for (int16_t y = y1; y <= y2; y++) {
+                df::coord pos(x, y, z);
+                df::tile_designation des = cache.designationAt(pos);
+
+                // Clear dig designation if present
+                if (des.bits.dig != df::tile_dig_designation::No) {
+                    des.bits.dig = df::tile_dig_designation::No;
+                    cache.setDesignationAt(pos, des);
+                    cancelled++;
+                }
+
+                // TODO: Clear build designations as well when implemented
             }
-
-            int local_x = x & 0x0F;
-            int local_y = y & 0x0F;
-
-            // Clear dig designation
-            if (block->designation[local_x][local_y].bits.dig != df::tile_dig_designation::No) {
-                block->designation[local_x][local_y].bits.dig = df::tile_dig_designation::No;
-                cancelled++;
-            }
-
-            // TODO: Clear build designations as well when implemented
         }
+    }
+
+    // Commit changes
+    if (!cache.WriteAll()) {
+        error = "Failed to commit cancellations to map";
+        return false;
     }
 
     if (cancelled == 0) {
@@ -242,50 +270,4 @@ bool applyCancelDesignation(const std::vector<uint8_t> &payload, std::string &er
     }
 
     return true;
-}
-
-// Handle incoming COMMAND message
-void handleCommand(const std::vector<uint8_t> &payload)
-{
-    if (payload.size() < 5) {
-        return;  // Invalid payload
-    }
-
-    // Parse header: [4: CommandID] [1: CommandType]
-    uint32_t cmdID = read_uint32_be(payload, 0);
-    uint8_t cmdType = payload[4];
-
-    bool success = false;
-    std::string error = "";
-    uint8_t status = ACK_STATUS_FAILURE;
-
-    // Dispatch based on command type
-    switch (cmdType) {
-        case COMMAND_TYPE_DIG:
-            success = applyDigDesignation(payload, error);
-            if (success) {
-                status = error.empty() ? ACK_STATUS_SUCCESS : ACK_STATUS_PARTIAL;
-            }
-            break;
-
-        case COMMAND_TYPE_BUILD:
-            success = applyBuildDesignation(payload, error);
-            status = success ? ACK_STATUS_SUCCESS : ACK_STATUS_FAILURE;
-            break;
-
-        case COMMAND_TYPE_CANCEL:
-            success = applyCancelDesignation(payload, error);
-            status = success ? ACK_STATUS_SUCCESS : ACK_STATUS_FAILURE;
-            break;
-
-        default:
-            char buf[64];
-            snprintf(buf, sizeof(buf), "Unknown command type: 0x%02X", cmdType);
-            error = buf;
-            status = ACK_STATUS_FAILURE;
-            break;
-    }
-
-    // Send acknowledgment
-    sendCommandAck(cmdID, status, error);
 }

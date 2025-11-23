@@ -59,6 +59,7 @@ type AutonomousLoop struct {
 
 	// Feature 007: Blueprint Integration
 	blueprintMetadata []*blueprints.BlueprintMetadata // Available blueprint designs
+	blueprintLib      *blueprints.BlueprintLibrary   // Blueprint library for expansion
 
 	// Feature 007: Intent-based planning (HRM architecture)
 	useIntentPlanning bool // Enable intent-based planning vs coordinate-based
@@ -300,6 +301,12 @@ func (al *AutonomousLoop) runCycle() error {
 							al.logger.Warn("failed to parse arbiter intent response",
 								logging.Field{Key: "error", Value: err.Error()})
 						} else {
+							// Log strategic reasoning
+							if response.Reasoning != "" {
+								al.logger.Info("arbiter strategic reasoning",
+									logging.Field{Key: "reasoning", Value: response.Reasoning})
+							}
+
 							// Convert to protocol commands
 							commands := al.convertArbiterCommandsToProtocol(response.Commands)
 
@@ -318,11 +325,17 @@ func (al *AutonomousLoop) runCycle() error {
 										logging.Field{Key: "blueprint", Value: cmd.BlueprintName})
 								}
 							}
+
+							// Intent-based commands sent - skip legacy LLM
+							al.logger.Info("intent-based cycle complete",
+								logging.Field{Key: "commands_sent", Value: len(commands)})
+							return nil
 						}
 					}
 				}
 			} else {
 				al.logger.Info("no intent proposals this cycle (all targets met)")
+				return nil  // No work needed - skip legacy LLM
 			}
 		} else {
 			// Existing coordinate-based flow
@@ -675,6 +688,36 @@ func (al *AutonomousLoop) executeCommands(specs []llm.CommandSpec) (uint32, erro
 		return 0, nil
 	}
 
+	// Deduplicate commands - remove exact duplicates by region
+	deduped := make([]llm.CommandSpec, 0, len(specs))
+	seen := make(map[string]bool)
+	duplicates := 0
+
+	for _, spec := range specs {
+		// Create region key for dig commands
+		if spec.Type == "dig" || spec.Type == "cancel" {
+			key := fmt.Sprintf("%s_%d_%d_%d_%d_%d_%d",
+				spec.Type, spec.Region.X1, spec.Region.Y1, spec.Region.Z,
+				spec.Region.X2, spec.Region.Y2, spec.Region.Z2)
+			if !seen[key] {
+				seen[key] = true
+				deduped = append(deduped, spec)
+			} else {
+				duplicates++
+			}
+		} else {
+			deduped = append(deduped, spec)
+		}
+	}
+
+	if duplicates > 0 {
+		al.logger.Warn("removed duplicate commands",
+			logging.Field{Key: "duplicates_removed", Value: duplicates},
+			logging.Field{Key: "original_count", Value: len(specs)},
+			logging.Field{Key: "deduped_count", Value: len(deduped)})
+		specs = deduped
+	}
+
 	al.logger.Info("executing commands", logging.Field{Key: "count", Value: len(specs)})
 
 	// Execute ALL commands
@@ -793,6 +836,33 @@ func (al *AutonomousLoop) executeDig(spec llm.CommandSpec) (uint32, error) {
 		logging.Field{Key: "region", Value: fmt.Sprintf("(%d,%d,%d) to (%d,%d,%d)",
 			region.X1, region.Y1, z1, region.X2, region.Y2, z1)},
 		logging.Field{Key: "dig_type", Value: spec.DigType})
+
+	// VALIDATION: For non-stair dig commands, check if region has any walls to dig
+	// Stairs can start on open tiles (surface level), so only validate default/channel digs
+	if al.topoOverlay != nil && digType == protocol.DigTypeDefault {
+		totalTiles := 0
+		wallTiles := 0 // Closed tiles that CAN be dug
+		for x := region.X1; x <= region.X2; x++ {
+			for y := region.Y1; y <= region.Y2; y++ {
+				isOpen, err := al.topoOverlay.GetTile(int16(x), int16(y), z1)
+				if err == nil {
+					totalTiles++
+					if !isOpen {
+						wallTiles++ // Closed tile = diggable
+					}
+				}
+			}
+		}
+		// Reject if <20% of tiles are walls (i.e., >80% already open/floor)
+		// This prevents digging areas that are already excavated
+		if totalTiles > 0 && float64(wallTiles)/float64(totalTiles) < 0.2 {
+			al.logger.Warn("dig command rejected - region has no walls to dig",
+				logging.Field{Key: "wall_pct", Value: fmt.Sprintf("%.1f%%", 100.0*float64(wallTiles)/float64(totalTiles))},
+				logging.Field{Key: "wall_tiles", Value: wallTiles},
+				logging.Field{Key: "total_tiles", Value: totalTiles})
+			return 0, fmt.Errorf("cannot dig - region has only %.1f%% walls (already excavated)", 100.0*float64(wallTiles)/float64(totalTiles))
+		}
+	}
 
 	result, err := al.commandExecutor.SendDigCommand(
 		digType,
@@ -1081,6 +1151,13 @@ func (al *AutonomousLoop) SetBlueprintMetadata(metadata []*blueprints.BlueprintM
 		logging.Field{Key: "blueprint_count", Value: len(metadata)})
 }
 
+// SetBlueprintLibrary configures the blueprint library for expansion
+func (al *AutonomousLoop) SetBlueprintLibrary(lib *blueprints.BlueprintLibrary) {
+	al.blueprintLib = lib
+	al.logger.Info("blueprint library configured for expansion",
+		logging.Field{Key: "blueprint_count", Value: len(lib.ListBlueprints())})
+}
+
 // SetUseIntentPlanning enables or disables intent-based planning (HRM architecture)
 func (al *AutonomousLoop) SetUseIntentPlanning(enabled bool) {
 	al.useIntentPlanning = enabled
@@ -1115,6 +1192,10 @@ func (al *AutonomousLoop) OnTopologyReceived() {
 
 	al.topologyReceived = true
 
+	// If SVP was loaded from disk, rebuild StrategicLayout now that topology is available
+	if al.svp.IsReady() && al.topoOverlay != nil && al.hazardMgr != nil {
+		al.svp.RebuildStrategicLayout(al.topoOverlay, al.hazardMgr)
+	}
 	if al.svpState == SVPStateWaitingForTopology {
 		al.svpState = SVPStateWaitingForEntities
 		al.logger.Info("SVP: Topology received, waiting for entity data")
@@ -1474,25 +1555,26 @@ Input Format:
       "intent": "provide_housing",
       "purpose": "housing",
       "quantity": 7,
-      "blueprint_hint": "bedroom_cluster_10",
+      "blueprint_hint": "bedroom_80r4t_37x36_9scenter_simple",
       "constraints": ["safe_layer"]
     }
   ],
   "blueprints": [
-    {"name": "bedroom_3x3", "width": 3, "height": 3, "capacity": 1},
-    {"name": "bedroom_cluster_10", "width": 18, "height": 12, "capacity": 10}
+    {"name": "bedroom_80r4t_37x36_9scenter_simple", "width": 35, "height": 35, "capacity": 80},
+    {"name": "bedroom_100r4t_48x49_9scenter_vherid", "width": 45, "height": 49, "capacity": 100}
   ]
 }
 
 Output Format:
 {
+  "reasoning": "Prioritizing food security first (farm plots on soil layers 111-110), then addressing housing deficit on safe layer 106. Blueprint placement optimized for available space.",
   "commands": [
     {
       "type": "apply_blueprint",
-      "blueprint": "bedroom_cluster_10",
-      "anchor": [42, 31, 95],
+      "blueprint": "bedroom_80r4t_37x36_9scenter_simple",
+      "anchor": [42, 31, 106],
       "rotation": 0,
-      "reasoning": "Housing layer has 300 tiles available in housing_1. Cluster_10 needs 216 tiles (18x12). Placed at anchor [42,31,95] with margin. Addresses 7-bedroom deficit."
+      "reasoning": "Housing layer has 29584 tiles available. Simple design (35x35) fits within bounds. Addresses 18-bedroom deficit."
     }
   ],
   "deferred": []
@@ -1504,7 +1586,39 @@ Decision Rules:
 3. Avoid overlapping existing zones
 4. Use blueprint_hint when provided
 5. Prefer blueprints over geometric patterns
-6. If blueprint doesn't fit, defer the proposal
+6. If blueprint doesn't fit, use dig command fallback (see below)
+
+FALLBACK: Dig Commands (when blueprints unavailable or don't fit)
+When blueprints cannot be used, generate dig commands instead:
+
+Dig Command Format:
+{
+  "type": "dig",
+  "region": {"x1": 40, "y1": 30, "z": 106, "x2": 60, "y2": 50, "z2": 106},
+  "dig_type": "default",
+  "reasoning": "Creating entrance tunnel on housing layer"
+}
+
+Dig Types:
+- "default": Standard mining (removes walls, creates floors)
+- "channel": Removes floor, creates ramps down
+- "ramp": Carves ramps in walls
+- "updown_stair": Vertical shaft (z != z2)
+
+CRITICAL: Use Topology Data for Dig Commands
+- The fort_layout includes "topology_slice" showing WALL vs OPEN tiles
+- ONLY dig regions with significant WALL tiles (>20% walls = diggable)
+- DO NOT dig regions that are already OPEN/FLOOR (<20% walls = already excavated)
+- Check topology_slice.description for guidance like "60% WALL/ROCK (CAN DIG)"
+
+Dig Command Strategy:
+1. For housing needs: Dig rectangular rooms 5x5 to 10x10
+2. For access: Dig 3-wide corridors to connect areas
+3. For vertical access: Dig updown_stair shafts (single column, z != z2)
+4. Check topology FIRST - don't dig already-open areas
+
+Example dig command for housing:
+{"type":"dig","region":{"x1":40,"y1":30,"z":106,"x2":50,"y2":40,"z2":106},"dig_type":"default","reasoning":"Creating 11x11 bedroom area, topology shows 85% walls"}
 
 CRITICAL: Staircase Connectivity Rules
 Staircases connect Z-levels vertically. Without proper anchoring, levels become ISOLATED!
@@ -1533,7 +1647,29 @@ Anchoring Example:
 Priority: Connectivity > Optimal placement
 If aligning to stair forces blueprint outside region bounds, DEFER proposal
 
-Priority: Food (10) > Housing (9) > Mining (7) > Wealth (6) > Defense (variable)`
+Priority: Food (10) > Housing (9) > Mining (7) > Wealth (6) > Defense (variable)
+
+CRITICAL OUTPUT FORMAT REQUIREMENTS:
+- You MUST output ONLY valid JSON
+- Do NOT include any text before the JSON
+- Do NOT include any text after the JSON
+- Do NOT include markdown code blocks
+- Start your response directly with the opening brace {
+- End your response directly with the closing brace }
+- The entire response must be parseable by json.Unmarshal()
+
+Example CORRECT outputs:
+
+Blueprint command:
+{"reasoning":"Addressing housing shortage with blueprint","commands":[{"type":"apply_blueprint","blueprint":"bedroom_30r25t_67x26_9scenter_ribbon","anchor":[42,31,95],"rotation":0,"reasoning":"Placed on housing layer"}],"deferred":[]}
+
+Dig command (fallback when blueprint unavailable):
+{"reasoning":"Creating housing area with manual dig","commands":[{"type":"dig","region":{"x1":40,"y1":30,"z":106,"x2":55,"y2":45,"z2":106},"dig_type":"default","reasoning":"16x16 bedroom area, topology shows 78% walls"}],"deferred":[]}
+
+Example INCORRECT outputs that will FAIL:
+- Any text before or after the JSON object
+- Markdown code fences around the JSON
+- Multiple JSON objects`
 }
 
 // parseArbiterIntentResponse parses arbiter's blueprint+anchor commands (R010)
@@ -1553,6 +1689,71 @@ func (al *AutonomousLoop) convertArbiterCommandsToProtocol(commands []agents.Arb
 
 	for _, cmd := range commands {
 		if cmd.Type == "apply_blueprint" {
+			// WORKAROUND: Blueprint command has thread safety issues in DFHack plugin
+			// Instead, expand blueprint into individual dig commands here and send those
+			if al.blueprintLib != nil {
+				bp := al.blueprintLib.GetBlueprint(cmd.Blueprint)
+				if bp != nil {
+					al.logger.Info("expanding blueprint into dig commands",
+						logging.Field{Key: "blueprint", Value: cmd.Blueprint},
+						logging.Field{Key: "anchor", Value: cmd.Anchor},
+						logging.Field{Key: "dig_count", Value: len(bp.Digs)})
+
+					// Convert blueprint to dig commands
+					origin := modifications.Coordinate{
+						X: int16(cmd.Anchor[0]),
+						Y: int16(cmd.Anchor[1]),
+						Z: int16(cmd.Anchor[2]),
+					}
+					digCommands := bp.ApplyAt(origin)
+
+					// Group consecutive digs into regions for efficiency
+					// For now, send each as individual tile (can optimize later)
+					for _, dig := range digCommands {
+						var digType uint8
+						switch dig.DigType {
+						case "default", "d":
+							digType = protocol.DigTypeDefault
+						case "channel", "h":
+							digType = protocol.DigTypeChannel
+						case "ramp", "r":
+							digType = protocol.DigTypeRamp
+						case "updown_stair", "i", "updownstair":
+							digType = protocol.DigTypeUpDownStair
+						case "down_stair", "j", "downstair":
+							digType = protocol.DigTypeDownStair
+						case "up_stair", "u", "upstair":
+							digType = protocol.DigTypeUpStair
+						default:
+							digType = protocol.DigTypeDefault
+						}
+
+						protocolCommands = append(protocolCommands, protocol.CommandMessage{
+							CommandType: protocol.CommandTypeDig,
+							DigType:     digType,
+							Region: protocol.Region{
+								X1: dig.X,
+								Y1: dig.Y,
+								Z1: dig.Z,
+								X2: dig.X, // Single tile
+								Y2: dig.Y,
+								Z2: dig.Z,
+							},
+						})
+					}
+
+					al.logger.Info("blueprint expanded to dig commands",
+						logging.Field{Key: "blueprint", Value: cmd.Blueprint},
+						logging.Field{Key: "commands_generated", Value: len(digCommands)},
+						logging.Field{Key: "reasoning", Value: cmd.Reasoning})
+					continue
+				} else {
+					al.logger.Warn("blueprint not found in library",
+						logging.Field{Key: "blueprint", Value: cmd.Blueprint})
+				}
+			}
+
+			// Fallback: send as blueprint command (will fail but logged)
 			protocolCommands = append(protocolCommands, protocol.CommandMessage{
 				CommandType:   protocol.CommandTypeBlueprint,
 				BlueprintName: cmd.Blueprint,
@@ -1561,9 +1762,46 @@ func (al *AutonomousLoop) convertArbiterCommandsToProtocol(commands []agents.Arb
 				OriginZ:       int16(cmd.Anchor[2]),
 			})
 
-			al.logger.Info("arbiter blueprint command",
+			al.logger.Warn("sending blueprint command (no library available)",
 				logging.Field{Key: "blueprint", Value: cmd.Blueprint},
 				logging.Field{Key: "anchor", Value: cmd.Anchor},
+				logging.Field{Key: "reasoning", Value: cmd.Reasoning})
+		} else if cmd.Type == "dig" && cmd.Region != nil {
+			// Map dig_type string to protocol constant
+			var digType uint8
+			switch cmd.DigType {
+			case "default":
+				digType = protocol.DigTypeDefault
+			case "channel":
+				digType = protocol.DigTypeChannel
+			case "ramp":
+				digType = protocol.DigTypeRamp
+			case "updown_stair":
+				digType = protocol.DigTypeUpDownStair
+			case "down_stair":
+				digType = protocol.DigTypeDownStair
+			case "up_stair":
+				digType = protocol.DigTypeUpStair
+			default:
+				digType = protocol.DigTypeDefault
+			}
+
+			protocolCommands = append(protocolCommands, protocol.CommandMessage{
+				CommandType: protocol.CommandTypeDig,
+				DigType:     digType,
+				Region: protocol.Region{
+					X1: int16(cmd.Region.X1),
+					Y1: int16(cmd.Region.Y1),
+					Z1: int16(cmd.Region.Z),
+					X2: int16(cmd.Region.X2),
+					Y2: int16(cmd.Region.Y2),
+					Z2: int16(cmd.Region.Z2),
+				},
+			})
+
+			al.logger.Info("arbiter dig command",
+				logging.Field{Key: "region", Value: cmd.Region},
+				logging.Field{Key: "dig_type", Value: cmd.DigType},
 				logging.Field{Key: "reasoning", Value: cmd.Reasoning})
 		}
 	}

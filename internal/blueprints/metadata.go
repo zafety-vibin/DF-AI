@@ -166,19 +166,34 @@ func parseBlueprint(path string) (*BlueprintMetadata, error) {
 
 	if strings.Contains(name, "bedroom") {
 		tags = append(tags, "bedroom")
-		if strings.Contains(name, "cluster") {
-			// Parse number from name (e.g., "bedroom_cluster_10" -> 10 dwarves)
-			parts := strings.Split(name, "_")
-			for _, part := range parts {
-				if n, err := fmt.Sscanf(part, "%d", &capacity); n == 1 && err == nil {
+
+		// Parse capacity from naming convention: bedroom_{rooms}r{tables}t_...
+		parts := strings.Split(name, "_")
+		for _, part := range parts {
+			// Check for pattern like "80r4t" or "100r4t"
+			if strings.Contains(part, "r") && strings.Contains(part, "t") {
+				if n, err := fmt.Sscanf(part, "%dr", &capacity); n == 1 && err == nil {
+					description = fmt.Sprintf("Bedroom complex with %d rooms", capacity)
 					break
 				}
 			}
-			description = fmt.Sprintf("Bedroom cluster for %d dwarves", capacity)
-		} else if strings.Contains(name, "3x3") {
-			capacity = 1
-			description = "Compact single bedroom (3×3)"
-			tags = append(tags, "compact")
+		}
+
+		// Fallback patterns
+		if capacity == 0 {
+			if strings.Contains(name, "cluster") {
+				// Parse number from name (e.g., "bedroom_cluster_10" -> 10 dwarves)
+				for _, part := range parts {
+					if n, err := fmt.Sscanf(part, "%d", &capacity); n == 1 && err == nil {
+						break
+					}
+				}
+				description = fmt.Sprintf("Bedroom cluster for %d dwarves", capacity)
+			} else if strings.Contains(name, "3x3") {
+				capacity = 1
+				description = "Compact single bedroom (3×3)"
+				tags = append(tags, "compact")
+			}
 		}
 	}
 

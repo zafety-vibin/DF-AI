@@ -47,7 +47,7 @@ func NewTopologyOverlay(width, height, depth uint16) *TopologyOverlay {
 }
 
 // BuildFromTiles populates the overlay from tile data
-// Extracts open/closed bit for each tile using IsPathable()
+// Extracts open/closed bit for each tile using DFHack classification flags
 // Thread-safe: Acquires write lock during build
 func (t *TopologyOverlay) BuildFromTiles(tiles []protocol.TileState) error {
 	if uint32(len(tiles)) != t.totalTiles {
@@ -59,8 +59,8 @@ func (t *TopologyOverlay) BuildFromTiles(tiles []protocol.TileState) error {
 	openCount := uint32(0)
 
 	for _, tile := range tiles {
-		// Check if tile is pathable
-		if !IsPathable(tile.TileType) {
+		// Check if tile is pathable (uses DFHack classification flags)
+		if !IsPathable(tile.Flags) {
 			continue // Leave bit as 0 (closed)
 		}
 

@@ -177,6 +177,21 @@ programmers) to contribute and understand results.
 - **Reward Signals**: Game metrics mapped to scalar rewards (-1 to +1)
 - **Behavioral Cloning**: Successful runs saved as demonstrations
 
+### DFHack Documentation Research
+
+- **Thorough API Research**: Before implementing any DFHack integration feature, thoroughly
+  research the official DFHack documentation, API references, and community examples
+- **Verify Command Usage**: Confirm command syntax, parameters, and expected behavior match
+  official documentation before implementation
+- **Study Community Blueprints**: When working with blueprints or game structures, examine
+  existing community fort repository examples to understand expected formats
+- **Test Incrementally**: Validate DFHack API calls work correctly before building complex
+  features on top of them
+
+**Rationale**: Incorrect assumptions about DFHack APIs lead to crashes, data corruption,
+and wasted development cycles. Thorough documentation research prevents building on
+faulty foundations.
+
 ### Safety & Ethics
 
 - **No Real-World Risk**: This is a single-player game with no networked components

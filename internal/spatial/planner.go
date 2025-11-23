@@ -571,3 +571,21 @@ func (svp *SpatialValidatorPlanner) UpdateStrategicLayoutWithZones(zonesByZ map[
 	svp.logger.Debug("SVP: Updated StrategicLayout with zone counts",
 		logging.Field{Key: "z_levels_updated", Value: len(zonesByZ)})
 }
+
+// RebuildStrategicLayout rebuilds the StrategicLayout after loading from disk
+// This is called when topology becomes available after loading saved Z-levels
+func (svp *SpatialValidatorPlanner) RebuildStrategicLayout(
+	topologyOverlay *topology.TopologyOverlay,
+	hazardMgr *hazards.HazardManager,
+) {
+	if !svp.ready {
+		return
+	}
+	if svp.strategicLayout != nil {
+		return
+	}
+	emptyZones := make(map[int]map[string]int)
+	svp.strategicLayout = svp.buildStrategicLayout(topologyOverlay, hazardMgr, emptyZones)
+	svp.logger.Info("SVP: Rebuilt StrategicLayout from loaded data",
+		logging.Field{Key: "layout_layers", Value: len(svp.strategicLayout.Layers)})
+}

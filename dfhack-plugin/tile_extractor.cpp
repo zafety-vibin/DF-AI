@@ -4,9 +4,11 @@
 
 #include "Core.h"
 #include "modules/MapCache.h"
+#include "TileTypes.h"
 #include "df/map_block.h"
 #include "df/world.h"
 #include "df/tiletype.h"
+#include "df/tiletype_material.h"
 
 #include <vector>
 #include <cstdint>
@@ -92,6 +94,15 @@ std::vector<uint8_t> extract_full_map_state()
 
                     // Get raw block for designation access
                     df::map_block *raw_block = block->getRaw();
+                    if (!raw_block) {
+                        // Skip this tile if raw block unavailable
+                        write_int16_be(result, static_cast<int16_t>(x));
+                        write_int16_be(result, static_cast<int16_t>(y));
+                        write_int16_be(result, static_cast<int16_t>(z));
+                        write_uint16_be(result, static_cast<uint16_t>(tile_type));
+                        result.push_back(flags);
+                        continue;
+                    }
 
                     // Check designation flags
                     df::tile_designation des = raw_block->designation[block_x][block_y];
@@ -108,6 +119,32 @@ std::vector<uint8_t> extract_full_map_state()
                     // Check if designated for digging
                     if (des.bits.dig != df::tile_dig_designation::No) {
                         flags |= 0x04;  // FLAG_DESIGNATED
+                    }
+
+                    // Classify tile using DFHack API
+                    // Bit 4: Wall (solid rock/constructed wall)
+                    // Bit 5: Floor (walkable surface including ramps/stairs)
+                    // Bit 6: Void (open air, missing floor, fall hazard)
+                    // Bit 7: Liquid (water/magma at 7/7 depth)
+
+                    // Only classify if tiletype is non-zero (valid)
+                    if (static_cast<uint16_t>(tile_type) > 0) {
+                        if (isWallTerrain(tile_type)) {
+                            flags |= 0x10;  // FLAG_WALL
+                        } else if (isWalkable(tile_type)) {
+                            flags |= 0x20;  // FLAG_FLOOR (includes ramps, stairs, floors)
+                        } else if (LowPassable(tile_type)) {
+                            flags |= 0x40;  // FLAG_VOID (missing floor, can fall through)
+                        }
+
+                        // Check for dangerous liquids (7/7 depth only)
+                        if (des.bits.flow_size == 7) {
+                            df::tiletype_material mat = tileMaterial(tile_type);
+                            if (mat == df::tiletype_material::POOL ||   // Water
+                                mat == df::tiletype_material::MAGMA) {  // Magma
+                                flags |= 0x80;  // FLAG_LIQUID_7_7
+                            }
+                        }
                     }
                 }
 

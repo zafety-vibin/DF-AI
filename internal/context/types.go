@@ -62,7 +62,7 @@ type ViewportContext struct {
 	Hazards       HazardData            `json:"hazards,omitempty"`
 	Dwarves       []EntityPosition      `json:"dwarves,omitempty"`
 	ActiveRegion  *modifications.Region `json:"active_region,omitempty"`
-	TopologySlice *TopologySliceData    `json:"topology_slice,omitempty"` // Terrain map (first turn only)
+	TopologySlice *TopologySliceData    `json:"topology_slice,omitempty"` // Terrain map showing walls (diggable) vs open tiles (already dug)
 	Blueprints    []BlueprintInfo       `json:"blueprints,omitempty"`     // Available blueprint templates
 
 	// Level 2+ (expanded data)

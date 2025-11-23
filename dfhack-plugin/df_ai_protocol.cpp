@@ -28,11 +28,23 @@
 #include <chrono>
 #include <thread>
 #include <sstream>
+#include <fstream>
+#include <mutex>
+#include <queue>
 
 using namespace DFHack;
 
 DFHACK_PLUGIN("df_ai_protocol");
 DFHACK_PLUGIN_IS_ENABLED(is_enabled);
+
+// Forward declarations for functions from designations.cpp
+bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error);
+bool applyCancelDesignation(const std::vector<uint8_t> &payload, std::string &error);
+
+// Struct for queued commands (thread-safe command queue)
+struct QueuedCommand {
+    std::vector<uint8_t> payload;
+};
 
 // Global state
 static std::unique_ptr<CActiveSocket> g_socket;
@@ -46,6 +58,11 @@ static std::unique_ptr<std::thread> g_message_thread;  // Background message han
 static bool g_stop_message_loop = false;  // Signal to stop message thread
 static bool g_auto_update_enabled = false;  // Auto-update toggle flag
 static uint32_t g_heartbeat_counter = 0;  // Count heartbeats for auto-update trigger
+
+// THREAD SAFETY: Command queue for processing commands on main thread
+// Background thread queues commands here, plugin_onupdate() processes them
+static std::mutex g_command_queue_mutex;
+static std::queue<QueuedCommand> g_command_queue;
 
 // Forward declarations
 bool connect_to_server(color_ostream &out);
@@ -89,41 +106,9 @@ const uint8_t ENTITY_TYPE_ENEMY = 0x02;
 const uint8_t ENTITY_TYPE_ANIMAL = 0x03;
 const uint8_t ENTITY_TYPE_OTHER = 0x04;
 
-std::vector<EntityInfo> extract_entities()
-{
-    std::vector<EntityInfo> entities;
-    if (!df::global::world) return entities;
-
-    auto &units = df::global::world->units.active;
-
-    for (auto unit : units) {
-        if (!unit) continue;
-        if (unit->pos.x == -30000) continue;
-
-        EntityInfo entity;
-        entity.id = unit->id;
-        entity.x = unit->pos.x;
-        entity.y = unit->pos.y;
-        entity.z = unit->pos.z;
-        entity.subtype = unit->race;
-
-        // Classify entity type
-        // Fort citizens are dwarves (resident flag + dwarf race)
-        // Race 0 = dwarf in most worlds (TODO: Could check race name for "DWARF")
-        if (unit->flags2.bits.resident && unit->race == 0) {
-            entity.type = ENTITY_TYPE_DWARF;  // Fort citizen (actual dwarf)
-        } else if (unit->flags1.bits.marauder || unit->flags1.bits.invader_origin) {
-            entity.type = ENTITY_TYPE_ENEMY;   // Hostile
-        } else if (unit->flags1.bits.tame) {
-            entity.type = ENTITY_TYPE_ANIMAL;  // Tame animal (pets, livestock)
-        } else {
-            entity.type = ENTITY_TYPE_ANIMAL;  // Wild animal or other
-        }
-
-        entities.push_back(entity);
-    }
-    return entities;
-}
+// Forward declarations - implementations in entities.cpp
+std::vector<EntityInfo> extract_entities();
+std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &entities);
 
 // FortInfo structure for fort-level statistics
 struct FortInfo {
@@ -153,72 +138,6 @@ FortInfo extract_fort_info()
     info.year = 0;             // Placeholder
 
     return info;
-}
-
-std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &entities)
-{
-    std::vector<uint8_t> buffer;
-    buffer.resize(4, 0);
-    buffer.push_back(PROTOCOL_VERSION);
-    buffer.push_back(0x08);  // ENTITY_UPDATE
-
-    uint32_t count = entities.size();
-    buffer.push_back((count >> 24) & 0xFF);
-    buffer.push_back((count >> 16) & 0xFF);
-    buffer.push_back((count >> 8) & 0xFF);
-    buffer.push_back(count & 0xFF);
-
-    for (const auto &e : entities) {
-        buffer.push_back((e.id >> 24) & 0xFF);
-        buffer.push_back((e.id >> 16) & 0xFF);
-        buffer.push_back((e.id >> 8) & 0xFF);
-        buffer.push_back(e.id & 0xFF);
-        buffer.push_back((e.x >> 8) & 0xFF);
-        buffer.push_back(e.x & 0xFF);
-        buffer.push_back((e.y >> 8) & 0xFF);
-        buffer.push_back(e.y & 0xFF);
-        buffer.push_back((e.z >> 8) & 0xFF);
-        buffer.push_back(e.z & 0xFF);
-        buffer.push_back(e.type);
-        buffer.push_back((e.subtype >> 8) & 0xFF);
-        buffer.push_back(e.subtype & 0xFF);
-    }
-
-    // Append FortInfo (optional)
-    FortInfo fort_info = extract_fort_info();
-    buffer.push_back(1);  // hasFortInfo = true
-
-    // DaysElapsed (4 bytes, big-endian)
-    buffer.push_back((fort_info.days_elapsed >> 24) & 0xFF);
-    buffer.push_back((fort_info.days_elapsed >> 16) & 0xFF);
-    buffer.push_back((fort_info.days_elapsed >> 8) & 0xFF);
-    buffer.push_back(fort_info.days_elapsed & 0xFF);
-
-    // CreatedWealth (8 bytes, big-endian)
-    buffer.push_back((fort_info.created_wealth >> 56) & 0xFF);
-    buffer.push_back((fort_info.created_wealth >> 48) & 0xFF);
-    buffer.push_back((fort_info.created_wealth >> 40) & 0xFF);
-    buffer.push_back((fort_info.created_wealth >> 32) & 0xFF);
-    buffer.push_back((fort_info.created_wealth >> 24) & 0xFF);
-    buffer.push_back((fort_info.created_wealth >> 16) & 0xFF);
-    buffer.push_back((fort_info.created_wealth >> 8) & 0xFF);
-    buffer.push_back(fort_info.created_wealth & 0xFF);
-
-    // Season (1 byte)
-    buffer.push_back(fort_info.season);
-
-    // Year (4 bytes, big-endian)
-    buffer.push_back((fort_info.year >> 24) & 0xFF);
-    buffer.push_back((fort_info.year >> 16) & 0xFF);
-    buffer.push_back((fort_info.year >> 8) & 0xFF);
-    buffer.push_back(fort_info.year & 0xFF);
-
-    uint32_t length = buffer.size();
-    buffer[0] = (length >> 24) & 0xFF;
-    buffer[1] = (length >> 16) & 0xFF;
-    buffer[2] = (length >> 8) & 0xFF;
-    buffer[3] = length & 0xFF;
-    return buffer;
 }
 
 // Designation command handling (inline implementation)
@@ -260,73 +179,17 @@ void sendCommandAck(uint32_t cmdID, uint8_t status, const std::string &error)
     g_socket->Send(msg.data(), msg.size());
 }
 
-// Apply dig designation to region using MapCache (proper DFHack pattern)
+// OLD IMPLEMENTATION - DEPRECATED
+// Replaced by the version in designations.cpp which properly handles DigType parsing
+// and uses the correct payload format (includes DigType byte at offset 5)
+/*
 bool applyDigDesignation(uint8_t digType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, int16_t z2, std::string &error)
 {
-    if (!Maps::isValidTilePos(x1, y1, z)) {
-        error = "Invalid start coordinates";
-        return false;
-    }
-    if (!Maps::isValidTilePos(x2, y2, z2)) {
-        error = "Invalid end coordinates";
-        return false;
-    }
-    if (z != z2) {
-        error = "Z-levels must match (single level per command)";
-        return false;
-    }
-
-    // Use MapCache for proper designation read/write (like dig plugin does)
-    MapExtras::MapCache cache;
-    int designated = 0;
-    int skipped_hidden = 0;
-    int skipped_already = 0;
-
-    Core::getInstance().getConsole().print("DEBUG: Digging region (%d,%d,%d) to (%d,%d,%d)\n",
-        x1, y1, z, x2, y2, z2);
-
-    for (int16_t x = x1; x <= x2; x++) {
-        for (int16_t y = y1; y <= y2; y++) {
-            df::coord pos(x, y, z);
-
-            // Check if tile is valid
-            df::tiletype tt = cache.tiletypeAt(pos);
-            if (tt == tiletype::Void) {
-                continue; // Invalid tile
-            }
-
-            // Read current designation via MapCache
-            df::tile_designation des = cache.designationAt(pos);
-
-            // Debug: Log first tile
-            if (x == x1 && y == y1) {
-                Core::getInstance().getConsole().print("DEBUG: First tile (%d,%d,%d): tiletype=%d, hidden=%d, current_dig=%d\n",
-                    x, y, z, tt, des.bits.hidden ? 1 : 0, des.bits.dig);
-            }
-
-            // Set dig designation using type from protocol
-            des.bits.dig = static_cast<df::tile_dig_designation>(digType);
-
-            // Write back to DF via MapCache
-            cache.setDesignationAt(pos, des);
-            designated++;
-        }
-    }
-
-    Core::getInstance().getConsole().print("DEBUG: Designated %d tiles (skipped %d hidden, %d already marked)\n",
-        designated, skipped_hidden, skipped_already);
-
-    if (designated == 0) {
-        error = "No tiles designated (all already marked, hidden, or invalid)";
-        return false;
-    }
-
-    // CRITICAL: Flush MapCache changes to DF!
-    bool writeSuccess = cache.WriteAll();
-    Core::getInstance().getConsole().print("DEBUG: WriteAll() result: %s\n", writeSuccess ? "success" : "failed");
-
-    return true;
+    // This old implementation is no longer used
+    // See designations.cpp for the current implementation
+    return false;
 }
+*/
 
 // Apply zone designation (bedroom, dining hall, meeting area, barracks)
 // TODO: Building API changed in DF 53.02 - needs research for correct usage
@@ -418,13 +281,39 @@ bool applyGatherDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16
     return true;
 }
 
-// Handle COMMAND message from server
-void handleCommand(const std::vector<uint8_t> &payload)
+// Apply blueprint using DFHack's quickfort command
+// IMPORTANT: This uses DFHack's native quickfort plugin instead of custom CSV parsing
+// Benefits:
+// - Supports full quickfort syntax (dig, build, place, zone, query modes)
+// - Handles bedroom/dining zone creation automatically
+// - Supports buildings, stockpiles, and other advanced features
+// - Uses community-tested blueprints from library-blueprints repository
+bool applyBlueprintDesignation(const std::string& blueprintName, int16_t originX, int16_t originY, int16_t originZ, std::string& error) {
+    // DISABLED: Has CoreSuspender + runCommand deadlock issues
+    // TODO: Fix blueprint execution after resolving thread safety
+    error = "Blueprint command temporarily disabled due to thread safety issues";
+    return false;
+}
+
+// Execute COMMAND on main thread - called from plugin_onupdate()
+// THREAD SAFETY: This function MUST ONLY be called from the main DF thread
+void executeCommand(const std::vector<uint8_t> &payload)
 {
     if (payload.size() < 5) {
         sendCommandAck(0, 0x02, "Invalid command payload");
         return;
     }
+
+    // CRITICAL: Check if map is loaded before accessing DF data
+    if (!Core::getInstance().isMapLoaded() || !df::global::world) {
+        uint32_t cmdID = ((uint32_t)payload[0] << 24) | ((uint32_t)payload[1] << 16) |
+                         ((uint32_t)payload[2] << 8) | (uint32_t)payload[3];
+        sendCommandAck(cmdID, 0x02, "Map not loaded - cannot execute command");
+        return;
+    }
+
+    // NOTE: CoreSuspender removed - MapCache handles thread safety internally
+    // Having both CoreSuspender + MapCache causes deadlocks
 
     // Parse command ID and type
     uint32_t cmdID = ((uint32_t)payload[0] << 24) | ((uint32_t)payload[1] << 16) |
@@ -436,18 +325,8 @@ void handleCommand(const std::vector<uint8_t> &payload)
 
     switch (cmdType) {
         case 0x01: {  // DIG
-            if (payload.size() < 18) {  // Now includes DigType byte
-                sendCommandAck(cmdID, 0x02, "Invalid DIG payload");
-                return;
-            }
-            uint8_t digType = payload[5];
-            int16_t x1 = ((int16_t)payload[6] << 8) | payload[7];
-            int16_t y1 = ((int16_t)payload[8] << 8) | payload[9];
-            int16_t z1 = ((int16_t)payload[10] << 8) | payload[11];
-            int16_t x2 = ((int16_t)payload[12] << 8) | payload[13];
-            int16_t y2 = ((int16_t)payload[14] << 8) | payload[15];
-            int16_t z2 = ((int16_t)payload[16] << 8) | payload[17];
-            success = applyDigDesignation(digType, x1, y1, z1, x2, y2, z2, error);
+            // Call the fixed version from designations.cpp (not the old one below)
+            success = applyDigDesignation(payload, error);
             break;
         }
         case 0x02: {  // BUILD (not implemented)
@@ -455,18 +334,8 @@ void handleCommand(const std::vector<uint8_t> &payload)
             return;
         }
         case 0x03: {  // CANCEL
-            if (payload.size() < 18) {  // Now includes DigType byte (ignored for cancel)
-                sendCommandAck(cmdID, 0x02, "Invalid CANCEL payload");
-                return;
-            }
-            // Skip digType byte at payload[5]
-            int16_t x1 = ((int16_t)payload[6] << 8) | payload[7];
-            int16_t y1 = ((int16_t)payload[8] << 8) | payload[9];
-            int16_t z1 = ((int16_t)payload[10] << 8) | payload[11];
-            int16_t x2 = ((int16_t)payload[12] << 8) | payload[13];
-            int16_t y2 = ((int16_t)payload[14] << 8) | payload[15];
-            int16_t z2 = ((int16_t)payload[16] << 8) | payload[17];
-            success = applyCancelDesignation(x1, y1, z1, x2, y2, z2, error);
+            // Call the fixed version from designations.cpp
+            success = applyCancelDesignation(payload, error);
             break;
         }
         case 0x04: {  // CHOP
@@ -511,12 +380,78 @@ void handleCommand(const std::vector<uint8_t> &payload)
             success = applyZoneDesignation(zoneType, x1, y1, z, x2, y2, error);
             break;
         }
+        case 0x07: {  // BLUEPRINT
+            if (payload.size() < 13) {  // Minimum: NameLen(2) + Name(1+) + Origin(6)
+                sendCommandAck(cmdID, 0x02, "Invalid BLUEPRINT payload");
+                return;
+            }
+
+            // Parse blueprint name length
+            uint16_t nameLen = ((uint16_t)payload[5] << 8) | payload[6];
+            if (payload.size() < 13 + nameLen) {
+                sendCommandAck(cmdID, 0x02, "Invalid BLUEPRINT payload size");
+                return;
+            }
+
+            // Extract blueprint name
+            std::string blueprintName(payload.begin() + 7, payload.begin() + 7 + nameLen);
+
+            // Parse origin coordinates
+            size_t offset = 7 + nameLen;
+            int16_t originX = ((int16_t)payload[offset] << 8) | payload[offset + 1];
+            int16_t originY = ((int16_t)payload[offset + 2] << 8) | payload[offset + 3];
+            int16_t originZ = ((int16_t)payload[offset + 4] << 8) | payload[offset + 5];
+
+            success = applyBlueprintDesignation(blueprintName, originX, originY, originZ, error);
+            break;
+        }
         default:
             sendCommandAck(cmdID, 0x02, "Unknown command type");
             return;
     }
 
     sendCommandAck(cmdID, success ? 0x00 : 0x02, error);
+}
+
+// Handle COMMAND message from background thread
+// THREAD SAFETY: Called from background thread, queues command for main thread execution
+void handleCommand(const std::vector<uint8_t> &payload)
+{
+    // Queue command for execution on main thread
+    std::lock_guard<std::mutex> lock(g_command_queue_mutex);
+    g_command_queue.push({payload});
+}
+
+// Plugin onupdate - process queued commands on MAIN THREAD
+// CRITICAL FOR THREAD SAFETY: All DF data structure access must happen here
+DFhackCExport command_result plugin_onupdate(color_ostream &out)
+{
+    if (!is_enabled) {
+        return CR_OK;
+    }
+
+    // Don't process commands if map isn't loaded (prevents crashes on startup/shutdown)
+    if (!Core::getInstance().isMapLoaded() || !df::global::world) {
+        return CR_OK;
+    }
+
+    // Process all queued commands (dequeue and execute on main thread)
+    while (true) {
+        QueuedCommand cmd;
+        {
+            std::lock_guard<std::mutex> lock(g_command_queue_mutex);
+            if (g_command_queue.empty()) {
+                break;
+            }
+            cmd = g_command_queue.front();
+            g_command_queue.pop();
+        }
+
+        // Execute command on main thread (SAFE to access DF data structures here)
+        executeCommand(cmd.payload);
+    }
+
+    return CR_OK;
 }
 
 // Plugin initialization

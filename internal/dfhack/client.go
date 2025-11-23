@@ -294,9 +294,14 @@ func (c *Client) messageLoop(conn *protocol.Connection) {
 			c.handleHeartbeat(conn, m)
 
 		case *protocol.CommandAckMessage:
-			c.logger.Info("received command ack",
-				logging.Field{Key: "command_id", Value: m.CommandID},
-				logging.Field{Key: "status", Value: m.Status})
+			fields := []logging.Field{
+				{Key: "command_id", Value: m.CommandID},
+				{Key: "status", Value: m.Status},
+			}
+			if m.ErrorMsg != "" {
+				fields = append(fields, logging.Field{Key: "error_msg", Value: m.ErrorMsg})
+			}
+			c.logger.Info("received command ack", fields...)
 
 			// Send to command ACK channel (non-blocking)
 			select {

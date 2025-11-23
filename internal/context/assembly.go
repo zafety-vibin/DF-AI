@@ -196,14 +196,18 @@ func (a *Assembler) assembleLevel1(
 	// Extract dwarf positions
 	dwarves := FormatDwarfsAsJSON(entities)
 
-	// If no modifications, include topology slice so AI can see terrain
+	// ALWAYS include topology slice so AI can see terrain (CRITICAL FIX)
+	// Previously only included on first turn, causing AI to be blind after first modification
 	var topologySliceData *TopologySliceData
-	if mods.GetCount() == 0 && a.embarkPointSet && topoOverlay != nil {
-		// Find Z-level where MOST dwarves are (mode, not average)
-		// This is more accurate than embark_point.Z which averages all positions
+	if topoOverlay != nil && ctx.ActiveRegion != nil {
+		// Extract topology for ALL Z-levels in active region
+		// This lets AI see which tiles are walls (diggable) vs open (already dug)
+		topologySliceData = extractTopologySlice(topoOverlay, *ctx.ActiveRegion)
+	} else if mods.GetCount() == 0 && a.embarkPointSet && topoOverlay != nil {
+		// Fallback for first turn when no active region exists yet
 		dwarfZ := findMostCommonDwarfZ(entities)
 		if dwarfZ == 0 {
-			dwarfZ = a.embarkPoint.Z // Fallback to centroid if no dwarves
+			dwarfZ = a.embarkPoint.Z
 		}
 
 		region := modifications.Region{
@@ -215,7 +219,6 @@ func (a *Assembler) assembleLevel1(
 			ZMax: dwarfZ,
 		}
 
-		// Extract topology for this region
 		topologySliceData = extractTopologySlice(topoOverlay, region)
 	}
 
@@ -473,7 +476,8 @@ func calculateDwarfCentroid(entities EntityInfoSlice) modifications.Coordinate {
 	}
 }
 
-// extractTopologySlice extracts terrain map for embark area on first turn
+// extractTopologySlice extracts terrain map for active region
+// For multi-Z regions, picks the middle Z-level as most representative
 func extractTopologySlice(topoOverlay *topology.TopologyOverlay, region modifications.Region) *TopologySliceData {
 	if topoOverlay == nil {
 		return nil
@@ -482,13 +486,19 @@ func extractTopologySlice(topoOverlay *topology.TopologyOverlay, region modifica
 	width := region.XMax - region.XMin + 1
 	height := region.YMax - region.YMin + 1
 
+	// Pick representative Z-level (middle of range)
+	targetZ := region.ZMin
+	if region.ZMax > region.ZMin {
+		targetZ = (region.ZMin + region.ZMax) / 2
+	}
+
 	// Extract open tiles in region (walls vs open space)
 	openTiles := []string{}
 	openCount := 0
 
 	for x := region.XMin; x <= region.XMax; x++ {
 		for y := region.YMin; y <= region.YMax; y++ {
-			isOpen, err := topoOverlay.IsOpen(x, y, region.ZMin)
+			isOpen, err := topoOverlay.IsOpen(x, y, targetZ)
 			if err == nil && isOpen {
 				openTiles = append(openTiles, fmt.Sprintf("%d,%d", x, y))
 				openCount++
@@ -501,11 +511,18 @@ func extractTopologySlice(topoOverlay *topology.TopologyOverlay, region modifica
 	closedCount := totalTiles - openCount
 	closedPct := 100 - openPct
 
-	description := fmt.Sprintf("Embark area %dx%d at Z=%d: %d tiles ALREADY DUG/OPEN (%.1f%% - DO NOT DIG), %d tiles SOLID ROCK (%.1f%% - CAN DIG HERE)",
-		width, height, region.ZMin, openCount, openPct, closedCount, closedPct)
+	// Generate description based on context
+	var description string
+	if region.ZMax > region.ZMin {
+		description = fmt.Sprintf("Active region %dx%d, Z=%d to %d (showing Z=%d): %d tiles OPEN/FLOOR (%.1f%% - ALREADY DUG, DO NOT DIG), %d tiles WALL/ROCK (%.1f%% - CAN DIG)",
+			width, height, region.ZMin, region.ZMax, targetZ, openCount, openPct, closedCount, closedPct)
+	} else {
+		description = fmt.Sprintf("Active region %dx%d at Z=%d: %d tiles OPEN/FLOOR (%.1f%% - ALREADY DUG, DO NOT DIG), %d tiles WALL/ROCK (%.1f%% - CAN DIG)",
+			width, height, targetZ, openCount, openPct, closedCount, closedPct)
+	}
 
 	return &TopologySliceData{
-		Z:           region.ZMin,
+		Z:           targetZ,
 		XMin:        region.XMin,
 		YMin:        region.YMin,
 		XMax:        region.XMax,

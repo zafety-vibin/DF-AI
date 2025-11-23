@@ -79,7 +79,10 @@ const (
 	FlagDiscovered uint8 = 0x02 // Tile has been seen before
 	FlagDesignated uint8 = 0x04 // Designated for mining
 	FlagConstruct  uint8 = 0x08 // Designated for construction
-	// Bits 4-7: Reserved for future use
+	FlagWall       uint8 = 0x10 // Solid wall/rock (can dig)
+	FlagFloor      uint8 = 0x20 // Walkable floor/ramp/stair (don't dig, but can channel)
+	FlagVoid       uint8 = 0x40 // Open air/missing floor (fall hazard, don't dig)
+	FlagLiquid7    uint8 = 0x80 // Water/magma at 7/7 depth (disaster if breached)
 )
 
 // HasFlag checks if a specific flag bit is set
@@ -362,7 +365,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeCancel {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeBlueprint {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 

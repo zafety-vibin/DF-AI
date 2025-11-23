@@ -19,7 +19,7 @@ reconnect_max_delay: 30s
 reconnect_backoff_factor: 2.0
 
 # Logging
-log_level: info      # debug, info, warn, error
+log_level: debug      # debug, info, warn, error
 log_format: json     # json or text
 
 # Topology overlay compression
@@ -31,12 +31,12 @@ topology_z_radius: 3             # ±3 levels from center
 llm_provider_type: openai_compatible  # CHANGED: Use local LLM (LM Studio)
 
 # Claude API settings (unused when using openai_compatible)
-claude_api_key: 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
+claude_api_key: ${CLAUDE_API_KEY}  # Set via environment variable
 claude_model: claude-haiku-4-5-20251001
 
 # OpenAI-compatible endpoint settings (ACTIVE FOR LOCAL LLM)
 llm_endpoint: http://localhost:1234/v1  # LM Studio default port
-llm_model: qwen2.5-7b-instruct-q4_k_m   # VERIFY: Check LM Studio for exact model name
+llm_model: qwen2.5-7b-instruct   # VERIFY: Check LM Studio for exact model name
 llm_api_key: ""                          # Empty for local servers
 
 # Multi-model pipeline (when llm_provider_type: multi_model)
@@ -57,7 +57,7 @@ llm_timeout_seconds: 60s        # CHANGED: Increase for local LLM (slower than C
 
 # Context assembly settings
 context_budget_kb: 10           # CHANGED: Reduce for local LLM with 4K context (was 200)
-context_update_frequency_seconds: 100  # How often to generate new context
+context_update_frequency_seconds: 180  # How often to generate new context (3 minutes)
 
 # Viewport settings for context generation
 viewport_active_z_margin: 3     # Z-levels above/below active level to include
@@ -96,11 +96,11 @@ context_max_size_bytes: 256000  # 250 KB hard limit
 enable_goal_agents: true       # CHANGED: Enable agents for testing
 
 # HRM Architecture (Feature 007 Refactor)
-use_intent_planning: true      # CHANGED: Enable HRM intent-based planning
+use_intent_planning: true       # Enable intent-based planning with arbiter
 
 # Local LLM Configuration
 local_llm_endpoint: http://localhost:1234/v1  # LM Studio default endpoint
-local_llm_model: qwen2.5-7b-instruct-q4_k_m   # Model name
+local_llm_model: qwen2.5-7b-instruct   # Model name
 llm_timeout_ms: 5000                           # Request timeout (5 seconds)
 
 # Agent Configuration (only used when enable_goal_agents: true)

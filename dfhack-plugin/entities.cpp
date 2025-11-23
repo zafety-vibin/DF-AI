@@ -42,17 +42,11 @@ std::vector<EntityInfo> extract_entities()
     // Access world units
     auto &units = df::global::world->units.active;
 
-    // Get fort civ ID for dwarf detection
-    int32_t fort_civ_id = df::global::plotinfo->civ_id;
-
     // Debug counters
     int total = 0, citizens = 0, fort_controlled = 0, hostile = 0, other = 0;
 
     for (auto unit : units) {
         if (!unit) continue;
-
-        // Skip dead units
-        if (unit->flags1.bits.dead) continue;
 
         // Get position
         if (unit->pos.x == -30000) continue; // Invalid/off-map position
@@ -71,8 +65,8 @@ std::vector<EntityInfo> extract_entities()
         bool is_fort_ctrl = Units::isFortControlled(unit);
 
         if (total <= 3) {
-            console.print("Unit %d: civ_id=%d (fort=%d), citizen=%d, fort_ctrl=%d, race=%d\n",
-                unit->id, unit->civ_id, fort_civ_id, is_citizen, is_fort_ctrl, unit->race);
+            console.print("Unit %d: civ_id=%d, citizen=%d, fort_ctrl=%d, race=%d\n",
+                unit->id, unit->civ_id, is_citizen, is_fort_ctrl, unit->race);
         }
 
         if (is_citizen) {
