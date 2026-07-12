@@ -61,6 +61,20 @@ Keep: TCP transport, binary protocol, tile extraction, entity extraction, announ
 
 One binary, stdio transport (registered in `.mcp.json`; HTTP later if the stream harness needs it). Wraps existing packages; the MCP layer is thin.
 
+**World-model layers.** The original design's flaw was one representation serving two consumers. v2 separates them — each layer lives in the substrate that can keep it true cheapest:
+
+| Layer | Lives in | Holds |
+|---|---|---|
+| L0 source of truth | DF + plugin | actual game state; queried, never fully mirrored |
+| L1 substrate | Go | bit topology + classified tile cache (E2 shape/material) + entity/zone/job indexes; consumed only by Go geometry |
+| L2 semantic compile | Go | region graph (named rooms/stairs/connectivity), per-column stratigraphy, surface analysis, hazard ledger; updated incrementally from deltas |
+| L3 views | tool responses | ground-truth dashboard, look crops, cross-sections, ranked candidates, turn deltas ("since last turn: 14 tiles dug, 2 cancellations + reasons") |
+| L4 the mind's model | session memory dir | journal, goals, learnings, named places; re-grounded by L3 every turn |
+
+The BDI mapping survives without its Go structs: beliefs = L1-L3 (harness-grounded) + L4 (self-maintained); desires = predicates + goals.md; **intentions = the game itself** — a dig designation is a stored intention, and alerts explain every cancellation. In-flight work is reported as a diff against the designations the model placed, replacing the per-tile prediction/confirmation engine (see 4.5).
+
+Two model-facing principles: **names over coordinates** (spaces get names as soon as they exist; tools translate name↔bbox both directions — LLMs reason far better over places than coordinate math, and named geography is free stream narration) and **affordances, not just state** (perception tools answer "what can I do here" — ranked candidates with rationale; Go computes eligibility, the model chooses among valid options).
+
 **Survives (repackaged):** `internal/protocol`, `internal/dfhack` (client), `internal/commands` (executor), `internal/topology` (graph + overlay), `internal/worldmodel` (observed state, alerts), `internal/blueprints` (quickfort CSV), `internal/predicate` (→ verification), `internal/query` handlers (→ tools), `internal/modifications` (dug-space tracking feeding `region_graph`). Skill *content* from `internal/skill/builtins.go` migrates into SKILL.md files. `internal/hazards` survives as the hazard *ledger* but its detectors are rebuilt on E2's classified tiles (the invented tiletype enum ranges in `detectors.go` are deleted).
 
 **Dies:** `internal/llm` entirely; `internal/bdi` loop/prompt/render (the render's orientation/alerts ideas are reused inside tool responses); `internal/plan` + `internal/reconcile` in current form (see 4.5); legacy `internal/{autonomous,agents,context,spatial,zones,phases,planning,http}` and `cmd/df-orchestrator`, `cmd/blueprint-analyzer`; `dfhack-plugin/df_ai_protocol_backup.cpp`. Deletion happens incrementally during Phase 1, not as a big-bang.
