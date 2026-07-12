@@ -58,7 +58,15 @@ func (e *CommandExecutor) SendDigCommand(digType uint8, x1, y1, z int16, x2, y2 
 // (Z1 may differ from Z2). The plugin handles per-tile designation
 // natively. Stair-type digTypes across Z1 != Z2 produce a stair shaft:
 // UpStair on the bottom Z, DownStair on the top, UpDownStair on middles.
+//
+// Callers naturally describe shafts top-down (z_start=surface,
+// z_end=deep); the wire format and Validate() want ascending Z. Normalize
+// here — stair orientation is derived from Z magnitude, not argument
+// order, so the swap is semantically free.
 func (e *CommandExecutor) SendDigRegion(digType uint8, x1, y1, z1, x2, y2, z2 int16) (*CommandResult, error) {
+	if z1 > z2 {
+		z1, z2 = z2, z1
+	}
 	cmd := &protocol.CommandMessage{
 		CommandID:   e.tracker.GenerateCommandID(),
 		CommandType: protocol.CommandTypeDig,
