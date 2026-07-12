@@ -40,6 +40,25 @@ DFHACK_PLUGIN_IS_ENABLED(is_enabled);
 // Forward declarations for functions from designations.cpp
 bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error);
 bool applyCancelDesignation(const std::vector<uint8_t> &payload, std::string &error);
+bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &error);
+bool applySmoothDesignation(const std::vector<uint8_t> &payload, std::string &error);
+
+// Forward declaration for function from work_orders.cpp
+bool applyWorkOrder(uint8_t orderType, uint16_t quantity, std::string &error);
+
+// Forward declarations for functions in this file
+bool applyZoneDesignation(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
+bool applyUnsuspend(int16_t x, int16_t y, int16_t z, std::string &error);
+
+// Forward declaration for function in buildings.cpp
+bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint32_t groupMask, std::string &error);
+
+// Forward declaration for function from queries.cpp
+void executeQuery(uint32_t queryID, const std::string &name, const std::string &args);
+
+// Forward declarations from announcements.cpp
+size_t poll_and_send_announcements();
+void reset_announcement_cursor();
 
 // Struct for queued commands (thread-safe command queue)
 struct QueuedCommand {
@@ -63,6 +82,17 @@ static uint32_t g_heartbeat_counter = 0;  // Count heartbeats for auto-update tr
 // Background thread queues commands here, plugin_onupdate() processes them
 static std::mutex g_command_queue_mutex;
 static std::queue<QueuedCommand> g_command_queue;
+
+// Query queue (parallel to command queue) — background thread queues
+// QUERY messages here, plugin_onupdate() drains and runs handlers on main
+// thread. Each entry carries the queryID, name, and args JSON.
+struct QueuedQuery {
+    uint32_t queryID;
+    std::string name;
+    std::string argsJSON;
+};
+static std::mutex g_query_queue_mutex;
+static std::queue<QueuedQuery> g_query_queue;
 
 // Forward declarations
 bool connect_to_server(color_ostream &out);
@@ -179,6 +209,42 @@ void sendCommandAck(uint32_t cmdID, uint8_t status, const std::string &error)
     g_socket->Send(msg.data(), msg.size());
 }
 
+// Send query response back to server.
+// Payload: [4: queryID] [1: status] [4: dataLen] [N: data]
+void sendQueryResponse(uint32_t queryID, uint8_t status, const std::string &dataJSON)
+{
+    if (!g_socket || !g_socket->IsSocketValid()) return;
+
+    std::vector<uint8_t> msg;
+    msg.resize(4, 0);
+    msg.push_back(PROTOCOL_VERSION);
+    msg.push_back(MSG_TYPE_QUERY_RESPONSE);
+
+    msg.push_back((queryID >> 24) & 0xFF);
+    msg.push_back((queryID >> 16) & 0xFF);
+    msg.push_back((queryID >> 8) & 0xFF);
+    msg.push_back(queryID & 0xFF);
+
+    msg.push_back(status);
+
+    uint32_t dataLen = (uint32_t)dataJSON.size();
+    msg.push_back((dataLen >> 24) & 0xFF);
+    msg.push_back((dataLen >> 16) & 0xFF);
+    msg.push_back((dataLen >> 8) & 0xFF);
+    msg.push_back(dataLen & 0xFF);
+    if (dataLen > 0) {
+        msg.insert(msg.end(), dataJSON.begin(), dataJSON.end());
+    }
+
+    uint32_t length = (uint32_t)msg.size();
+    msg[0] = (length >> 24) & 0xFF;
+    msg[1] = (length >> 16) & 0xFF;
+    msg[2] = (length >> 8) & 0xFF;
+    msg[3] = length & 0xFF;
+
+    g_socket->Send(msg.data(), msg.size());
+}
+
 // OLD IMPLEMENTATION - DEPRECATED
 // Replaced by the version in designations.cpp which properly handles DigType parsing
 // and uses the correct payload format (includes DigType byte at offset 5)
@@ -191,25 +257,72 @@ bool applyDigDesignation(uint8_t digType, int16_t x1, int16_t y1, int16_t z, int
 }
 */
 
-// Apply zone designation (bedroom, dining hall, meeting area, barracks)
-// TODO: Building API changed in DF 53.02 - needs research for correct usage
+// Apply zone designation (bedroom, dining, meeting, barracks, etc.).
+//
+// STATUS (2026-05-03): The civzone API in DFHack 53.12 differs significantly
+// from 53.02. The old `zone_flags::bits::bedroom/dining_hall/etc` field is
+// gone; civzones now carry a `df::civzone_type type` enum that has
+// completely different semantics (Home / MeadHall / ThroneRoom / Temple /
+// Kitchen / Treasury — but NO direct "Bedroom" / "Dining" / "Barracks"
+// values). In DF 53.x, "bedroom" appears to be modeled as a room
+// assignment on a bed rather than a civzone designation.
+//
+// This function returns a clean error until the new zone API is figured
+// out. Plugin compiles; agent gets a structured rejection it can route
+// around. The proper implementation needs:
+//   - Investigation of how DF 53.x marks rooms (probably via
+//     building.is_room flag + room.dim_x/y on a furniture building)
+//   - Possibly using df::building::set_role or similar
+//   - Reading existing DFHack scripts (zone.lua) for the canonical pattern
 bool applyZoneDesignation(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error)
 {
-    error = "Zone designations not yet implemented for DF 53.02 (Building API changed)";
+    (void)zoneType; (void)x1; (void)y1; (void)z; (void)x2; (void)y2;
+    error = "Zone designation API not yet ported to DFHack 53.12 (civzone refactor); see designations.cpp comment";
     return false;
+}
 
-    /* DISABLED - API incompatible with DF 53.02
+// Unsuspend any building or job at the given coordinate. Used to resume
+// auto-suspended constructions when the agent has cleared the underlying
+// blocker (path, materials, etc.).
+//
+// IMPORTANT: The "suspended" flag lives on the job, not the building, in
+// recent DF versions. We iterate the building's jobs (or the world's job
+// list filtered by position) and clear suspend on each. The exact field
+// name and storage may have shifted in DF 53.12.
+bool applyUnsuspend(int16_t x, int16_t y, int16_t z, std::string &error)
+{
     using namespace DFHack;
 
-    // Allocate civzone building
-    df::building_civzonest* zone = virtual_cast<df::building_civzonest>(
-        Buildings::allocInstance(df::coord(x1, y1, z), df::building_type::Civzone)
-    );
+    if (!Maps::isValidTilePos(x, y, z)) {
+        error = "Coordinates out of map bounds";
+        return false;
+    }
 
-    // ... zone setup code ...
+    df::coord pos(x, y, z);
+    df::building* bld = Buildings::findAtTile(pos);
+    if (!bld) {
+        error = "No building at coordinates";
+        return false;
+    }
 
+    int cleared = 0;
+    // Walk the building's jobs and clear the suspend flag on each.
+    // VERIFY: building's job list field name in DF 53.12 (jobs vs
+    // job_list). Also verify df::job::flags.bits.suspend is the correct
+    // bit name (some versions use 'do_now' inversion or a different bit).
+    for (auto* job : bld->jobs) {
+        if (!job) continue;
+        if (job->flags.bits.suspend) {
+            job->flags.bits.suspend = 0;
+            cleared++;
+        }
+    }
+
+    if (cleared == 0) {
+        error = "No suspended jobs at this building";
+        return false;
+    }
     return true;
-    */
 }
 
 // Apply cancel designation to region
@@ -329,9 +442,9 @@ void executeCommand(const std::vector<uint8_t> &payload)
             success = applyDigDesignation(payload, error);
             break;
         }
-        case 0x02: {  // BUILD (not implemented)
-            sendCommandAck(cmdID, 0x02, "BUILD not yet implemented");
-            return;
+        case 0x02: {  // BUILD
+            success = applyBuildDesignation(payload, error);
+            break;
         }
         case 0x03: {  // CANCEL
             // Call the fixed version from designations.cpp
@@ -405,6 +518,54 @@ void executeCommand(const std::vector<uint8_t> &payload)
             success = applyBlueprintDesignation(blueprintName, originX, originY, originZ, error);
             break;
         }
+        case 0x08: {  // UNSUSPEND
+            // Payload: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z]
+            if (payload.size() < 11) {
+                sendCommandAck(cmdID, 0x02, "Invalid UNSUSPEND payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            success = applyUnsuspend(x, y, z, error);
+            break;
+        }
+        case 0x09: {  // WORK_ORDER
+            // Payload: [4: cmdID] [1: cmdType] [1: OrderType] [2: Quantity]
+            if (payload.size() < 8) {
+                sendCommandAck(cmdID, 0x02, "Invalid WORK_ORDER payload");
+                return;
+            }
+            uint8_t orderType = payload[5];
+            uint16_t quantity = ((uint16_t)payload[6] << 8) | payload[7];
+            if (quantity == 0 || quantity > 100) {
+                sendCommandAck(cmdID, 0x02, "WORK_ORDER quantity out of range (1-100)");
+                return;
+            }
+            success = applyWorkOrder(orderType, quantity, error);
+            break;
+        }
+        case 0x0B: {  // SMOOTH
+            success = applySmoothDesignation(payload, error);
+            break;
+        }
+        case 0x0A: {  // STOCKPILE
+            // Payload: [4: cmdID] [1: cmdType] [2: X1] [2: Y1] [2: Z] [2: X2] [2: Y2] [4: GroupMask]
+            if (payload.size() < 19) {
+                sendCommandAck(cmdID, 0x02, "Invalid STOCKPILE payload");
+                return;
+            }
+            int16_t x1 = ((int16_t)payload[5]  << 8) | payload[6];
+            int16_t y1 = ((int16_t)payload[7]  << 8) | payload[8];
+            int16_t z  = ((int16_t)payload[9]  << 8) | payload[10];
+            int16_t x2 = ((int16_t)payload[11] << 8) | payload[12];
+            int16_t y2 = ((int16_t)payload[13] << 8) | payload[14];
+            uint32_t mask =
+                ((uint32_t)payload[15] << 24) | ((uint32_t)payload[16] << 16) |
+                ((uint32_t)payload[17] << 8)  |  (uint32_t)payload[18];
+            success = placeStockpile(x1, y1, z, x2, y2, mask, error);
+            break;
+        }
         default:
             sendCommandAck(cmdID, 0x02, "Unknown command type");
             return;
@@ -451,6 +612,32 @@ DFhackCExport command_result plugin_onupdate(color_ostream &out)
         executeCommand(cmd.payload);
     }
 
+    // Poll DF announcements every ~5 seconds (50 onupdate ticks at 10Hz).
+    // Sends only NEW entries; safe to call frequently if you want lower
+    // latency. Skipped when not connected — no point queuing.
+    static int g_announcement_throttle = 0;
+    if (g_connected && g_socket && g_socket->IsSocketValid()) {
+        g_announcement_throttle++;
+        if (g_announcement_throttle >= 50) {
+            g_announcement_throttle = 0;
+            poll_and_send_announcements();
+        }
+    }
+
+    // Drain query queue (read-only DF accesses, safe on main thread).
+    while (true) {
+        QueuedQuery q;
+        {
+            std::lock_guard<std::mutex> lock(g_query_queue_mutex);
+            if (g_query_queue.empty()) {
+                break;
+            }
+            q = g_query_queue.front();
+            g_query_queue.pop();
+        }
+        executeQuery(q.queryID, q.name, q.argsJSON);
+    }
+
     return CR_OK;
 }
 
@@ -470,6 +657,7 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             return CR_FAILURE;
         },
         false,
+        false,
         "Usage: ai-connect\nConnects to the Go orchestrator server and performs handshake."
     ));
 
@@ -481,6 +669,7 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             out.print("Disconnected from server\n");
             return CR_OK;
         },
+        false,
         false,
         "Usage: ai-disconnect\nDisconnects from the Go orchestrator server."
     ));
@@ -505,6 +694,7 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             return CR_FAILURE;
         },
         false,
+        false,
         "Usage: ai-reconnect [max_attempts]\nAttempts to reconnect with exponential backoff (1s, 2s, 4s, 8s, 16s, max 30s).\nDefault max attempts: 5"
     ));
 
@@ -520,6 +710,7 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             }
             return CR_OK;
         },
+        false,
         false,
         "Usage: ai-status\nShows current connection status."
     ));
@@ -561,6 +752,7 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             return CR_OK;
         },
         false,
+        false,
         "Usage: ai-listen\nChecks for incoming messages from the server."
     ));
 
@@ -589,6 +781,7 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             }
             return CR_FAILURE;
         },
+        false,
         false,
         "Usage: ai-check-updates\nDetects changed tiles and sends TILE_UPDATE to server."
     ));
@@ -619,6 +812,7 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             out.print("Sent ENTITY_UPDATE (%d entities, %d bytes)\n", (int)entities.size(), (int)message.size());
             return CR_OK;
         },
+        false,
         false,
         "Usage: ai-send-entities\nScans all active units and sends entity positions to server."
     ));
@@ -661,6 +855,7 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             return CR_OK;
         },
         false,
+        false,
         "Usage: ai-save\nRequests the server to save current modifications to disk."
     ));
 
@@ -693,6 +888,7 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
 
             return CR_OK;
         },
+        false,
         false,
         "Usage: ai-auto-update [on|off]\nToggle automatic entity and tile updates.\nIf no parameter given, shows current status."
     ));
@@ -857,6 +1053,7 @@ void disconnect_from_server()
         g_socket.reset();
     }
     g_connected = false;
+    reset_announcement_cursor();
 }
 
 // Send handshake message
@@ -1184,6 +1381,38 @@ void message_receive_loop(color_ostream &out)
                 out.print("Received COMMAND\n");
                 handleCommand(payload);
                 break;
+
+            case MSG_TYPE_QUERY: {
+                // Payload: [4: queryID] [2: nameLen] [N: name] [2: argsLen] [M: args]
+                if (payload.size() < 8) {
+                    out.printerr("QUERY payload too short\n");
+                    break;
+                }
+                uint32_t queryID = ((uint32_t)payload[0] << 24) | ((uint32_t)payload[1] << 16) |
+                                   ((uint32_t)payload[2] << 8)  |  (uint32_t)payload[3];
+                uint16_t nameLen = ((uint16_t)payload[4] << 8) | payload[5];
+                if (payload.size() < (size_t)(6 + nameLen + 2)) {
+                    out.printerr("QUERY name length out of range\n");
+                    break;
+                }
+                std::string name(payload.begin() + 6, payload.begin() + 6 + nameLen);
+                size_t off = 6 + nameLen;
+                uint16_t argsLen = ((uint16_t)payload[off] << 8) | payload[off + 1];
+                off += 2;
+                if (payload.size() < off + argsLen) {
+                    out.printerr("QUERY args length out of range\n");
+                    break;
+                }
+                std::string args(payload.begin() + off, payload.begin() + off + argsLen);
+
+                // Queue for main thread execution.
+                {
+                    std::lock_guard<std::mutex> lock(g_query_queue_mutex);
+                    g_query_queue.push(QueuedQuery{queryID, name, args});
+                }
+                out.print("Received QUERY %s (id=%u)\n", name.c_str(), queryID);
+                break;
+            }
 
             case MSG_TYPE_HEARTBEAT:
                 // Parse heartbeat: [8: timestamp] [1: sequence]

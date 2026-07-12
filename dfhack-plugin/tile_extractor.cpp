@@ -12,6 +12,7 @@
 
 #include <vector>
 #include <cstdint>
+#include <cstdio>
 
 using namespace DFHack;
 using namespace df::enums;
@@ -66,6 +67,17 @@ std::vector<uint8_t> extract_full_map_state()
     int32_t y_max = df::global::world->map.y_count;
     int32_t z_max = df::global::world->map.z_count;
 
+    // Diagnostic: histogram of tile_shape values seen during extraction.
+    // Written to dfhack-ai-shape-histogram.txt at the end so we can see
+    // exactly what shapes the plugin encounters on this map. If surface
+    // grass should be FLOOR but is classified as something unexpected,
+    // we'll see it here.
+    int shape_hist[32] = {0};            // shape int → count (-1..18 expected)
+    int classified_floor = 0;
+    int classified_wall  = 0;
+    int classified_void  = 0;
+    int classified_none  = 0;
+
     // Estimate size: (x * y * z) tiles * 9 bytes per tile
     size_t estimated_tiles = x_max * y_max * z_max;
     result.reserve(estimated_tiles * 9);
@@ -84,6 +96,25 @@ std::vector<uint8_t> extract_full_map_state()
 
                 // Determine flags
                 uint8_t flags = 0;
+
+                // If the block isn't loaded OR DF returned no tiletype,
+                // mark the tile as HIDDEN so the orchestrator's topology
+                // overlay treats it as "unknown / unexplored" rather than
+                // implicitly "wall." DF lazily allocates blocks; on a fresh
+                // embark only a small fraction of the 192×192×129 volume
+                // has populated tile data. Without this flag the Go side
+                // sees ~99% of tiles with no FLAG_FLOOR/WALL/VOID and
+                // defaults them to closed — the source of the "agent
+                // thinks the world is sealed in walls" symptom.
+                if (static_cast<uint16_t>(tile_type) == 0) {
+                    flags |= 0x01; // FLAG_HIDDEN
+                    write_int16_be(result, static_cast<int16_t>(x));
+                    write_int16_be(result, static_cast<int16_t>(y));
+                    write_int16_be(result, static_cast<int16_t>(z));
+                    write_uint16_be(result, static_cast<uint16_t>(tile_type));
+                    result.push_back(flags);
+                    continue;
+                }
 
                 // Check if tile is hidden (not yet discovered)
                 MapExtras::Block *block = map_cache.BlockAt(pos);
@@ -127,17 +158,73 @@ std::vector<uint8_t> extract_full_map_state()
                     // Bit 6: Void (open air, missing floor, fall hazard)
                     // Bit 7: Liquid (water/magma at 7/7 depth)
 
-                    // Only classify if tiletype is non-zero (valid)
+                    // Classify by tile_shape directly. The DFHack helpers
+                    // isWalkable / isWallTerrain go through the
+                    // tiletype_shape `walkable` and `basic_shape` attribute
+                    // table, which has produced unexpected results across
+                    // versions. Switching on the shape enum is unambiguous
+                    // and stable: each value here is a documented DF tile
+                    // shape, so the mapping is checkable against the
+                    // df/tiletype_shape.h enum at any version.
                     if (static_cast<uint16_t>(tile_type) > 0) {
-                        if (isWallTerrain(tile_type)) {
-                            flags |= 0x10;  // FLAG_WALL
-                        } else if (isWalkable(tile_type)) {
-                            flags |= 0x20;  // FLAG_FLOOR (includes ramps, stairs, floors)
-                        } else if (LowPassable(tile_type)) {
-                            flags |= 0x40;  // FLAG_VOID (missing floor, can fall through)
+                        df::tiletype_shape shape = tileShape(tile_type);
+
+                        // Histogram for diagnostics. Shape values are -1..18
+                        // for the standard enum; offset by +1 so index 0 = NONE.
+                        int shape_idx = (int)shape + 1;
+                        if (shape_idx >= 0 && shape_idx < 32) {
+                            shape_hist[shape_idx]++;
                         }
 
-                        // Check for dangerous liquids (7/7 depth only)
+                        switch (shape) {
+                            // Walkable surfaces — dwarves can stand here.
+                            case df::tiletype_shape::FLOOR:
+                            case df::tiletype_shape::BOULDER:
+                            case df::tiletype_shape::PEBBLES:
+                            case df::tiletype_shape::FORTIFICATION:
+                            case df::tiletype_shape::STAIR_UP:
+                            case df::tiletype_shape::STAIR_DOWN:
+                            case df::tiletype_shape::STAIR_UPDOWN:
+                            case df::tiletype_shape::RAMP:
+                            case df::tiletype_shape::RAMP_TOP:
+                            case df::tiletype_shape::BROOK_TOP:
+                            case df::tiletype_shape::SAPLING:
+                            case df::tiletype_shape::SHRUB:
+                            case df::tiletype_shape::TWIG:
+                            case df::tiletype_shape::BRANCH:
+                                flags |= 0x20;  // FLAG_FLOOR
+                                classified_floor++;
+                                break;
+
+                            // Solid walls — diggable.
+                            case df::tiletype_shape::WALL:
+                            case df::tiletype_shape::TRUNK_BRANCH:
+                            case df::tiletype_shape::BROOK_BED:
+                                flags |= 0x10;  // FLAG_WALL
+                                classified_wall++;
+                                break;
+
+                            // Open / void — fall hazard, not diggable.
+                            case df::tiletype_shape::EMPTY:
+                            case df::tiletype_shape::ENDLESS_PIT:
+                                flags |= 0x40;  // FLAG_VOID
+                                classified_void++;
+                                break;
+
+                            // Default: unclassified — leave flags untouched.
+                            // NONE / unknown shapes shouldn't be common at
+                            // runtime; if they show up, the orchestrator
+                            // will treat them as closed.
+                            default:
+                                classified_none++;
+                                break;
+                        }
+
+                    }
+
+                    // Check for dangerous liquids (7/7 depth only) —
+                    // independent of shape classification.
+                    if (static_cast<uint16_t>(tile_type) > 0) {
                         if (des.bits.flow_size == 7) {
                             df::tiletype_material mat = tileMaterial(tile_type);
                             if (mat == df::tiletype_material::POOL ||   // Water
@@ -155,6 +242,34 @@ std::vector<uint8_t> extract_full_map_state()
                 write_uint16_be(result, static_cast<uint16_t>(tile_type));
                 result.push_back(flags);
             }
+        }
+    }
+
+    // Diagnostic dump: shape histogram + classification counts. Written
+    // to <DF root>/dfhack-ai-shape-histogram.txt so we can see what the
+    // plugin actually classified. Append-only so multiple FULL_STATE
+    // calls accumulate.
+    {
+        const char* shape_names[] = {
+            "NONE", "EMPTY", "FLOOR", "BOULDER", "PEBBLES", "WALL",
+            "FORTIFICATION", "STAIR_UP", "STAIR_DOWN", "STAIR_UPDOWN",
+            "RAMP", "RAMP_TOP", "BROOK_BED", "BROOK_TOP", "BRANCH",
+            "TRUNK_BRANCH", "TWIG", "SAPLING", "SHRUB", "ENDLESS_PIT",
+        };
+        std::FILE* f = std::fopen("dfhack-ai-shape-histogram.txt", "a");
+        if (f) {
+            std::fprintf(f, "=== FULL_STATE extracted (map %dx%dx%d) ===\n",
+                         x_max, y_max, z_max);
+            std::fprintf(f, "Classification totals: floor=%d wall=%d void=%d unclassified=%d\n",
+                         classified_floor, classified_wall, classified_void, classified_none);
+            std::fprintf(f, "Shape histogram:\n");
+            for (int i = 0; i < 32; i++) {
+                if (shape_hist[i] == 0) continue;
+                const char* name = (i < 20) ? shape_names[i] : "(out of range)";
+                std::fprintf(f, "  shape %2d (%s): %d tiles\n", i - 1, name, shape_hist[i]);
+            }
+            std::fprintf(f, "\n");
+            std::fclose(f);
         }
     }
 

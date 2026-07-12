@@ -95,60 +95,62 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
     int designated = 0;
     int blocked = 0;
 
-    // Handle vertical shaft (staircase) if z1 != z2
-    if (z1 != z2) {
-        // Vertical shafts must be single column
-        if (x1 != x2 || y1 != y2) {
-            error = "Vertical regions must be single column (x1==x2, y1==y2) for staircases";
-            return false;
-        }
+    // Handle multi-Z stair shafts and single-Z digs in one unified pass.
+    //
+    // DF tile designations are per-tile — there is no native "shaft"
+    // concept. A 2×2×50 stair shaft is just 200 independent tiles each
+    // carrying tile_designation::dig. The earlier code special-cased
+    // single-column shafts for no real reason; this loop handles any 3D
+    // rectangle.
+    //
+    // Rules:
+    //   - If z1 != z2 AND digType is stairs: auto-assign UpStair on the
+    //     bottom Z, DownStair on the top Z, UpDownStair on middle Zs.
+    //     Every (x, y) within the rectangle gets the same stair type for
+    //     its Z. Matches DF's own bulk stair designation tool.
+    //   - Otherwise: every tile in the rectangle gets the requested
+    //     digType. For multi-Z non-stair digs (e.g. excavating a full
+    //     underground complex), we still respect the per-tile dig type.
+    //
+    // Hidden tiles: shaft designations span hidden terrain by design (DF's
+    // own UI does this), so we don't skip them in the shaft path. For
+    // single-Z non-shaft digs we still skip hidden tiles, to match the
+    // earlier behaviour where the agent expected an error when it tried
+    // to dig into fog of war on a known Z.
+    if (z1 > z2) std::swap(z1, z2);
 
-        // Ensure z1 <= z2
-        if (z1 > z2) std::swap(z1, z2);
+    bool isStairShaft = (z1 != z2) &&
+        (digType == 0x02 || digType == 0x05 || digType == 0x06);
+    // 0x02=UpDownStair, 0x05=DownStair, 0x06=UpStair from the protocol.
 
-        // Designate staircase from z1 (bottom) to z2 (top)
-        for (int16_t z = z1; z <= z2; z++) {
-            df::coord pos(x1, y1, z);
-            df::tile_designation des = cache.designationAt(pos);
-
-            if (des.bits.hidden) {
-                blocked++;
-                continue;
-            }
-
-            // Set appropriate stair type based on position in shaft
-            if (z == z1) {
-                // Bottom of shaft: UpStair
-                des.bits.dig = df::tile_dig_designation::UpStair;
-            } else if (z == z2) {
-                // Top of shaft: DownStair
-                des.bits.dig = df::tile_dig_designation::DownStair;
-            } else {
-                // Middle levels: UpDownStair
-                des.bits.dig = df::tile_dig_designation::UpDownStair;
-            }
-
-            cache.setDesignationAt(pos, des);
-            designated++;
-        }
-    } else {
-        // Single z-level region: use specified dig type
-        int16_t z = z1;
-
+    for (int16_t z = z1; z <= z2; z++) {
         for (int16_t x = x1; x <= x2; x++) {
             for (int16_t y = y1; y <= y2; y++) {
                 df::coord pos(x, y, z);
                 df::tile_designation des = cache.designationAt(pos);
 
-                if (des.bits.hidden) {
-                    blocked++;
-                    continue;
+                if (isStairShaft) {
+                    if (z == z1) {
+                        des.bits.dig = df::tile_dig_designation::UpStair;
+                    } else if (z == z2) {
+                        des.bits.dig = df::tile_dig_designation::DownStair;
+                    } else {
+                        des.bits.dig = df::tile_dig_designation::UpDownStair;
+                    }
+                    // Span hidden terrain by design.
+                    cache.setDesignationAt(pos, des);
+                    designated++;
+                } else {
+                    // Single-Z (or multi-Z non-stair) dig: skip hidden tiles
+                    // so the agent gets a clear "blocked" count.
+                    if (des.bits.hidden) {
+                        blocked++;
+                        continue;
+                    }
+                    des.bits.dig = dfDigType;
+                    cache.setDesignationAt(pos, des);
+                    designated++;
                 }
-
-                // Set dig designation based on DigType parameter
-                des.bits.dig = dfDigType;
-                cache.setDesignationAt(pos, des);
-                designated++;
             }
         }
     }
@@ -176,11 +178,22 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
     return true;
 }
 
-// Apply build designation (stub for now - BUILD is lower priority)
+// Forward declarations of category placers (implemented in buildings.cpp).
+extern bool placeWorkshop(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
+extern bool placeFurniture(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
+extern bool placeConstruction(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
+extern bool placeDoor(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
+
+// applyBuildDesignation dispatches BUILD commands to category-specific
+// placers based on the BuildType byte's range:
+//   0x01-0x0F → constructions (wall, floor, stairs, ramp)
+//   0x10-0x2F → workshops
+//   0x30-0x4F → furniture
+//   0x50-0x6F → doors / hatches
 bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &error)
 {
-    // Parse build: [2:X] [2:Y] [2:Z] [1:BuildType]
-    if (payload.size() < 12) {  // 4(cmdID) + 1(type) + 7(build data)
+    // Parse: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z] [1: BuildType]
+    if (payload.size() < 12) {
         error = "Invalid build payload size";
         return false;
     }
@@ -190,16 +203,108 @@ bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &err
     int16_t z = read_int16_be(payload, 9);
     uint8_t buildType = payload[11];
 
-    // Validate coordinates
     if (!Maps::isValidTilePos(x, y, z)) {
         error = "Coordinates out of map bounds";
         return false;
     }
 
-    // TODO: Implement actual build designation
-    // For now, just return success as a stub
-    error = "Build designation not yet implemented";
+    if (isBuildTypeWorkshop(buildType)) {
+        return placeWorkshop(x, y, z, buildType, error);
+    }
+    if (isBuildTypeFurniture(buildType)) {
+        return placeFurniture(x, y, z, buildType, error);
+    }
+    if (isBuildTypeConstruction(buildType)) {
+        return placeConstruction(x, y, z, buildType, error);
+    }
+    if (isBuildTypeDoor(buildType)) {
+        return placeDoor(x, y, z, buildType, error);
+    }
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Unknown build type: 0x%02X", buildType);
+    error = buf;
     return false;
+}
+
+// Apply smooth/engrave designation to a rectangular region on a single
+// Z-level. Sets df::tile_designation::smooth = 1 (smooth) or 2 (engrave).
+//
+// Caveats: smooth/engrave only applies to natural stone walls and floors.
+// DF's labor system silently skips invalid targets (soil, sand, gravel,
+// constructed walls). The plugin sets the bit on every requested tile;
+// dwarves with the appropriate labor enabled will pick up the valid jobs.
+//
+// Use case: sealing light aquifer leaks. Aquifer tiles in stone layers
+// stop weeping water once their walls and ceilings are smoothed. For dirt
+// or soil aquifer layers, smooth has no effect — replace with a
+// constructed wall (BuildTypeWall) or just dig past the layer instead.
+bool applySmoothDesignation(const std::vector<uint8_t> &payload, std::string &error)
+{
+    // Parse: [4:CmdID] [1:CmdType] [1:SmoothType] [2:X1] [2:Y1] [2:Z] [2:X2] [2:Y2]
+    if (payload.size() < 16) {
+        error = "Invalid smooth payload size";
+        return false;
+    }
+
+    uint8_t smoothType = payload[5];
+    if (smoothType != 0x01 && smoothType != 0x02) {
+        error = "Invalid smooth type (must be 1=smooth, 2=engrave)";
+        return false;
+    }
+
+    int16_t x1 = read_int16_be(payload, 6);
+    int16_t y1 = read_int16_be(payload, 8);
+    int16_t z  = read_int16_be(payload, 10);
+    int16_t x2 = read_int16_be(payload, 12);
+    int16_t y2 = read_int16_be(payload, 14);
+
+    if (!Maps::isValidTilePos(x1, y1, z) || !Maps::isValidTilePos(x2, y2, z)) {
+        error = "Coordinates out of map bounds";
+        return false;
+    }
+    if (x2 < x1 || y2 < y1) {
+        error = "Invalid region bounds";
+        return false;
+    }
+
+    MapExtras::MapCache cache;
+    int designated = 0;
+    int blocked = 0;
+
+    for (int16_t x = x1; x <= x2; x++) {
+        for (int16_t y = y1; y <= y2; y++) {
+            df::coord pos(x, y, z);
+            df::tile_designation des = cache.designationAt(pos);
+
+            if (des.bits.hidden) {
+                blocked++;
+                continue;
+            }
+
+            // smooth field is 2 bits: 0=none, 1=smooth, 2=engrave.
+            des.bits.smooth = smoothType;
+            cache.setDesignationAt(pos, des);
+            designated++;
+        }
+    }
+
+    if (!cache.WriteAll()) {
+        error = "Failed to commit smooth designations to map";
+        return false;
+    }
+
+    if (designated == 0) {
+        error = "No tiles designated (all hidden)";
+        return false;
+    }
+
+    if (blocked > 0) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%d of %d tiles hidden", blocked, designated + blocked);
+        error = buf;
+    }
+    return true;
 }
 
 // Apply cancel designation to a region

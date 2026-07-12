@@ -36,6 +36,9 @@ const (
 	MessageTypeEntityUpdate   uint8 = 0x08
 	MessageTypeCommand        uint8 = 0x09
 	MessageTypeCommandAck     uint8 = 0x0A
+	MessageTypeQuery          uint8 = 0x0B
+	MessageTypeQueryResponse  uint8 = 0x0C
+	MessageTypeAnnouncementUpdate uint8 = 0x0D // plugin → server: new DF announcements
 )
 
 // Common errors
@@ -286,18 +289,85 @@ const (
 	CommandTypeGather    uint8 = 0x05
 	CommandTypeZone      uint8 = 0x06 // Designate zones (bedroom, dining, etc.)
 	CommandTypeBlueprint uint8 = 0x07 // Feature 007: Apply blueprint pattern with zones
+	CommandTypeUnsuspend uint8 = 0x08 // Clear suspend flag on a building's jobs
+	CommandTypeWorkOrder uint8 = 0x09 // Add a manager work order
+	CommandTypeStockpile uint8 = 0x0A // Designate a stockpile zone with category flags
+	CommandTypeSmooth    uint8 = 0x0B // Designate stone tiles for smoothing or engraving
 )
 
-// ZoneType constants for zone designations
+// SmoothType constants (matches df::tile_designation::smooth bitfield: 1=smooth, 2=engrave).
+const (
+	SmoothTypeSmooth  uint8 = 0x01
+	SmoothTypeEngrave uint8 = 0x02
+)
+
+// Stockpile group bits — match df::stockpile_group_set bitfield positions.
+// LLM picks an "all" mask or a category-specific subset by name.
+const (
+	StockpileGroupAnimals       uint32 = 1 << 0
+	StockpileGroupFood          uint32 = 1 << 1
+	StockpileGroupFurniture     uint32 = 1 << 2
+	StockpileGroupCorpses       uint32 = 1 << 3
+	StockpileGroupRefuse        uint32 = 1 << 4
+	StockpileGroupStone         uint32 = 1 << 5
+	StockpileGroupAmmo          uint32 = 1 << 6
+	StockpileGroupCoins         uint32 = 1 << 7
+	StockpileGroupBarsBlocks    uint32 = 1 << 8
+	StockpileGroupGems          uint32 = 1 << 9
+	StockpileGroupFinishedGoods uint32 = 1 << 10
+	StockpileGroupLeather       uint32 = 1 << 11
+	StockpileGroupCloth         uint32 = 1 << 12
+	StockpileGroupWood          uint32 = 1 << 13
+	StockpileGroupWeapons       uint32 = 1 << 14
+	StockpileGroupArmor         uint32 = 1 << 15
+	StockpileGroupSheet         uint32 = 1 << 16
+
+	// All 17 categories.
+	StockpileGroupAll uint32 = 0x1FFFF
+)
+
+// ZoneType constants for zone designations.
+//
+// Note: 0x06–0x08 (Office, Workshop, Stockpile) are legacy values from the
+// pre-BDI Feature 007 layout system and are NOT real DF civzone bits —
+// they are kept for backwards compatibility but should not be emitted by
+// new code. The 0x09–0x0E values match real DF civzone flags.
 const (
 	ZoneTypeBedroom     uint8 = 0x01 // Personal bedroom
 	ZoneTypeDining      uint8 = 0x02 // Dining hall
 	ZoneTypeMeetingHall uint8 = 0x03 // Meeting area
 	ZoneTypeBarracks    uint8 = 0x04 // Military training
 	ZoneTypeDormitory   uint8 = 0x05 // Shared sleeping
-	ZoneTypeOffice      uint8 = 0x06 // Feature 007: Office
-	ZoneTypeWorkshop    uint8 = 0x07 // Feature 007: Workshop
-	ZoneTypeStockpile   uint8 = 0x08 // Feature 007: Stockpile
+	ZoneTypeOffice      uint8 = 0x06 // Legacy (from Feature 007); not a DF civzone
+	ZoneTypeWorkshop    uint8 = 0x07 // Legacy (from Feature 007); not a DF civzone
+	ZoneTypeStockpile   uint8 = 0x08 // Legacy (from Feature 007); not a DF civzone
+
+	// Real DF civzone categories (BDI-era; use these for new code).
+	ZoneTypeFarm        uint8 = 0x10
+	ZoneTypePen         uint8 = 0x11
+	ZoneTypeGarbageDump uint8 = 0x12
+	ZoneTypePitPond     uint8 = 0x13
+	ZoneTypeWaterSource uint8 = 0x14
+	ZoneTypeFishing     uint8 = 0x15
+	ZoneTypeHospital    uint8 = 0x16
+	ZoneTypeAnimalTrain uint8 = 0x17
+	ZoneTypeTomb        uint8 = 0x18
+)
+
+// OrderType constants for manager work orders.
+const (
+	OrderTypeMakeBed     uint8 = 0x01
+	OrderTypeMakeTable   uint8 = 0x02
+	OrderTypeMakeChair   uint8 = 0x03
+	OrderTypeMakeDoor    uint8 = 0x04
+	OrderTypeMakeBarrel  uint8 = 0x05
+	OrderTypeMakeBucket  uint8 = 0x06
+	OrderTypeMakeCabinet uint8 = 0x07
+	OrderTypeMakeCoffer  uint8 = 0x08
+	OrderTypeBrewDrink   uint8 = 0x09
+	OrderTypePrepareMeal uint8 = 0x0A
+	OrderTypeMakeBlocks  uint8 = 0x0B
+	OrderTypeMakeCrafts  uint8 = 0x0C
 )
 
 // DigType constants (matches df::tile_dig_designation enum)
@@ -317,14 +387,67 @@ const (
 	AckStatusFailure uint8 = 0x02
 )
 
-// BuildType constants for build designation commands
+// BuildType constants for build designation commands. The enum is broken
+// into ranges by category so plugin-side switch statements can quickly
+// route to the right handler:
+//
+//	0x01 – 0x0F : Constructions (wall, floor, ramp, stairs) — built from
+//	              a single material reagent against a tile.
+//	0x10 – 0x2F : Workshops — built from one of several material reagents
+//	              over a multi-tile footprint.
+//	0x30 – 0x4F : Furniture — single-tile placed buildings using one item
+//	              from a stockpile.
+//	0x50 – 0x6F : Doors / Hatches — single-tile portal buildings.
+//	0x70 – 0x7F : Reserved for stockpiles and zones (future).
+//
+// Add new values at the end of each range as plugin support expands.
 const (
+	// Constructions (built from blocks or boulders).
 	BuildTypeWall        uint8 = 0x01
 	BuildTypeFloor       uint8 = 0x02
 	BuildTypeUpStair     uint8 = 0x03
 	BuildTypeDownStair   uint8 = 0x04
 	BuildTypeUpDownStair uint8 = 0x05
+	BuildTypeRamp        uint8 = 0x06
+
+	// Workshops (3x3 unless noted; require a build material).
+	BuildTypeWorkshopCarpenter   uint8 = 0x10
+	BuildTypeWorkshopMason       uint8 = 0x11
+	BuildTypeWorkshopStill       uint8 = 0x12
+	BuildTypeWorkshopFarmer      uint8 = 0x13
+	BuildTypeWorkshopCraftsdwarf uint8 = 0x14
+	BuildTypeWorkshopMechanic    uint8 = 0x15
+	BuildTypeWorkshopButcher     uint8 = 0x16
+	BuildTypeWorkshopKitchen     uint8 = 0x17
+	BuildTypeWorkshopFishery     uint8 = 0x18
+
+	// Furniture (single-tile, requires an item from stockpile).
+	BuildTypeBed   uint8 = 0x30
+	BuildTypeTable uint8 = 0x31
+	BuildTypeChair uint8 = 0x32
+	BuildTypeCabinet uint8 = 0x33
+	BuildTypeCoffer  uint8 = 0x34
+
+	// Doors / hatches.
+	BuildTypeDoor   uint8 = 0x50
+	BuildTypeHatch  uint8 = 0x51
 )
+
+// IsBuildTypeWorkshop reports whether the given BuildType refers to a
+// workshop. Useful in routing tables.
+func IsBuildTypeWorkshop(t uint8) bool { return t >= 0x10 && t < 0x30 }
+
+// IsBuildTypeFurniture reports whether the given BuildType refers to a
+// piece of furniture.
+func IsBuildTypeFurniture(t uint8) bool { return t >= 0x30 && t < 0x50 }
+
+// IsBuildTypeConstruction reports whether the given BuildType refers to
+// a construction (wall, floor, etc.).
+func IsBuildTypeConstruction(t uint8) bool { return t >= 0x01 && t < 0x10 }
+
+// IsBuildTypeDoor reports whether the given BuildType refers to a door
+// or hatch.
+func IsBuildTypeDoor(t uint8) bool { return t >= 0x50 && t < 0x70 }
 
 // Region represents a 3D bounding box for designations
 type Region struct {
@@ -345,14 +468,62 @@ type ZoneDesignation struct {
 	ZoneType  uint8 // Bedroom, dining, etc.
 }
 
+// UnsuspendDesignation represents a single-tile unsuspend command, used to
+// resume a stalled construction (wall placement, building, etc.) after the
+// agent has cleared whatever blocker caused DF to auto-suspend it.
+type UnsuspendDesignation struct {
+	X, Y, Z int16
+}
+
+// WorkOrderDesignation represents a manager work order: produce N items of
+// the given type. The manager dispatches to whichever workshop can fulfill
+// the order, drawing reagents from stockpiles automatically.
+type WorkOrderDesignation struct {
+	OrderType uint8  // What to produce (OrderTypeMakeBed etc.)
+	Quantity  uint16 // How many to produce (1..100)
+}
+
+// StockpileDesignation represents a stockpile zone designation. The
+// GroupMask is a bitfield of StockpileGroup* constants identifying which
+// item categories the stockpile will accept at the top-level UI grouping.
+//
+// IMPORTANT (current limitation): we set the top-level group flags but
+// not the per-material sub-flags. The stockpile will be created and
+// visible in DF with the right category tabs, but each material may need
+// to be manually accepted in the DF UI the first time. A future plugin
+// extension can call dfhack stockpiles::accept_all to fill sub-params.
+type StockpileDesignation struct {
+	X1, Y1, Z int16
+	X2, Y2    int16
+	GroupMask uint32 // bitmask of StockpileGroup* constants
+}
+
+// SmoothDesignation represents a smooth/engrave designation on a single
+// Z-level rectangular region. SmoothType picks 1=smooth or 2=engrave.
+//
+// IMPORTANT: smooth/engrave only works on natural stone walls and floors —
+// not on soil/sand/gravel/dirt and not on constructed walls. The plugin
+// applies the designation regardless; DF's labor system will simply skip
+// tiles that aren't valid targets. For dirt/soil aquifer layers, use a
+// constructed wall (BuildTypeWall) instead.
+type SmoothDesignation struct {
+	X1, Y1, Z int16
+	X2, Y2    int16
+	SmoothType uint8 // SmoothTypeSmooth or SmoothTypeEngrave
+}
+
 // CommandMessage represents a command from server to DFHack
 type CommandMessage struct {
-	CommandID   uint32           // Unique command identifier
-	CommandType uint8            // Type of command (dig/build/cancel/zone/blueprint)
-	DigType     uint8            // For DIG: dig designation type (Default=1, UpDownStair=2, Channel=3, etc)
-	Region      Region           // For DIG and CANCEL commands
-	Build       BuildDesignation // For BUILD commands
-	Zone        ZoneDesignation  // For ZONE commands
+	CommandID   uint32                // Unique command identifier
+	CommandType uint8                 // Type of command (dig/build/cancel/zone/blueprint/unsuspend/work_order)
+	DigType     uint8                 // For DIG: dig designation type (Default=1, UpDownStair=2, Channel=3, etc)
+	Region      Region                // For DIG and CANCEL commands
+	Build       BuildDesignation      // For BUILD commands
+	Zone        ZoneDesignation       // For ZONE commands
+	Unsuspend   UnsuspendDesignation  // For UNSUSPEND commands
+	Order       WorkOrderDesignation  // For WORK_ORDER commands
+	Stockpile   StockpileDesignation  // For STOCKPILE commands
+	Smooth      SmoothDesignation     // For SMOOTH commands
 
 	// Feature 007: Blueprint command fields
 	BlueprintName string // For BLUEPRINT: blueprint filename (without .csv)
@@ -365,7 +536,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeBlueprint {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeSmooth {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -376,13 +547,18 @@ func (m *CommandMessage) Validate() error {
 		if m.Region.X2 < m.Region.X1 || m.Region.Y2 < m.Region.Y1 || m.Region.Z2 < m.Region.Z1 {
 			return errors.New("invalid region: end coordinates must be >= start coordinates")
 		}
-		// Single Z-level requirement
-		if m.Region.Z1 != m.Region.Z2 {
-			return errors.New("region must be on single Z-level (Z1 must equal Z2)")
-		}
+		// Multi-Z is allowed: stair shafts span Z natively, and the plugin
+		// handles 3D rectangles tile-by-tile (DF designations are per-tile;
+		// there is no "shaft" concept in DF). Cancel also accepts multi-Z
+		// for the symmetric case of clearing a stair shaft.
 	case CommandTypeBuild:
-		// Validate BuildType
-		if m.Build.BuildType < BuildTypeWall || m.Build.BuildType > BuildTypeUpDownStair {
+		// Validate BuildType — accept any defined construction, workshop,
+		// furniture, or door value. Plugin will reject specific values it
+		// doesn't yet implement.
+		if !IsBuildTypeConstruction(m.Build.BuildType) &&
+			!IsBuildTypeWorkshop(m.Build.BuildType) &&
+			!IsBuildTypeFurniture(m.Build.BuildType) &&
+			!IsBuildTypeDoor(m.Build.BuildType) {
 			return fmt.Errorf("invalid build type: 0x%02X", m.Build.BuildType)
 		}
 	}
@@ -405,5 +581,101 @@ func (m *CommandAckMessage) Validate() error {
 		return fmt.Errorf("invalid ack status: 0x%02X", m.Status)
 	}
 	// ErrorMsg length is validated during serialization
+	return nil
+}
+
+// AnnouncementInfo is one DF announcement / cancellation in the protocol
+// wire format. Mirrors df::report's relevant fields.
+//
+// Wire layout (per entry, big-endian):
+//   [4: ID]
+//   [2: TypeID]
+//   [1: Severity]      // 0=info, 1=warn, 2=critical
+//   [2: X][2: Y][2: Z] // (-1,-1,-1) if non-positional
+//   [4: GameYear]
+//   [4: GameTick]
+//   [2: TextLen]
+//   [N: Text UTF-8]
+type AnnouncementInfo struct {
+	ID       uint32
+	TypeID   uint16
+	Severity uint8
+	X, Y, Z  int16
+	GameYear uint32
+	GameTick uint32
+	Text     string
+}
+
+// AnnouncementUpdateMessage carries a batch of new DF announcements from
+// the plugin. The plugin sends only NEW entries (delta against the highest
+// previously-sent ID), so the server's AlertStore can dedupe by ID without
+// storing a "last seen" cursor itself.
+type AnnouncementUpdateMessage struct {
+	Count         uint32
+	Announcements []AnnouncementInfo
+}
+
+func (m *AnnouncementUpdateMessage) Type() uint8 { return MessageTypeAnnouncementUpdate }
+
+func (m *AnnouncementUpdateMessage) Validate() error {
+	if uint32(len(m.Announcements)) != m.Count {
+		return fmt.Errorf("announcement count mismatch: Count=%d, len=%d", m.Count, len(m.Announcements))
+	}
+	for i, a := range m.Announcements {
+		if len(a.Text) > 4096 {
+			return fmt.Errorf("announcement %d text too long (%d > 4096)", i, len(a.Text))
+		}
+	}
+	return nil
+}
+
+// QueryMessage is a server → plugin request for structured data. Distinct
+// from commands: queries don't mutate game state, they read. The plugin
+// dispatches by Name, runs the handler on the main thread, and returns a
+// QueryResponseMessage with the same QueryID.
+type QueryMessage struct {
+	QueryID uint32
+	Name    string // tool name (e.g. "list_orders", "dwarf_detail")
+	Args    string // JSON-encoded args; handler decodes
+}
+
+func (m *QueryMessage) Type() uint8 { return MessageTypeQuery }
+
+func (m *QueryMessage) Validate() error {
+	if m.QueryID == 0 {
+		return errors.New("queryID must be non-zero")
+	}
+	if len(m.Name) == 0 || len(m.Name) > 64 {
+		return fmt.Errorf("query name length out of range (1..64): %d", len(m.Name))
+	}
+	if len(m.Args) > 4096 {
+		return fmt.Errorf("query args too long (max 4096): %d", len(m.Args))
+	}
+	return nil
+}
+
+// QueryResponseStatus constants.
+const (
+	QueryStatusSuccess uint8 = 0x00
+	QueryStatusError   uint8 = 0x01
+	QueryStatusUnknown uint8 = 0x02 // unknown query name
+)
+
+// QueryResponseMessage carries the plugin's structured answer to a query.
+type QueryResponseMessage struct {
+	QueryID uint32
+	Status  uint8
+	Data    string // JSON; success = result payload, error = {"error":"..."}
+}
+
+func (m *QueryResponseMessage) Type() uint8 { return MessageTypeQueryResponse }
+
+func (m *QueryResponseMessage) Validate() error {
+	if m.QueryID == 0 {
+		return errors.New("queryID must be non-zero")
+	}
+	if m.Status > QueryStatusUnknown {
+		return fmt.Errorf("invalid query response status: 0x%02X", m.Status)
+	}
 	return nil
 }

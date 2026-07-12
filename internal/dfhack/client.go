@@ -38,6 +38,7 @@ type Client struct {
 	tileUpdateCh     chan *protocol.TileUpdateMessage
 	entityUpdateCh   chan *protocol.EntityUpdateMessage
 	commandAckCh     chan *protocol.CommandAckMessage
+	announcementCh   chan *protocol.AnnouncementUpdateMessage
 	stopCh           chan struct{}
 	wg               sync.WaitGroup
 	heartbeatSeq     uint8
@@ -47,6 +48,11 @@ type Client struct {
 	metricsMu        sync.Mutex
 	onFullState      func(*protocol.FullStateMessage) // Callback for FULL_STATE messages
 	onSaveRequest    func()                            // Callback for save requests
+
+	// Query infrastructure
+	queryNextID  uint32
+	queryMu      sync.Mutex
+	queryPending map[uint32]chan *protocol.QueryResponseMessage
 }
 
 // NewClient creates a new DFHack client
@@ -57,7 +63,9 @@ func NewClient(logger *logging.Logger) *Client {
 		tileUpdateCh:   make(chan *protocol.TileUpdateMessage, 100),
 		entityUpdateCh: make(chan *protocol.EntityUpdateMessage, 100),
 		commandAckCh:   make(chan *protocol.CommandAckMessage, 100),
+		announcementCh: make(chan *protocol.AnnouncementUpdateMessage, 100),
 		stopCh:         make(chan struct{}),
+		queryPending:   make(map[uint32]chan *protocol.QueryResponseMessage),
 	}
 }
 
@@ -289,6 +297,15 @@ func (c *Client) messageLoop(conn *protocol.Connection) {
 				c.logger.Warn("entity update channel full, dropping message")
 			}
 
+		case *protocol.AnnouncementUpdateMessage:
+			c.logger.Info("received announcement update",
+				logging.Field{Key: "count", Value: m.Count})
+			select {
+			case c.announcementCh <- m:
+			default:
+				c.logger.Warn("announcement channel full, dropping message")
+			}
+
 		case *protocol.HeartbeatMessage:
 			// Echo heartbeat back with incremented sequence
 			c.handleHeartbeat(conn, m)
@@ -308,6 +325,30 @@ func (c *Client) messageLoop(conn *protocol.Connection) {
 			case c.commandAckCh <- m:
 			default:
 				c.logger.Warn("command ack channel full, dropping message")
+			}
+
+		case *protocol.QueryResponseMessage:
+			c.logger.Debug("received query response",
+				logging.Field{Key: "query_id", Value: m.QueryID},
+				logging.Field{Key: "status", Value: m.Status},
+				logging.Field{Key: "data_size", Value: len(m.Data)})
+
+			c.queryMu.Lock()
+			ch, ok := c.queryPending[m.QueryID]
+			if ok {
+				delete(c.queryPending, m.QueryID)
+			}
+			c.queryMu.Unlock()
+			if ok {
+				select {
+				case ch <- m:
+				default:
+					c.logger.Warn("query response channel full, dropping",
+						logging.Field{Key: "query_id", Value: m.QueryID})
+				}
+			} else {
+				c.logger.Warn("query response for unknown queryID",
+					logging.Field{Key: "query_id", Value: m.QueryID})
 			}
 
 		case *protocol.ResyncRequestMessage:
@@ -377,6 +418,11 @@ func (c *Client) SubscribeCommandAcks() <-chan *protocol.CommandAckMessage {
 	return c.commandAckCh
 }
 
+// SubscribeAnnouncementUpdates returns channel for DF announcements.
+func (c *Client) SubscribeAnnouncementUpdates() <-chan *protocol.AnnouncementUpdateMessage {
+	return c.announcementCh
+}
+
 // SendCommand sends a command to the DFHack plugin
 func (c *Client) SendCommand(cmd *protocol.CommandMessage) error {
 	c.mu.RLock()
@@ -396,6 +442,62 @@ func (c *Client) SendCommand(cmd *protocol.CommandMessage) error {
 		logging.Field{Key: "command_type", Value: cmd.CommandType})
 
 	return nil
+}
+
+// SendQuery sends a structured query to the plugin and blocks until the
+// matching QueryResponse arrives, ctx cancels, or timeout elapses.
+// Returns the response Data (JSON) on success.
+func (c *Client) SendQuery(ctx context.Context, name, args string, timeout time.Duration) ([]byte, error) {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+	if conn == nil {
+		return nil, errors.New("not connected")
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	c.queryMu.Lock()
+	c.queryNextID++
+	if c.queryNextID == 0 {
+		c.queryNextID = 1 // queryID 0 is reserved
+	}
+	queryID := c.queryNextID
+	respCh := make(chan *protocol.QueryResponseMessage, 1)
+	c.queryPending[queryID] = respCh
+	c.queryMu.Unlock()
+
+	defer func() {
+		c.queryMu.Lock()
+		delete(c.queryPending, queryID)
+		c.queryMu.Unlock()
+	}()
+
+	msg := &protocol.QueryMessage{QueryID: queryID, Name: name, Args: args}
+	if err := conn.Send(msg); err != nil {
+		return nil, fmt.Errorf("failed to send query: %w", err)
+	}
+
+	c.logger.Debug("sent query",
+		logging.Field{Key: "query_id", Value: queryID},
+		logging.Field{Key: "name", Value: name})
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("query %q timed out after %s", name, timeout)
+	case resp := <-respCh:
+		switch resp.Status {
+		case protocol.QueryStatusSuccess:
+			return []byte(resp.Data), nil
+		case protocol.QueryStatusUnknown:
+			return nil, fmt.Errorf("plugin reports unknown query %q", name)
+		default:
+			return nil, fmt.Errorf("query %q failed: %s", name, resp.Data)
+		}
+	}
 }
 
 // IsConnected returns true if connection is active

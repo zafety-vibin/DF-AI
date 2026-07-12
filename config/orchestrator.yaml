@@ -28,7 +28,7 @@ topology_center_z: 0             # For active_z_levels mode
 topology_z_radius: 3             # ±3 levels from center
 
 # LLM Provider Configuration
-llm_provider_type: openai_compatible  # CHANGED: Use local LLM (LM Studio)
+llm_provider_type: claude  # claude | openai_compatible | local | multi_model
 
 # Claude API settings (unused when using openai_compatible)
 claude_api_key: ${CLAUDE_API_KEY}  # Set via environment variable

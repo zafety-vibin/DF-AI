@@ -48,19 +48,26 @@ func NewCommandExecutor(logger *logging.Logger, client DFHackClient, timeout tim
 	return e
 }
 
-// SendDigCommand sends a dig designation command
+// SendDigCommand sends a dig designation command on a single Z-level.
 // digType: DigTypeDefault (standard), DigTypeUpDownStair, DigTypeChannel, etc.
 func (e *CommandExecutor) SendDigCommand(digType uint8, x1, y1, z int16, x2, y2 int16) (*CommandResult, error) {
+	return e.SendDigRegion(digType, x1, y1, z, x2, y2, z)
+}
+
+// SendDigRegion sends a dig designation command across a 3D rectangle
+// (Z1 may differ from Z2). The plugin handles per-tile designation
+// natively. Stair-type digTypes across Z1 != Z2 produce a stair shaft:
+// UpStair on the bottom Z, DownStair on the top, UpDownStair on middles.
+func (e *CommandExecutor) SendDigRegion(digType uint8, x1, y1, z1, x2, y2, z2 int16) (*CommandResult, error) {
 	cmd := &protocol.CommandMessage{
 		CommandID:   e.tracker.GenerateCommandID(),
 		CommandType: protocol.CommandTypeDig,
 		DigType:     digType,
 		Region: protocol.Region{
-			X1: x1, Y1: y1, Z1: z,
-			X2: x2, Y2: y2, Z2: z,
+			X1: x1, Y1: y1, Z1: z1,
+			X2: x2, Y2: y2, Z2: z2,
 		},
 	}
-
 	return e.SendCommand(cmd)
 }
 
@@ -119,6 +126,83 @@ func (e *CommandExecutor) SendGatherCommand(x1, y1, z int16, x2, y2 int16) (*Com
 		},
 	}
 
+	return e.SendCommand(cmd)
+}
+
+// SendZoneCommand designates a region as a civzone (bedroom, dining, etc.).
+func (e *CommandExecutor) SendZoneCommand(zoneType uint8, x1, y1, z, x2, y2 int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeZone,
+		Zone: protocol.ZoneDesignation{
+			X1: x1, Y1: y1, Z: z,
+			X2: x2, Y2: y2,
+			ZoneType: zoneType,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendUnsuspendCommand clears the suspend flag on jobs at the given tile.
+// Used to resume an auto-suspended construction once the underlying
+// blocker has been cleared.
+func (e *CommandExecutor) SendUnsuspendCommand(x, y, z int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeUnsuspend,
+		Unsuspend: protocol.UnsuspendDesignation{
+			X: x, Y: y, Z: z,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendWorkOrderCommand adds a manager work order to produce N items of
+// the given type. The manager dispatches to whichever workshop can fulfill
+// the order, drawing reagents from stockpiles automatically.
+func (e *CommandExecutor) SendWorkOrderCommand(orderType uint8, quantity uint16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeWorkOrder,
+		Order: protocol.WorkOrderDesignation{
+			OrderType: orderType,
+			Quantity:  quantity,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendStockpileCommand designates a rectangular region as a stockpile
+// accepting items in the named groups. groupMask is a bitfield of
+// protocol.StockpileGroup* constants (use StockpileGroupAll for an
+// "everything" stockpile).
+func (e *CommandExecutor) SendStockpileCommand(x1, y1, z, x2, y2 int16, groupMask uint32) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeStockpile,
+		Stockpile: protocol.StockpileDesignation{
+			X1: x1, Y1: y1, Z: z,
+			X2: x2, Y2: y2,
+			GroupMask: groupMask,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendSmoothCommand designates a rectangular region for smoothing or
+// engraving. smoothType is protocol.SmoothTypeSmooth (1) or
+// SmoothTypeEngrave (2). Only natural stone walls/floors will be acted on
+// by DF; soil/sand and constructed walls are silently skipped.
+func (e *CommandExecutor) SendSmoothCommand(smoothType uint8, x1, y1, z, x2, y2 int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeSmooth,
+		Smooth: protocol.SmoothDesignation{
+			X1: x1, Y1: y1, Z: z,
+			X2: x2, Y2: y2,
+			SmoothType: smoothType,
+		},
+	}
 	return e.SendCommand(cmd)
 }
 

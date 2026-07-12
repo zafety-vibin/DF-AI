@@ -138,15 +138,23 @@ type DefenseAgentConfig struct {
 	PriorityThreat int `yaml:"priority_threat"` // Priority when enemies detected
 }
 
-// Load reads and parses the configuration file
+// Load reads and parses the configuration file. Environment variable
+// references in the YAML (`${VAR}` and `$VAR`) are expanded before
+// unmarshalling so secrets like API keys can stay out of the file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
+	// Expand ${VAR} and $VAR references against the process environment.
+	// Unset vars expand to empty string, which Validate/factory will catch
+	// with a clearer error than a literal "${CLAUDE_API_KEY}" leaking into
+	// an HTTP request.
+	expanded := os.ExpandEnv(string(data))
+
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
 		return nil, err
 	}
 

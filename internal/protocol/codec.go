@@ -82,6 +82,18 @@ func SerializeMessage(msg Message) ([]byte, error) {
 		if err := serializeCommandAck(&buf, m); err != nil {
 			return nil, err
 		}
+	case *QueryMessage:
+		if err := serializeQuery(&buf, m); err != nil {
+			return nil, err
+		}
+	case *QueryResponseMessage:
+		if err := serializeQueryResponse(&buf, m); err != nil {
+			return nil, err
+		}
+	case *AnnouncementUpdateMessage:
+		if err := serializeAnnouncementUpdate(&buf, m); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unknown message type: %T", msg)
 	}
@@ -144,6 +156,12 @@ func DeserializeMessage(data []byte) (Message, error) {
 		msg, err = deserializeCommand(payload)
 	case MessageTypeCommandAck:
 		msg, err = deserializeCommandAck(payload)
+	case MessageTypeQuery:
+		msg, err = deserializeQuery(payload)
+	case MessageTypeQueryResponse:
+		msg, err = deserializeQueryResponse(payload)
+	case MessageTypeAnnouncementUpdate:
+		msg, err = deserializeAnnouncementUpdate(payload)
 	default:
 		return nil, fmt.Errorf("%w: 0x%02X", ErrInvalidMessageType, msgType)
 	}
@@ -789,6 +807,58 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		if err := binary.Write(w, binary.BigEndian, msg.Build.BuildType); err != nil {
 			return err
 		}
+	case CommandTypeChop, CommandTypeGather:
+		// [2: X1] [2: Y1] [2: Z1] [2: X2] [2: Y2] [2: Z2]
+		for _, v := range []int16{msg.Region.X1, msg.Region.Y1, msg.Region.Z1, msg.Region.X2, msg.Region.Y2, msg.Region.Z2} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+	case CommandTypeZone:
+		// [1: ZoneType] [2: X1] [2: Y1] [2: Z] [2: X2] [2: Y2]
+		if err := binary.Write(w, binary.BigEndian, msg.Zone.ZoneType); err != nil {
+			return err
+		}
+		for _, v := range []int16{msg.Zone.X1, msg.Zone.Y1, msg.Zone.Z, msg.Zone.X2, msg.Zone.Y2} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+	case CommandTypeUnsuspend:
+		// [2: X] [2: Y] [2: Z]
+		for _, v := range []int16{msg.Unsuspend.X, msg.Unsuspend.Y, msg.Unsuspend.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+	case CommandTypeWorkOrder:
+		// [1: OrderType] [2: Quantity]
+		if err := binary.Write(w, binary.BigEndian, msg.Order.OrderType); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Order.Quantity); err != nil {
+			return err
+		}
+	case CommandTypeStockpile:
+		// [2: X1] [2: Y1] [2: Z] [2: X2] [2: Y2] [4: GroupMask]
+		for _, v := range []int16{msg.Stockpile.X1, msg.Stockpile.Y1, msg.Stockpile.Z, msg.Stockpile.X2, msg.Stockpile.Y2} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Stockpile.GroupMask); err != nil {
+			return err
+		}
+	case CommandTypeSmooth:
+		// [1: SmoothType] [2: X1] [2: Y1] [2: Z] [2: X2] [2: Y2]
+		if err := binary.Write(w, binary.BigEndian, msg.Smooth.SmoothType); err != nil {
+			return err
+		}
+		for _, v := range []int16{msg.Smooth.X1, msg.Smooth.Y1, msg.Smooth.Z, msg.Smooth.X2, msg.Smooth.Y2} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
 	case CommandTypeBlueprint:
 		// [2: NameLen] [N: Name] [2: OriginX] [2: OriginY] [2: OriginZ]
 		nameBytes := []byte(msg.BlueprintName)
@@ -869,6 +939,52 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 		}
 		if err := binary.Read(buf, binary.BigEndian, &msg.Build.BuildType); err != nil {
 			return nil, err
+		}
+	case CommandTypeChop, CommandTypeGather:
+		for _, p := range []*int16{&msg.Region.X1, &msg.Region.Y1, &msg.Region.Z1, &msg.Region.X2, &msg.Region.Y2, &msg.Region.Z2} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+	case CommandTypeZone:
+		if err := binary.Read(buf, binary.BigEndian, &msg.Zone.ZoneType); err != nil {
+			return nil, err
+		}
+		for _, p := range []*int16{&msg.Zone.X1, &msg.Zone.Y1, &msg.Zone.Z, &msg.Zone.X2, &msg.Zone.Y2} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+	case CommandTypeUnsuspend:
+		for _, p := range []*int16{&msg.Unsuspend.X, &msg.Unsuspend.Y, &msg.Unsuspend.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+	case CommandTypeWorkOrder:
+		if err := binary.Read(buf, binary.BigEndian, &msg.Order.OrderType); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.Order.Quantity); err != nil {
+			return nil, err
+		}
+	case CommandTypeStockpile:
+		for _, p := range []*int16{&msg.Stockpile.X1, &msg.Stockpile.Y1, &msg.Stockpile.Z, &msg.Stockpile.X2, &msg.Stockpile.Y2} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.Stockpile.GroupMask); err != nil {
+			return nil, err
+		}
+	case CommandTypeSmooth:
+		if err := binary.Read(buf, binary.BigEndian, &msg.Smooth.SmoothType); err != nil {
+			return nil, err
+		}
+		for _, p := range []*int16{&msg.Smooth.X1, &msg.Smooth.Y1, &msg.Smooth.Z, &msg.Smooth.X2, &msg.Smooth.Y2} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
 		}
 	case CommandTypeBlueprint:
 		// Read blueprint name (2 bytes length + N bytes name)
@@ -989,5 +1105,254 @@ func (m *CommandAckMessage) Deserialize(data []byte) error {
 		return fmt.Errorf("expected CommandAckMessage, got %T", msg)
 	}
 	*m = *a
+	return nil
+}
+
+// serializeQuery encodes QueryMessage payload:
+// [4: QueryID] [2: NameLen] [N: Name] [2: ArgsLen] [M: Args]
+func serializeQuery(w io.Writer, msg *QueryMessage) error {
+	if err := binary.Write(w, binary.BigEndian, msg.QueryID); err != nil {
+		return err
+	}
+	nameBytes := []byte(msg.Name)
+	if err := binary.Write(w, binary.BigEndian, uint16(len(nameBytes))); err != nil {
+		return err
+	}
+	if _, err := w.Write(nameBytes); err != nil {
+		return err
+	}
+	argsBytes := []byte(msg.Args)
+	if err := binary.Write(w, binary.BigEndian, uint16(len(argsBytes))); err != nil {
+		return err
+	}
+	if len(argsBytes) > 0 {
+		if _, err := w.Write(argsBytes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deserializeQuery(data []byte) (*QueryMessage, error) {
+	if len(data) < 8 { // 4 + 2 + 0 + 2 + 0
+		return nil, errors.New("query payload too short")
+	}
+	msg := &QueryMessage{}
+	buf := bytes.NewReader(data)
+	if err := binary.Read(buf, binary.BigEndian, &msg.QueryID); err != nil {
+		return nil, err
+	}
+	var nameLen uint16
+	if err := binary.Read(buf, binary.BigEndian, &nameLen); err != nil {
+		return nil, err
+	}
+	if nameLen > 0 {
+		nameBytes := make([]byte, nameLen)
+		if _, err := io.ReadFull(buf, nameBytes); err != nil {
+			return nil, err
+		}
+		msg.Name = string(nameBytes)
+	}
+	var argsLen uint16
+	if err := binary.Read(buf, binary.BigEndian, &argsLen); err != nil {
+		return nil, err
+	}
+	if argsLen > 0 {
+		argsBytes := make([]byte, argsLen)
+		if _, err := io.ReadFull(buf, argsBytes); err != nil {
+			return nil, err
+		}
+		msg.Args = string(argsBytes)
+	}
+	return msg, nil
+}
+
+func (m *QueryMessage) Serialize() ([]byte, error) { return SerializeMessage(m) }
+
+func (m *QueryMessage) Deserialize(data []byte) error {
+	msg, err := DeserializeMessage(data)
+	if err != nil {
+		return err
+	}
+	q, ok := msg.(*QueryMessage)
+	if !ok {
+		return fmt.Errorf("expected QueryMessage, got %T", msg)
+	}
+	*m = *q
+	return nil
+}
+
+// serializeQueryResponse encodes QueryResponseMessage payload:
+// [4: QueryID] [1: Status] [4: DataLen] [N: Data]
+func serializeQueryResponse(w io.Writer, msg *QueryResponseMessage) error {
+	if err := binary.Write(w, binary.BigEndian, msg.QueryID); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, msg.Status); err != nil {
+		return err
+	}
+	dataBytes := []byte(msg.Data)
+	if err := binary.Write(w, binary.BigEndian, uint32(len(dataBytes))); err != nil {
+		return err
+	}
+	if len(dataBytes) > 0 {
+		if _, err := w.Write(dataBytes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deserializeQueryResponse(data []byte) (*QueryResponseMessage, error) {
+	if len(data) < 9 { // 4 + 1 + 4
+		return nil, errors.New("query response payload too short")
+	}
+	msg := &QueryResponseMessage{}
+	buf := bytes.NewReader(data)
+	if err := binary.Read(buf, binary.BigEndian, &msg.QueryID); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.Status); err != nil {
+		return nil, err
+	}
+	var dataLen uint32
+	if err := binary.Read(buf, binary.BigEndian, &dataLen); err != nil {
+		return nil, err
+	}
+	if dataLen > 0 {
+		dataBytes := make([]byte, dataLen)
+		if _, err := io.ReadFull(buf, dataBytes); err != nil {
+			return nil, err
+		}
+		msg.Data = string(dataBytes)
+	}
+	return msg, nil
+}
+
+func (m *QueryResponseMessage) Serialize() ([]byte, error) { return SerializeMessage(m) }
+
+// serializeAnnouncementUpdate encodes AnnouncementUpdateMessage payload:
+// [4: Count] [N × AnnouncementInfo]
+//
+// Per-entry layout: [4:ID][2:TypeID][1:Severity][2:X][2:Y][2:Z]
+//                   [4:GameYear][4:GameTick][2:TextLen][N:Text]
+func serializeAnnouncementUpdate(w io.Writer, msg *AnnouncementUpdateMessage) error {
+	if err := binary.Write(w, binary.BigEndian, msg.Count); err != nil {
+		return err
+	}
+	for i, a := range msg.Announcements {
+		if err := binary.Write(w, binary.BigEndian, a.ID); err != nil {
+			return fmt.Errorf("announcement %d: %w", i, err)
+		}
+		if err := binary.Write(w, binary.BigEndian, a.TypeID); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, a.Severity); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, a.X); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, a.Y); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, a.Z); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, a.GameYear); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, a.GameTick); err != nil {
+			return err
+		}
+		textBytes := []byte(a.Text)
+		if err := binary.Write(w, binary.BigEndian, uint16(len(textBytes))); err != nil {
+			return err
+		}
+		if len(textBytes) > 0 {
+			if _, err := w.Write(textBytes); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func deserializeAnnouncementUpdate(data []byte) (*AnnouncementUpdateMessage, error) {
+	if len(data) < 4 {
+		return nil, errors.New("announcement update payload too short")
+	}
+	msg := &AnnouncementUpdateMessage{}
+	buf := bytes.NewReader(data)
+	if err := binary.Read(buf, binary.BigEndian, &msg.Count); err != nil {
+		return nil, err
+	}
+	msg.Announcements = make([]AnnouncementInfo, msg.Count)
+	for i := uint32(0); i < msg.Count; i++ {
+		a := &msg.Announcements[i]
+		if err := binary.Read(buf, binary.BigEndian, &a.ID); err != nil {
+			return nil, fmt.Errorf("announcement %d ID: %w", i, err)
+		}
+		if err := binary.Read(buf, binary.BigEndian, &a.TypeID); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &a.Severity); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &a.X); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &a.Y); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &a.Z); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &a.GameYear); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &a.GameTick); err != nil {
+			return nil, err
+		}
+		var textLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &textLen); err != nil {
+			return nil, err
+		}
+		if textLen > 0 {
+			textBytes := make([]byte, textLen)
+			if _, err := io.ReadFull(buf, textBytes); err != nil {
+				return nil, err
+			}
+			a.Text = string(textBytes)
+		}
+	}
+	return msg, nil
+}
+
+func (m *AnnouncementUpdateMessage) Serialize() ([]byte, error) { return SerializeMessage(m) }
+
+func (m *AnnouncementUpdateMessage) Deserialize(data []byte) error {
+	msg, err := DeserializeMessage(data)
+	if err != nil {
+		return err
+	}
+	a, ok := msg.(*AnnouncementUpdateMessage)
+	if !ok {
+		return fmt.Errorf("expected AnnouncementUpdateMessage, got %T", msg)
+	}
+	*m = *a
+	return nil
+}
+
+func (m *QueryResponseMessage) Deserialize(data []byte) error {
+	msg, err := DeserializeMessage(data)
+	if err != nil {
+		return err
+	}
+	q, ok := msg.(*QueryResponseMessage)
+	if !ok {
+		return fmt.Errorf("expected QueryResponseMessage, got %T", msg)
+	}
+	*m = *q
 	return nil
 }
