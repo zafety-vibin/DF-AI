@@ -50,7 +50,7 @@ Keep: TCP transport, binary protocol, tile extraction, entity extraction, announ
 - F1. `designations.cpp`: designate hidden tiles for ALL dig types, matching DF UI semantics (delete the `hidden → blocked` branch; keep the blocked counter for genuinely invalid tiles, e.g. out-of-bounds or already-open floor for wall-dig types).
 - F2. `entities.cpp`: background-thread reads of `world->units` without `CoreSuspender` — add suspend or move to onupdate tick. Latent memory-corruption hazard.
 - F3. `df_ai_protocol.cpp` RESYNC path: `send_full_state()` runs on the socket thread — queue it to the main thread like commands.
-- F4. Compile-verify `buildings.cpp` / `work_orders.cpp` against installed DFHack 53.12 SDK (they carry many "VERIFY against headers" notes and have never been built).
+- F4. Compile-verify `buildings.cpp` / `work_orders.cpp` against the installed DFHack SDK — **53.15-r1 / DF 53.15 as of 2026-07-11** (they carry many "VERIFY against headers" notes; the pre-upgrade in-tree copy was stale, so none of the May-era plugin work is proven against any current SDK).
 
 **Extensions (Phase 1):**
 - E1. `PAUSE`/`STEP` command: pause/unpause via DFHack `World::SetPauseState` (verify exact API in 53.12), plus "run N ticks then re-pause" for turn-based play.

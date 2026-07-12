@@ -6,7 +6,7 @@
 
 **Architecture:** DF ⇄ C++ DFHack plugin ⇄ TCP binary protocol ⇄ Go MCP server (`cmd/df-mcp`, stdio) ⇄ Claude Code. Phase 0 fixes the plugin (hidden-tile digs, thread safety, DFHack 53.12 verification); Phase 1 adds pause/step + classified map queries plugin-side and the MCP tool surface Go-side. The bespoke LLM loop (`internal/bdi` deliberator, `internal/llm`) is retired only after First Fort succeeds (Task 16, gated).
 
-**Tech Stack:** Go 1.24+ (toolchain 1.25.1), `github.com/modelcontextprotocol/go-sdk v1.6.1` (already in go.mod), C++20 DFHack plugin against DFHack 53.12 SDK, CMake out-of-tree build in `dfhack-build/`.
+**Tech Stack:** Go 1.24+ (toolchain 1.25.1), `github.com/modelcontextprotocol/go-sdk v1.6.1` (already in go.mod), C++20 DFHack plugin against **DFHack 53.15-r1 / DF 53.15** (upgraded 2026-07-11, the "dinosaur" update; was 53.12), in-tree build via junction (see Global Constraints).
 
 ## Global Constraints
 
@@ -14,7 +14,7 @@
 - Only new Go dependency allowed: `github.com/modelcontextprotocol/go-sdk` (v1.6.1, already fetched).
 - Protocol version stays `1`. `dfhack-plugin/protocol.h` constants and `internal/protocol/message.go` constants MUST stay in sync — every task touching one touches the other.
 - Plugin C++ standard: C++20 (`CMakeLists.txt` sets it). New source files must be added to `DFHACK_PLUGIN(...)` list in `dfhack-plugin/CMakeLists.txt`.
-- Plugin build (user's machine, PowerShell): `cd dfhack-build; cmake --build . --target df_ai_protocol` then copy `dfhack-build/plugins/df_ai_protocol.dll` to `<DF install>/hack/plugins/`. In-game: DFHack console → `ai-connect` connects the plugin to the Go server on the configured port (config/orchestrator.yaml `listen_port`).
+- Plugin build (CORRECTED 2026-07-11 — supersedes the `cd dfhack-build; cmake --build .` commands embedded in task steps): the DFHack **source checkout** lives at `C:\Users\zmanl\Projects\dfhack-build` (sibling of this repo), checked out at tag `53.15-r1`, with `plugins/df_ai_protocol` as a **junction to this repo's `dfhack-plugin/`** and the plugin hooked in via `plugins/CMakeLists.custom.txt`. Build: `cmake --build C:/Users/zmanl/Projects/dfhack-build/build --target df_ai_protocol --config Release` (VS 2022 generator). Output DLL: `build/plugins/df_ai_protocol/Release/df_ai_protocol.plug.dll` (name pattern is `.plug.dll`) → deploy by copying to `<Steam DF>/hack/plugins/` with DF closed. In-game: DFHack console → `ai-connect`.
 - Plugin threading rules: DF state reads/writes happen on the main thread via the existing queues (`g_command_queue`, `g_query_queue`, drained in `plugin_onupdate`) or under `CoreSuspender`. Never call DF from the socket thread bare.
 - Go tests: standard `go test`. Every new Go package ships with unit tests (repo currently has none — this plan starts the discipline). C++ has no test harness: plugin tasks verify by compile + live smoke via `cmd/df-smoke` + DFHack console.
 - Tool responses must stay comfortably under the MCP 10k-token default: `look` radius ≤ 15, list outputs capped as specified per task.
