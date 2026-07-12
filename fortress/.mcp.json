@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "df-fortress": {
+      "type": "stdio",
+      "command": "go",
+      "args": ["run", "../cmd/df-mcp"],
+      "env": {}
+    }
+  }
+}
