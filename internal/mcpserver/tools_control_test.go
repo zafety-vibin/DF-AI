@@ -8,6 +8,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/df-ai/orchestrator/internal/predicate"
+	"github.com/df-ai/orchestrator/internal/protocol"
+	"github.com/df-ai/orchestrator/internal/worldmodel"
 )
 
 func TestRenderGoals(t *testing.T) {
@@ -109,5 +111,62 @@ func TestSimPaused(t *testing.T) {
 					tc.raw, paused, stepping, tc.wantPaused, tc.wantStepping)
 			}
 		})
+	}
+}
+
+func TestParseSimStatusFrame(t *testing.T) {
+	s, ok := parseSimStatus([]byte(`{"paused":true,"frame":48210,"stepping":false}`))
+	if !ok || s.Frame != 48210 || !s.Paused || s.Stepping {
+		t.Fatalf("parseSimStatus = (%+v, %v), want frame 48210 paused", s, ok)
+	}
+	if _, ok := parseSimStatus([]byte(`not json`)); ok {
+		t.Fatal("garbage must not parse")
+	}
+}
+
+func TestFrameStr(t *testing.T) {
+	if got := frameStr(-1); got != "?" {
+		t.Fatalf("frameStr(-1) = %q, want ?", got)
+	}
+	if got := frameStr(1234); got != "1234" {
+		t.Fatalf("frameStr(1234) = %q, want 1234", got)
+	}
+}
+
+// TestStepReport checks the post-step summary speaks in SIM FRAMES (game
+// time), reports population deltas and new alerts, and warns when no state
+// push arrived (deltas would be computed against frozen data).
+func TestStepReport(t *testing.T) {
+	var before, after worldmodel.Snapshot
+	before.Entities.Dwarves = make([]protocol.EntityInfo, 7)
+	after.Entities.Dwarves = make([]protocol.EntityInfo, 9)
+	after.ActiveAlerts = []worldmodel.Alert{
+		{ID: 3, Text: "migrants have arrived"},
+		{ID: 1, Text: "old alert"},
+	}
+	out := stepReport(600, 1000, 1600, true, before, after, map[uint32]bool{1: true})
+	for _, want := range []string{
+		"stepped 600 ticks (sim frame 1000 -> 1600)",
+		"dwarf count change: +2",
+		"NEW ALERT [3] migrants have arrived",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("step report missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "old alert") || strings.Contains(out, "WARNING") {
+		t.Fatalf("unexpected content in report:\n%s", out)
+	}
+
+	// Unknown before-frame renders "?", and a missing state push warns.
+	out = stepReport(600, -1, 1600, false, before, before, map[uint32]bool{})
+	if !strings.Contains(out, "(sim frame ? -> 1600)") {
+		t.Fatalf("expected ? for unknown before frame:\n%s", out)
+	}
+	if !strings.Contains(out, "WARNING: no state push received") {
+		t.Fatalf("expected stale-delta warning without a push:\n%s", out)
+	}
+	if !strings.Contains(out, "no new alerts") {
+		t.Fatalf("expected no-new-alerts line:\n%s", out)
 	}
 }

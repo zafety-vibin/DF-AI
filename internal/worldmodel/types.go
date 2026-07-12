@@ -204,12 +204,16 @@ func (w *WorldModel) markUpdated() {
 // deliberator (LLM) call without worrying about concurrent writes invalidating
 // the data mid-render.
 type Snapshot struct {
-	Tick       uint64
-	EventSeq   uint64
-	TakenAt    time.Time
-	Entities   EntitySnapshot
-	Zones      ZoneSnapshot
-	Fort       FortSnapshot
+	Tick     uint64
+	EventSeq uint64
+	TakenAt  time.Time
+	// LastUpdate is the time of the most recent perception event the
+	// populator ingested (zero until the first event). TakenAt-LastUpdate
+	// is the honest age of everything else in this snapshot.
+	LastUpdate  time.Time
+	Entities    EntitySnapshot
+	Zones       ZoneSnapshot
+	Fort        FortSnapshot
 	Predictions PredictedSummary
 
 	// ActiveAlerts is the current set of un-dismissed DF announcements,
@@ -248,6 +252,7 @@ func (w *WorldModel) Snapshot() Snapshot {
 		Tick:         w.tick.Load(),
 		EventSeq:     w.eventSeq.Load(),
 		TakenAt:      time.Now(),
+		LastUpdate:   w.LastUpdate(),
 		Entities:     w.Observed.Entities,
 		Zones:        w.Observed.Zones,
 		Fort:         w.Observed.Fort,
