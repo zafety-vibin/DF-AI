@@ -95,6 +95,13 @@ var orderTypes = map[string]uint8{
 	"blocks": protocol.OrderTypeMakeBlocks, "crafts": protocol.OrderTypeMakeCrafts,
 }
 
+var materialClasses = map[string]uint8{
+	"any":    protocol.MaterialClassAny,
+	"wood":   protocol.MaterialClassWood,
+	"stone":  protocol.MaterialClassStone,
+	"blocks": protocol.MaterialClassBlocks,
+}
+
 var stockpileGroups = map[string]uint32{
 	"all":            protocol.StockpileGroupAll,
 	"animals":        protocol.StockpileGroupAnimals,
@@ -138,7 +145,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "designate_dig",
-		Description: "Designate digging over a 3D rectangle. Hidden fog tiles designate fine (that's how forts are dug). 'stairs' spans z1..z2 as one shaft (2x2 recommended, surface to deep stone in ONE call). Dwarves with picks do the work over game time — step() to let it happen.",
+		Description: "Designate digging over a 3D rectangle. Hidden fog tiles designate fine (that's how forts are dug). 'stairs' spans z1..z2 as one shaft (2x2 recommended, surface to deep stone in ONE call); a stairs range whose top adjoins existing carved stairs joins the shaft, and already-carved tiles are skipped — so extending a shaft deeper is safe. Dwarves with picks do the work over game time — step() to let it happen.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in digIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -164,7 +171,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "chop",
-		Description: "Designate tree felling over a rectangle on one z-level (trees are 'T' in look crops). Dwarves with axes fell them over game time — this starts the wood chain.",
+		Description: "Designate tree felling over a rectangle on one z-level (trees are 'T' in look crops). Designates the map tiles directly — no console dependency. Dwarves with axes fell them over game time — this starts the wood chain.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in rectZIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -175,7 +182,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "gather",
-		Description: "Designate plant gathering over a rectangle on one z-level (harvest wild shrubs and berries for food without farming).",
+		Description: "Designate plant gathering over a rectangle on one z-level (harvest wild shrubs and berries for food without farming). Designates the map tiles directly — no console dependency.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in rectZIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -185,14 +192,15 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	})
 
 	type buildIn struct {
-		Type string `json:"type" jsonschema:"workshop (carpenter|mason|still|farmer|craftsdwarf|mechanic|butcher|kitchen|fishery), furniture (bed|table|chair|cabinet|coffer), door|hatch, or construction (wall|floor|upstair|downstair|updownstair|ramp)"`
-		X    int    `json:"x" jsonschema:"for workshops this is the CENTER of the 3x3 footprint"`
-		Y    int    `json:"y"`
-		Z    int    `json:"z"`
+		Type     string `json:"type" jsonschema:"workshop (carpenter|mason|still|farmer|craftsdwarf|mechanic|butcher|kitchen|fishery), furniture (bed|table|chair|cabinet|coffer), door|hatch, or construction (wall|floor|upstair|downstair|updownstair|ramp)"`
+		X        int    `json:"x" jsonschema:"for workshops this is the CENTER of the 3x3 footprint"`
+		Y        int    `json:"y"`
+		Z        int    `json:"z"`
+		Material string `json:"material,omitempty" jsonschema:"any|wood|stone|blocks — constrains the item CLASS claimed for the build (default any)"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "build",
-		Description: "Place a building. Workshops are 3x3 (x,y = center; surrounding 8 tiles must be clear floor). Furniture needs the item in a stockpile first (order it). Constructions need blocks/boulders.",
+		Description: "Place a building. Workshops are 3x3 (x,y = center; surrounding 8 tiles must be clear floor). Furniture needs the item in a stockpile first (order it). Constructions need blocks/boulders. Optional material (any|wood|stone|blocks) constrains which item CLASS gets used — wood=logs, stone=boulders, blocks=blocks — but DF's job system still picks the specific item within that class.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in buildIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -201,9 +209,20 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		if !ok {
 			return withDash(b, ctx, fmt.Sprintf("unknown build type %q", in.Type)), nil, nil
 		}
+		mat := protocol.MaterialClassAny
+		if in.Material != "" {
+			mat, ok = materialClasses[strings.ToLower(in.Material)]
+			if !ok {
+				return withDash(b, ctx, fmt.Sprintf("unknown material %q (any|wood|stone|blocks)", in.Material)), nil, nil
+			}
+		}
 		wx, wy := buildWireCoords(bt, in.X, in.Y)
-		res, err := b.Exec.SendBuildCommand(wx, wy, int16(in.Z), bt)
-		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("build %s at (%d,%d,%d)", in.Type, in.X, in.Y, in.Z))), nil, nil
+		res, err := b.Exec.SendBuildCommandWithMaterial(wx, wy, int16(in.Z), bt, mat)
+		what := fmt.Sprintf("build %s at (%d,%d,%d)", in.Type, in.X, in.Y, in.Z)
+		if mat != protocol.MaterialClassAny {
+			what += " [" + strings.ToLower(in.Material) + "]"
+		}
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 
 	type zoneIn struct {
@@ -285,6 +304,17 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		}
 		res, err := b.Exec.SendUnsuspendCommand(int16(in.X), int16(in.Y), int16(in.Z))
 		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("unsuspend (%d,%d,%d)", in.X, in.Y, in.Z))), nil, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "remove_building",
+		Description: "Mark the building at a tile for removal (deconstruction). Any tile of a multi-tile building's footprint works. Dwarves do the teardown over game time and reclaim the materials — step() and check buildings to confirm it's gone.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in xyzIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		res, err := b.Exec.SendRemoveBuilding(int16(in.X), int16(in.Y), int16(in.Z))
+		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("remove building at (%d,%d,%d)", in.X, in.Y, in.Z))), nil, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{

@@ -13,7 +13,7 @@ import (
 // Keep in sync with classifyTile in dfhack-plugin/queries.cpp.
 const Legend = "? hidden(undug fog: diggable!) # stone-wall % soil-wall = mineral-vein " +
 	". floor , grass T tree t sapling/shrub _ open-air < up-stair > down-stair " +
-	"X up/down-stair ^ ramp ~ water L magma F fortification"
+	"X up/down-stair ^ ramp ~ water 1-7 water(depth) L magma F fortification"
 
 type Slice struct {
 	Z          int16      `json:"z"`
@@ -21,6 +21,12 @@ type Slice struct {
 	Y1         int16      `json:"y1"`
 	Rows       []string   `json:"rows"`
 	Designated [][2]int16 `json:"designated"`
+	// Water tiles as [x,y,depth] in absolute map coords, depth 1-7 (dry
+	// tiles omitted). Aquifer tiles as [x,y] — includes hidden tiles by
+	// design (DF's damp-dig warnings make aquifers player-knowable).
+	// Both are optional: an older plugin simply omits them.
+	Water   [][3]int16 `json:"water"`
+	Aquifer [][2]int16 `json:"aquifer"`
 }
 
 type ColumnLevel struct {
@@ -29,6 +35,12 @@ type ColumnLevel struct {
 	Shape    string `json:"shape"`
 	Material string `json:"material"`
 	Hidden   bool   `json:"hidden"`
+	// Optional fluid annotations (absent from older plugins = zero values):
+	// Water depth 1-7, Aquifer = water_table bit, Damp = a horizontal or
+	// above neighbor is wet.
+	Water   int  `json:"water"`
+	Aquifer bool `json:"aquifer"`
+	Damp    bool `json:"damp"`
 }
 
 type ColumnProfile struct {

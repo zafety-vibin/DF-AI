@@ -71,6 +71,51 @@ func TestRenderCropXAxisNarrow(t *testing.T) {
 	}
 }
 
+// TestRenderCropWater: water tiles overlay the base glyph with their depth
+// digit, out-of-range depths are handled defensively, the '@' dwarf mark
+// wins over water, and aquifer tiles get a count line (no glyph).
+func TestRenderCropWater(t *testing.T) {
+	s := &Slice{Z: 100, X1: 10, Y1: 20, Rows: []string{"....", "....", "...."},
+		Water: [][3]int16{
+			{10, 20, 3}, // depth digit '3'
+			{11, 20, 9}, // defensive: >7 clamps to '7'
+			{12, 20, 0}, // defensive: <1 ignored
+			{13, 21, 7}, // dwarf stands here — '@' must win
+			{99, 99, 5}, // out of crop bounds — ignored
+		},
+		Aquifer: [][2]int16{{10, 22}, {11, 22}}}
+	out := RenderCrop(s, map[[2]int16]rune{{13, 21}: '@'})
+	if !strings.Contains(out, "  20 37..") {
+		t.Fatalf("water depth digits wrong on y=20 row (want \"37..\"):\n%s", out)
+	}
+	if !strings.Contains(out, "  21 ...@") {
+		t.Fatalf("dwarf mark must override water on y=21 row:\n%s", out)
+	}
+	if !strings.Contains(out, "aquifer tiles in view: 2") {
+		t.Fatalf("aquifer count line missing:\n%s", out)
+	}
+	// Aquifer is a count line only — the grid keeps its base glyphs.
+	if !strings.Contains(out, "  22 ....") {
+		t.Fatalf("aquifer must not draw a glyph on y=22 row:\n%s", out)
+	}
+	if !strings.Contains(out, "1-7 water(depth)") {
+		t.Fatalf("legend missing water-depth entry:\n%s", out)
+	}
+}
+
+// A slice without water/aquifer fields (older plugin) renders exactly as
+// before: no aquifer line, no overlay.
+func TestRenderCropNoWaterFields(t *testing.T) {
+	s := &Slice{Z: 5, X1: 0, Y1: 0, Rows: []string{"##"}}
+	out := RenderCrop(s, nil)
+	if strings.Contains(out, "aquifer") {
+		t.Fatalf("no aquifer line expected without aquifer data:\n%s", out)
+	}
+	if !strings.Contains(out, "   0 ##") {
+		t.Fatalf("base glyphs must be untouched:\n%s", out)
+	}
+}
+
 func TestRenderCropDesignated(t *testing.T) {
 	s := &Slice{Z: 5, X1: 0, Y1: 0, Rows: []string{"##", "##"},
 		Designated: [][2]int16{{0, 0}, {1, 1}}}
@@ -102,5 +147,42 @@ func TestRenderColumn(t *testing.T) {
 	}
 	if !strings.Contains(out, "wall/soil") {
 		t.Fatalf("shape/material missing: %q", out)
+	}
+	// No fluid fields set — no fluid annotations.
+	for _, banned := range []string{"water", "AQUIFER", "DAMP"} {
+		if strings.Contains(out, banned) {
+			t.Fatalf("unexpected fluid annotation %q: %q", banned, out)
+		}
+	}
+}
+
+// TestRenderColumnFluids: water depth, aquifer, and damp annotations append
+// to the level line; levels without them stay clean.
+func TestRenderColumnFluids(t *testing.T) {
+	c := &ColumnProfile{X: 72, Y: 81, Levels: []ColumnLevel{
+		{Z: 110, Glyph: "~", Shape: "floor", Material: "water", Water: 4},
+		{Z: 109, Glyph: "?", Shape: "wall", Material: "soil", Hidden: true, Aquifer: true, Damp: true},
+		{Z: 108, Glyph: "?", Shape: "wall", Material: "stone", Hidden: true, Damp: true},
+		{Z: 107, Glyph: "?", Shape: "wall", Material: "stone", Hidden: true},
+	}}
+	out := RenderColumn(c, 110)
+	lines := strings.Split(out, "\n")
+	if !strings.Contains(lines[1], "~4/7 water") {
+		t.Fatalf("water depth annotation missing on z=110: %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "AQUIFER") || !strings.Contains(lines[2], "DAMP") {
+		t.Fatalf("aquifer/damp annotations missing on z=109: %q", lines[2])
+	}
+	if strings.Contains(lines[3], "AQUIFER") || !strings.Contains(lines[3], "DAMP") {
+		t.Fatalf("z=108 must be DAMP but not AQUIFER: %q", lines[3])
+	}
+	for _, banned := range []string{"water", "AQUIFER", "DAMP"} {
+		if strings.Contains(lines[4], banned) {
+			t.Fatalf("clean level must carry no fluid annotation: %q", lines[4])
+		}
+	}
+	// Annotations must not displace the hidden marker.
+	if !strings.Contains(lines[2], "(hidden/undug — diggable)") {
+		t.Fatalf("hidden marker lost on annotated level: %q", lines[2])
 	}
 }

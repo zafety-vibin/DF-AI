@@ -79,8 +79,18 @@ func (e *CommandExecutor) SendDigRegion(digType uint8, x1, y1, z1, x2, y2, z2 in
 	return e.SendCommand(cmd)
 }
 
-// SendBuildCommand sends a build designation command
+// SendBuildCommand sends a build designation command with no material
+// class preference (DF's job system picks any suitable item).
 func (e *CommandExecutor) SendBuildCommand(x, y, z int16, buildType uint8) (*CommandResult, error) {
+	return e.SendBuildCommandWithMaterial(x, y, z, buildType, protocol.MaterialClassAny)
+}
+
+// SendBuildCommandWithMaterial sends a build designation command with an
+// explicit material class constraint (protocol.MaterialClass*). The class
+// narrows what DF's job system may claim (wood/boulders/blocks); DF still
+// picks the specific item within the class. The wire payload always
+// carries the material byte — MaterialClassAny means "no constraint".
+func (e *CommandExecutor) SendBuildCommandWithMaterial(x, y, z int16, buildType, material uint8) (*CommandResult, error) {
 	cmd := &protocol.CommandMessage{
 		CommandID:   e.tracker.GenerateCommandID(),
 		CommandType: protocol.CommandTypeBuild,
@@ -89,6 +99,7 @@ func (e *CommandExecutor) SendBuildCommand(x, y, z int16, buildType uint8) (*Com
 			Y:         y,
 			Z:         z,
 			BuildType: buildType,
+			Material:  material,
 		},
 	}
 
@@ -159,6 +170,20 @@ func (e *CommandExecutor) SendUnsuspendCommand(x, y, z int16) (*CommandResult, e
 		CommandID:   e.tracker.GenerateCommandID(),
 		CommandType: protocol.CommandTypeUnsuspend,
 		Unsuspend: protocol.UnsuspendDesignation{
+			X: x, Y: y, Z: z,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendRemoveBuilding marks the building occupying (x,y,z) for
+// deconstruction. Any tile of a multi-tile building's footprint works;
+// dwarves do the actual teardown over game time.
+func (e *CommandExecutor) SendRemoveBuilding(x, y, z int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeRemoveBuilding,
+		Remove: protocol.RemoveBuildingDesignation{
 			X: x, Y: y, Z: z,
 		},
 	}

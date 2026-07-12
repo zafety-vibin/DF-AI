@@ -27,6 +27,39 @@ func TestCapRawJSON(t *testing.T) {
 	}
 }
 
+func TestRenderBuildings(t *testing.T) {
+	raw := []byte(`{"buildings":[
+		{"type":"carpenter workshop","x":50,"y":50,"z":139,"stage":0,"max_stage":3,"done":false},
+		{"type":"bed","x":12,"y":8,"z":138,"stage":1,"max_stage":1,"done":true}
+	]}`)
+	out := renderBuildings(raw)
+	if !strings.Contains(out, "2 buildings:") {
+		t.Fatalf("missing count header:\n%s", out)
+	}
+	if !strings.Contains(out, "carpenter workshop at (50,50,139) — UNDER CONSTRUCTION (stage 0/3)") {
+		t.Fatalf("unbuilt building must show construction stage:\n%s", out)
+	}
+	if !strings.Contains(out, "bed at (12,8,138) — built") {
+		t.Fatalf("finished building must read 'built':\n%s", out)
+	}
+	if strings.Contains(out, "truncated") {
+		t.Fatalf("untruncated response must not claim truncation:\n%s", out)
+	}
+
+	trunc := []byte(`{"buildings":[{"type":"door","x":1,"y":2,"z":3,"stage":1,"max_stage":1,"done":true}],"truncated":true}`)
+	if out := renderBuildings(trunc); !strings.Contains(out, "truncated") {
+		t.Fatalf("truncated flag must surface:\n%s", out)
+	}
+
+	if out := renderBuildings([]byte(`{"buildings":[]}`)); out != "No buildings." {
+		t.Fatalf("empty list rendering wrong: %q", out)
+	}
+
+	if out := renderBuildings([]byte(`not json`)); !strings.Contains(out, "unparseable") {
+		t.Fatalf("bad JSON must be reported, got: %q", out)
+	}
+}
+
 func TestRenderDwarfListCap(t *testing.T) {
 	few := []protocol.EntityInfo{{ID: 7, X: 1, Y: 2, Z: 3}}
 	out := renderDwarfList(few)

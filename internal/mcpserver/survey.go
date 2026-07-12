@@ -16,6 +16,32 @@ type SurveyData struct {
 	SurfaceSlice     *mapview.Slice
 }
 
+// aquiferNote summarizes aquifer layers in a sampled column: ", AQUIFER at
+// z=N" for a single layer, a z range when the layers are contiguous (levels
+// arrive top-to-bottom), first z otherwise. Empty when no aquifer.
+func aquiferNote(levels []mapview.ColumnLevel) string {
+	var zs []int16
+	for _, lv := range levels {
+		if lv.Aquifer {
+			zs = append(zs, lv.Z)
+		}
+	}
+	if len(zs) == 0 {
+		return ""
+	}
+	contiguous := true
+	for i := 1; i < len(zs); i++ {
+		if zs[i] != zs[i-1]-1 {
+			contiguous = false
+			break
+		}
+	}
+	if len(zs) > 1 && contiguous {
+		return fmt.Sprintf(", AQUIFER at z=%d..%d", zs[0], zs[len(zs)-1])
+	}
+	return fmt.Sprintf(", AQUIFER at z=%d", zs[0])
+}
+
 // renderSurvey composes the embark orientation report: dimensions, the
 // surface Z, where everyone is, and what the sampled stratigraphy looks
 // like. This is the model's first read of a new map.
@@ -63,15 +89,16 @@ func renderSurvey(d SurveyData) string {
 		}
 		switch {
 		case firstStone == -1:
-			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, no stone in sampled range\n",
+			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, no stone in sampled range",
 				c.X, c.Y, soil)
 		case firstStoneHidden:
-			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, first stone at z=%d (under fog — undug, diggable)\n",
+			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, first stone at z=%d (under fog — undug, diggable)",
 				c.X, c.Y, soil, firstStone)
 		default:
-			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, first exposed stone at z=%d\n",
+			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, first exposed stone at z=%d",
 				c.X, c.Y, soil, firstStone)
 		}
+		sb.WriteString(aquiferNote(c.Levels) + "\n")
 	}
 	if d.SurfaceSlice != nil {
 		trees, grass := 0, 0

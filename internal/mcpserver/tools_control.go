@@ -38,11 +38,14 @@ func renderGoals(results []predicate.Result) string {
 
 // simStatus is the decoded sim_status query payload. Frame is DF's
 // simulation frame counter (world->frame_counter) — real game time, unlike
-// the world model's message counter.
+// the world model's message counter. Tripwire fields are optional (absent
+// from older plugins): set when the plugin ended a step early on its own.
 type simStatus struct {
-	Paused   bool  `json:"paused"`
-	Stepping bool  `json:"stepping"`
-	Frame    int64 `json:"frame"`
+	Paused         bool   `json:"paused"`
+	Stepping       bool   `json:"stepping"`
+	Frame          int64  `json:"frame"`
+	Tripwire       bool   `json:"tripwire"`
+	TripwireReason string `json:"tripwire_reason"`
 }
 
 func parseSimStatus(raw []byte) (simStatus, bool) {
@@ -71,9 +74,16 @@ func frameStr(f int64) string {
 // from sim_status), population delta, and new alerts. pushed=false means
 // the world model never received a state push after the step completed —
 // the deltas below would then be computed against frozen data, so say so.
-func stepReport(ticks int, beforeFrame, afterFrame int64, pushed bool, before, after worldmodel.Snapshot, beforeAlerts map[uint32]bool) string {
+func stepReport(ticks int, beforeFrame, afterFrame int64, pushed bool, before, after worldmodel.Snapshot, beforeAlerts map[uint32]bool, tripwire bool, tripwireReason string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "stepped %d ticks (sim frame %s -> %s)\n", ticks, frameStr(beforeFrame), frameStr(afterFrame))
+	if tripwire {
+		reason := tripwireReason
+		if reason == "" {
+			reason = "unspecified"
+		}
+		fmt.Fprintf(&sb, "step ended EARLY at frame %s — tripwire: %s\n", frameStr(afterFrame), reason)
+	}
 	if !pushed {
 		sb.WriteString("WARNING: no state push received after the step — deltas below may be stale; check the dashboard data age\n")
 	}
@@ -125,7 +135,7 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "step",
-		Description: "Run the simulation for N ticks then auto-pause, and report what happened (new alerts, arrivals). This is your end-of-turn: act, then step, then observe.",
+		Description: "Run the simulation for N ticks then auto-pause, and report what happened (new alerts, arrivals). The plugin may trip an early auto-pause (a tripwire: e.g. a threat or flooding) — the report says so and why. This is your end-of-turn: act, then step, then observe.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in stepIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -153,11 +163,20 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 		if err != nil || res == nil || !res.Success {
 			return withDash(b, ctx, ackText(res, err, "step")), nil, nil
 		}
-		// Poll until the plugin re-pauses.
-		timeout := time.Duration(in.Ticks/10+30) * time.Second
-		deadline := time.Now().Add(timeout)
+		// Poll until the plugin re-pauses. The budget scales with ticks, but
+		// a slow sim (fluid churn, FPS dips) can be alive and still miss a
+		// fixed deadline — observed frame progress extends the deadline by a
+		// grace window, capped at 3x the original budget. Give up only when
+		// frames stall or the cap is hit, and say which case occurred.
+		const progressGrace = 30 * time.Second
+		budget := time.Duration(in.Ticks/10+30) * time.Second
+		start := time.Now()
+		hardDeadline := start.Add(3 * budget)
+		deadline := start.Add(budget)
 		completed := false
-		afterFrame := int64(-1)
+		afterFrame := beforeFrame
+		lastStatus := simStatus{Frame: -1}
+		lastProgress := start
 		for time.Now().Before(deadline) {
 			time.Sleep(500 * time.Millisecond)
 			if !b.Connected() {
@@ -172,6 +191,17 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 			if !ok {
 				continue
 			}
+			lastStatus = s
+			if s.Frame > afterFrame {
+				// The sim advanced: it's alive, keep waiting.
+				lastProgress = time.Now()
+				if ext := lastProgress.Add(progressGrace); ext.After(deadline) {
+					deadline = ext
+					if deadline.After(hardDeadline) {
+						deadline = hardDeadline
+					}
+				}
+			}
 			afterFrame = s.Frame
 			if s.Paused && !s.Stepping {
 				completed = true
@@ -179,9 +209,28 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 			}
 		}
 		if !completed {
-			return withDash(b, ctx, fmt.Sprintf(
-				"step of %d ticks DID NOT complete within %s — game may still be running; check sim_status before acting (last seen sim frame %s)",
-				in.Ticks, timeout.Round(time.Second), frameStr(afterFrame))), nil, nil
+			elapsed := time.Since(start).Round(time.Second)
+			switch {
+			case time.Since(lastProgress) < progressGrace:
+				// Frames were still advancing when the 3x cap hit: the game
+				// is running slowly, not stuck.
+				return withDash(b, ctx, fmt.Sprintf(
+					"step of %d ticks DID NOT complete within %s (3x budget cap) but the sim is STILL ADVANCING (sim frame %s) — the game is running slowly, not stuck; wait and check sim_status before acting",
+					in.Ticks, elapsed, frameStr(afterFrame))), nil, nil
+			case lastStatus.Frame < 0:
+				// Not one sim_status response landed: we know nothing.
+				return withDash(b, ctx, fmt.Sprintf(
+					"step of %d ticks DID NOT complete within %s and NO sim_status responses were observed — connection may be degraded; check sim_status before acting",
+					in.Ticks, elapsed)), nil, nil
+			case lastStatus.Paused:
+				return withDash(b, ctx, fmt.Sprintf(
+					"step of %d ticks DID NOT complete within %s — the game is PAUSED mid-step (sim frame %s), possibly paused manually; check sim_status before acting",
+					in.Ticks, elapsed, frameStr(afterFrame))), nil, nil
+			default:
+				return withDash(b, ctx, fmt.Sprintf(
+					"step of %d ticks DID NOT complete within %s — sim frames STALLED while unpaused (sim frame %s); the game may be wedged, check sim_status before acting",
+					in.Ticks, elapsed, frameStr(afterFrame))), nil, nil
+			}
 		}
 		// The plugin pushes ENTITY_UPDATE + tile deltas at auto-repause.
 		// Wait briefly for the world model to ingest that push so the
@@ -197,7 +246,7 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 			time.Sleep(100 * time.Millisecond)
 		}
 		after := b.Snapshot()
-		return withDash(b, ctx, stepReport(in.Ticks, beforeFrame, afterFrame, pushed, before, after, beforeAlerts)), nil, nil
+		return withDash(b, ctx, stepReport(in.Ticks, beforeFrame, afterFrame, pushed, before, after, beforeAlerts, lastStatus.Tripwire, lastStatus.TripwireReason)), nil, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{

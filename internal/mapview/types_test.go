@@ -19,6 +19,22 @@ func TestDecodeSlice(t *testing.T) {
 	}
 }
 
+// Water/aquifer fields decode when present; the absent case (older plugin)
+// is covered by TestDecodeSlice above — fields stay nil.
+func TestDecodeSliceWater(t *testing.T) {
+	raw := []byte(`{"z":110,"x1":70,"y1":80,"rows":["##"],"water":[[70,80,3],[71,80,7]],"aquifer":[[71,80]]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(s.Water) != 2 || s.Water[0] != [3]int16{70, 80, 3} {
+		t.Fatalf("water mismatch: %+v", s.Water)
+	}
+	if len(s.Aquifer) != 1 || s.Aquifer[0] != [2]int16{71, 80} {
+		t.Fatalf("aquifer mismatch: %+v", s.Aquifer)
+	}
+}
+
 func TestDecodeColumnProfile(t *testing.T) {
 	raw := []byte(`{"x":70,"y":80,"levels":[{"z":111,"glyph":",","shape":"floor","material":"grass","hidden":false},{"z":110,"glyph":"?","shape":"hidden","material":"unknown","hidden":true}]}`)
 	c, err := DecodeColumnProfile(raw)
@@ -27,5 +43,21 @@ func TestDecodeColumnProfile(t *testing.T) {
 	}
 	if len(c.Levels) != 2 || c.Levels[1].Z != 110 || !c.Levels[1].Hidden {
 		t.Fatalf("levels mismatch: %+v", c.Levels)
+	}
+	// Fluid fields absent (older plugin) => zero values, no error.
+	if c.Levels[0].Water != 0 || c.Levels[0].Aquifer || c.Levels[0].Damp {
+		t.Fatalf("absent fluid fields must be zero: %+v", c.Levels[0])
+	}
+}
+
+func TestDecodeColumnProfileFluids(t *testing.T) {
+	raw := []byte(`{"x":70,"y":80,"levels":[{"z":110,"glyph":"~","shape":"floor","material":"water","water":5,"aquifer":true,"damp":true}]}`)
+	c, err := DecodeColumnProfile(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	lv := c.Levels[0]
+	if lv.Water != 5 || !lv.Aquifer || !lv.Damp {
+		t.Fatalf("fluid fields not decoded: %+v", lv)
 	}
 }

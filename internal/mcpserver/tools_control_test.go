@@ -144,7 +144,7 @@ func TestStepReport(t *testing.T) {
 		{ID: 3, Text: "migrants have arrived"},
 		{ID: 1, Text: "old alert"},
 	}
-	out := stepReport(600, 1000, 1600, true, before, after, map[uint32]bool{1: true})
+	out := stepReport(600, 1000, 1600, true, before, after, map[uint32]bool{1: true}, false, "")
 	for _, want := range []string{
 		"stepped 600 ticks (sim frame 1000 -> 1600)",
 		"dwarf count change: +2",
@@ -154,12 +154,13 @@ func TestStepReport(t *testing.T) {
 			t.Fatalf("step report missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "old alert") || strings.Contains(out, "WARNING") {
+	if strings.Contains(out, "old alert") || strings.Contains(out, "WARNING") ||
+		strings.Contains(out, "tripwire") {
 		t.Fatalf("unexpected content in report:\n%s", out)
 	}
 
 	// Unknown before-frame renders "?", and a missing state push warns.
-	out = stepReport(600, -1, 1600, false, before, before, map[uint32]bool{})
+	out = stepReport(600, -1, 1600, false, before, before, map[uint32]bool{}, false, "")
 	if !strings.Contains(out, "(sim frame ? -> 1600)") {
 		t.Fatalf("expected ? for unknown before frame:\n%s", out)
 	}
@@ -168,5 +169,32 @@ func TestStepReport(t *testing.T) {
 	}
 	if !strings.Contains(out, "no new alerts") {
 		t.Fatalf("expected no-new-alerts line:\n%s", out)
+	}
+}
+
+// TestStepReportTripwire: a plugin-initiated early stop is surfaced with
+// its reason (and a fallback when the reason is empty).
+func TestStepReportTripwire(t *testing.T) {
+	var snap worldmodel.Snapshot
+	out := stepReport(1200, 1000, 1300, true, snap, snap, map[uint32]bool{}, true, "water rising in the fort")
+	if !strings.Contains(out, "step ended EARLY at frame 1300 — tripwire: water rising in the fort") {
+		t.Fatalf("tripwire line missing:\n%s", out)
+	}
+	out = stepReport(1200, 1000, 1300, true, snap, snap, map[uint32]bool{}, true, "")
+	if !strings.Contains(out, "tripwire: unspecified") {
+		t.Fatalf("empty tripwire reason must fall back to 'unspecified':\n%s", out)
+	}
+}
+
+// TestParseSimStatusTripwire: tripwire fields decode when present and stay
+// zero-valued when absent (older plugin).
+func TestParseSimStatusTripwire(t *testing.T) {
+	s, ok := parseSimStatus([]byte(`{"paused":true,"frame":10,"stepping":false,"tripwire":true,"tripwire_reason":"flooding"}`))
+	if !ok || !s.Tripwire || s.TripwireReason != "flooding" {
+		t.Fatalf("tripwire fields not decoded: %+v", s)
+	}
+	s, ok = parseSimStatus([]byte(`{"paused":true,"frame":10,"stepping":false}`))
+	if !ok || s.Tripwire || s.TripwireReason != "" {
+		t.Fatalf("absent tripwire fields must decode to zero values: %+v", s)
 	}
 }

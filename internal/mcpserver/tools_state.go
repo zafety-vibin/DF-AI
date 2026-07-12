@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -29,6 +30,46 @@ func capRawJSON(raw string) string {
 		cut--
 	}
 	return raw[:cut] + "\n...truncated, refine your query"
+}
+
+// renderBuildings renders the list_buildings query response, one line per
+// building. Unfinished buildings are the interesting case: a planned
+// building is invisible in every map view, so a plan that silently died
+// (missing materials, unreachable site) only shows up here — construction
+// stage is rendered loudly.
+func renderBuildings(raw []byte) string {
+	var resp struct {
+		Buildings []struct {
+			Type     string `json:"type"`
+			X        int    `json:"x"`
+			Y        int    `json:"y"`
+			Z        int    `json:"z"`
+			Stage    int    `json:"stage"`
+			MaxStage int    `json:"max_stage"`
+			Done     bool   `json:"done"`
+		} `json:"buildings"`
+		Truncated bool `json:"truncated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Sprintf("unparseable list_buildings response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	if len(resp.Buildings) == 0 {
+		return "No buildings."
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d buildings:\n", len(resp.Buildings))
+	for _, bl := range resp.Buildings {
+		if bl.Done {
+			fmt.Fprintf(&sb, "- %s at (%d,%d,%d) — built\n", bl.Type, bl.X, bl.Y, bl.Z)
+		} else {
+			fmt.Fprintf(&sb, "- %s at (%d,%d,%d) — UNDER CONSTRUCTION (stage %d/%d)\n",
+				bl.Type, bl.X, bl.Y, bl.Z, bl.Stage, bl.MaxStage)
+		}
+	}
+	if resp.Truncated {
+		sb.WriteString("... list truncated at the plugin's cap — pass z to narrow it\n")
+	}
+	return sb.String()
 }
 
 // renderDwarfList renders the id/position roster, capped at maxDwarfList.
@@ -109,6 +150,24 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
 		}
 		return withDash(b, ctx, capRawJSON(string(raw))), nil, nil
+	})
+
+	type buildingsIn struct {
+		Z *int `json:"z,omitempty" jsonschema:"optional: only list buildings on this z-level"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "buildings",
+		Description: "List every placed building with position and construction progress. Planned buildings are INVISIBLE in map views until built — this is the only way to see whether a build order is actually being worked or died silently. Optional z filters to one level.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in buildingsIn) (*mcp.CallToolResult, any, error) {
+		args := "{}"
+		if in.Z != nil {
+			args = fmt.Sprintf(`{"z":%d}`, *in.Z)
+		}
+		raw, err := b.Query(ctx, "list_buildings", args)
+		if err != nil {
+			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+		}
+		return withDash(b, ctx, renderBuildings(raw)), nil, nil
 	})
 
 	// queries.cpp handleWorkshopJobs rejects x<0 || y<0, so the workshop

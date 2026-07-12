@@ -282,18 +282,31 @@ func (m *EntityUpdateMessage) Validate() error {
 
 // CommandType constants for command messages
 const (
-	CommandTypeDig       uint8 = 0x01
-	CommandTypeBuild     uint8 = 0x02
-	CommandTypeCancel    uint8 = 0x03
-	CommandTypeChop      uint8 = 0x04
-	CommandTypeGather    uint8 = 0x05
-	CommandTypeZone      uint8 = 0x06 // Designate zones (bedroom, dining, etc.)
-	CommandTypeBlueprint uint8 = 0x07 // Feature 007: Apply blueprint pattern with zones
-	CommandTypeUnsuspend uint8 = 0x08 // Clear suspend flag on a building's jobs
-	CommandTypeWorkOrder uint8 = 0x09 // Add a manager work order
-	CommandTypeStockpile uint8 = 0x0A // Designate a stockpile zone with category flags
-	CommandTypeSmooth    uint8 = 0x0B // Designate stone tiles for smoothing or engraving
-	CommandTypePause     uint8 = 0x0C // pause/unpause/step simulation control
+	CommandTypeDig            uint8 = 0x01
+	CommandTypeBuild          uint8 = 0x02
+	CommandTypeCancel         uint8 = 0x03
+	CommandTypeChop           uint8 = 0x04
+	CommandTypeGather         uint8 = 0x05
+	CommandTypeZone           uint8 = 0x06 // Designate zones (bedroom, dining, etc.)
+	CommandTypeBlueprint      uint8 = 0x07 // Feature 007: Apply blueprint pattern with zones
+	CommandTypeUnsuspend      uint8 = 0x08 // Clear suspend flag on a building's jobs
+	CommandTypeWorkOrder      uint8 = 0x09 // Add a manager work order
+	CommandTypeStockpile      uint8 = 0x0A // Designate a stockpile zone with category flags
+	CommandTypeSmooth         uint8 = 0x0B // Designate stone tiles for smoothing or engraving
+	CommandTypePause          uint8 = 0x0C // pause/unpause/step simulation control
+	CommandTypeRemoveBuilding uint8 = 0x0D // Mark the building at a tile for deconstruction
+)
+
+// MaterialClass constants for the BUILD command's trailing material_class
+// byte. Constrains which item CLASS DF's job system may claim for the
+// build; DF still picks the specific item within that class. The plugin
+// treats a BUILD payload without the byte as MaterialClassAny (backward
+// compatible); new Go always appends it.
+const (
+	MaterialClassAny    uint8 = 0x00 // no constraint (DF picks anything suitable)
+	MaterialClassWood   uint8 = 0x01 // logs (job_item item_type=WOOD)
+	MaterialClassStone  uint8 = 0x02 // boulders (item_type=BOULDER)
+	MaterialClassBlocks uint8 = 0x03 // blocks (item_type=BLOCKS)
 )
 
 // SmoothType constants (matches df::tile_designation::smooth bitfield: 1=smooth, 2=engrave).
@@ -460,6 +473,7 @@ type Region struct {
 type BuildDesignation struct {
 	X, Y, Z   int16 // Build location
 	BuildType uint8 // Type of construction
+	Material  uint8 // MaterialClass* constraint (MaterialClassAny = no preference)
 }
 
 // ZoneDesignation represents a zone assignment command
@@ -473,6 +487,14 @@ type ZoneDesignation struct {
 // resume a stalled construction (wall placement, building, etc.) after the
 // agent has cleared whatever blocker caused DF to auto-suspend it.
 type UnsuspendDesignation struct {
+	X, Y, Z int16
+}
+
+// RemoveBuildingDesignation represents a single-tile building removal
+// command: mark the building occupying (X,Y,Z) for deconstruction. Any
+// tile of a multi-tile building's footprint works. Dwarves do the actual
+// teardown over game time.
+type RemoveBuildingDesignation struct {
 	X, Y, Z int16
 }
 
@@ -528,17 +550,18 @@ const (
 
 // CommandMessage represents a command from server to DFHack
 type CommandMessage struct {
-	CommandID   uint32                // Unique command identifier
-	CommandType uint8                 // Type of command (dig/build/cancel/zone/blueprint/unsuspend/work_order)
-	DigType     uint8                 // For DIG: dig designation type (Default=1, UpDownStair=2, Channel=3, etc)
-	Region      Region                // For DIG and CANCEL commands
-	Build       BuildDesignation      // For BUILD commands
-	Zone        ZoneDesignation       // For ZONE commands
-	Unsuspend   UnsuspendDesignation  // For UNSUSPEND commands
-	Order       WorkOrderDesignation  // For WORK_ORDER commands
-	Stockpile   StockpileDesignation  // For STOCKPILE commands
-	Smooth      SmoothDesignation     // For SMOOTH commands
-	Pause       PauseControl          // For PAUSE commands
+	CommandID   uint32                    // Unique command identifier
+	CommandType uint8                     // Type of command (dig/build/cancel/zone/blueprint/unsuspend/work_order)
+	DigType     uint8                     // For DIG: dig designation type (Default=1, UpDownStair=2, Channel=3, etc)
+	Region      Region                    // For DIG and CANCEL commands
+	Build       BuildDesignation          // For BUILD commands
+	Zone        ZoneDesignation           // For ZONE commands
+	Unsuspend   UnsuspendDesignation      // For UNSUSPEND commands
+	Order       WorkOrderDesignation      // For WORK_ORDER commands
+	Stockpile   StockpileDesignation      // For STOCKPILE commands
+	Smooth      SmoothDesignation         // For SMOOTH commands
+	Pause       PauseControl              // For PAUSE commands
+	Remove      RemoveBuildingDesignation // For REMOVE_BUILDING commands
 
 	// Feature 007: Blueprint command fields
 	BlueprintName string // For BLUEPRINT: blueprint filename (without .csv)
@@ -551,7 +574,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypePause {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeRemoveBuilding {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -575,6 +598,9 @@ func (m *CommandMessage) Validate() error {
 			!IsBuildTypeFurniture(m.Build.BuildType) &&
 			!IsBuildTypeDoor(m.Build.BuildType) {
 			return fmt.Errorf("invalid build type: 0x%02X", m.Build.BuildType)
+		}
+		if m.Build.Material > MaterialClassBlocks {
+			return fmt.Errorf("invalid material class: 0x%02X", m.Build.Material)
 		}
 	case CommandTypePause:
 		if m.Pause.Mode > PauseModeStep {

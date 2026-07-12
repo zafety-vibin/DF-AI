@@ -25,9 +25,27 @@ func RenderCrop(s *Slice, marks map[[2]int16]rune) string {
 		fmt.Fprintf(&sb, "x=%d", s.X1+int16(rowLen)-1)
 	}
 	sb.WriteString("\n")
+	// Water overlay: depth digit '1'-'7' replaces the base glyph. Applied
+	// BEFORE marks so the '@' dwarf overlay always wins.
+	water := map[[2]int16]rune{}
+	for _, w := range s.Water {
+		d := w[2]
+		if d < 1 {
+			continue // defensive: contract omits dry tiles
+		}
+		if d > 7 {
+			d = 7
+		}
+		water[[2]int16{w[0], w[1]}] = rune('0' + d)
+	}
 	for i, row := range s.Rows {
 		y := s.Y1 + int16(i)
 		glyphs := []rune(row)
+		for pos, r := range water {
+			if pos[1] == y && pos[0] >= s.X1 && int(pos[0]-s.X1) < len(glyphs) {
+				glyphs[pos[0]-s.X1] = r
+			}
+		}
 		for pos, r := range marks {
 			if pos[1] == y && pos[0] >= s.X1 && int(pos[0]-s.X1) < len(glyphs) {
 				glyphs[pos[0]-s.X1] = r
@@ -38,6 +56,10 @@ func RenderCrop(s *Slice, marks map[[2]int16]rune) string {
 	sb.WriteString("\nlegend: @ dwarf " + Legend + "\n")
 	if len(s.Designated) > 0 {
 		fmt.Fprintf(&sb, "designated for digging: %d tiles in view\n", len(s.Designated))
+	}
+	// Aquifer tiles get a count line, not a glyph — the grid stays scannable.
+	if len(s.Aquifer) > 0 {
+		fmt.Fprintf(&sb, "aquifer tiles in view: %d\n", len(s.Aquifer))
 	}
 	return sb.String()
 }
@@ -59,7 +81,17 @@ func RenderColumn(c *ColumnProfile, surfaceZ int16) string {
 		if lv.Hidden {
 			hidden = " (hidden/undug — diggable)"
 		}
-		fmt.Fprintf(&sb, "z=%d %s %s/%s%s%s\n", lv.Z, lv.Glyph, lv.Shape, lv.Material, hidden, rel)
+		fluids := ""
+		if lv.Water > 0 {
+			fluids += fmt.Sprintf(" ~%d/7 water", lv.Water)
+		}
+		if lv.Aquifer {
+			fluids += " AQUIFER"
+		}
+		if lv.Damp {
+			fluids += " DAMP"
+		}
+		fmt.Fprintf(&sb, "z=%d %s %s/%s%s%s%s\n", lv.Z, lv.Glyph, lv.Shape, lv.Material, hidden, fluids, rel)
 	}
 	return sb.String()
 }

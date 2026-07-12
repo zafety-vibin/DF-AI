@@ -794,7 +794,9 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 			return err
 		}
 	case CommandTypeBuild:
-		// [2: X] [2: Y] [2: Z] [1: BuildType]
+		// [2: X] [2: Y] [2: Z] [1: BuildType] [1: MaterialClass]
+		// The material byte is ALWAYS appended by this encoder; the plugin
+		// treats a payload without it as MaterialClassAny (backward compat).
 		if err := binary.Write(w, binary.BigEndian, msg.Build.X); err != nil {
 			return err
 		}
@@ -805,6 +807,9 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 			return err
 		}
 		if err := binary.Write(w, binary.BigEndian, msg.Build.BuildType); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Build.Material); err != nil {
 			return err
 		}
 	case CommandTypeChop, CommandTypeGather:
@@ -866,6 +871,13 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		}
 		if err := binary.Write(w, binary.BigEndian, msg.Pause.Ticks); err != nil {
 			return err
+		}
+	case CommandTypeRemoveBuilding:
+		// [2: X] [2: Y] [2: Z]
+		for _, v := range []int16{msg.Remove.X, msg.Remove.Y, msg.Remove.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
 		}
 	case CommandTypeBlueprint:
 		// [2: NameLen] [N: Name] [2: OriginX] [2: OriginY] [2: OriginZ]
@@ -935,7 +947,7 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 			return nil, err
 		}
 	case CommandTypeBuild:
-		// Read build designation (7 bytes)
+		// Read build designation (7 bytes + optional trailing material byte)
 		if err := binary.Read(buf, binary.BigEndian, &msg.Build.X); err != nil {
 			return nil, err
 		}
@@ -947,6 +959,14 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 		}
 		if err := binary.Read(buf, binary.BigEndian, &msg.Build.BuildType); err != nil {
 			return nil, err
+		}
+		// Optional material class byte: a payload without it (pre-material
+		// peer) decodes as MaterialClassAny — mirrors the plugin's rule.
+		if err := binary.Read(buf, binary.BigEndian, &msg.Build.Material); err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
+			msg.Build.Material = MaterialClassAny
 		}
 	case CommandTypeChop, CommandTypeGather:
 		for _, p := range []*int16{&msg.Region.X1, &msg.Region.Y1, &msg.Region.Z1, &msg.Region.X2, &msg.Region.Y2, &msg.Region.Z2} {
@@ -1000,6 +1020,12 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 		}
 		if err := binary.Read(buf, binary.BigEndian, &msg.Pause.Ticks); err != nil {
 			return nil, err
+		}
+	case CommandTypeRemoveBuilding:
+		for _, p := range []*int16{&msg.Remove.X, &msg.Remove.Y, &msg.Remove.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
 		}
 	case CommandTypeBlueprint:
 		// Read blueprint name (2 bytes length + N bytes name)
