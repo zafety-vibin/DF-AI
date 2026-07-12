@@ -19,9 +19,55 @@ func TestRenderCrop(t *testing.T) {
 	if !strings.Contains(out, Legend) {
 		t.Fatalf("legend missing")
 	}
+	// No renderer produces a wagon mark — the legend must not invent one.
+	if strings.Contains(out, "W wagon") {
+		t.Fatalf("legend claims a W wagon mark no renderer draws: %q", out)
+	}
 	// x-axis label line marks the starting column.
 	if !strings.Contains(out, "x=70") {
 		t.Fatalf("x label missing: %q", out)
+	}
+}
+
+// TestRenderCropXAxisAlignment pins the label geometry: the DIGITS of each
+// x label must sit exactly over the glyph column they name. Row lines use a
+// 5-column "%4d " prefix, so glyph column 0 is line index 5.
+func TestRenderCropXAxisAlignment(t *testing.T) {
+	const width = 12
+	s := &Slice{Z: 110, X1: 70, Y1: 80, Rows: []string{
+		strings.Repeat("#", width),
+		strings.Repeat(".", width),
+	}}
+	out := RenderCrop(s, nil)
+	lines := strings.Split(out, "\n")
+	label, row := lines[1], lines[2]
+
+	// Cross-check the row geometry the labels must match: "  80 " prefix,
+	// glyphs from index 5.
+	if !strings.HasPrefix(row, "  80 #") {
+		t.Fatalf("row prefix geometry changed, update alignment: %q", row)
+	}
+	// First label digits ("70") start over glyph column 0 => line index 5.
+	if idx := strings.Index(label, "70"); idx != 5 {
+		t.Fatalf("first x label digits at index %d, want 5: %q", idx, label)
+	}
+	// Second label digits ("81" = 70+12-1) start over the last glyph
+	// column => line index 5+width-1.
+	if idx := strings.Index(label, "81"); idx != 5+width-1 {
+		t.Fatalf("last x label digits at index %d, want %d: %q", idx, 5+width-1, label)
+	}
+}
+
+// A grid too narrow for two labels keeps just the first, still aligned.
+func TestRenderCropXAxisNarrow(t *testing.T) {
+	s := &Slice{Z: 5, X1: 70, Y1: 80, Rows: []string{"####"}}
+	out := RenderCrop(s, nil)
+	label := strings.Split(out, "\n")[1]
+	if idx := strings.Index(label, "70"); idx != 5 {
+		t.Fatalf("first x label digits at index %d, want 5: %q", idx, label)
+	}
+	if strings.Count(label, "x=") != 1 {
+		t.Fatalf("narrow grid must carry exactly one x label: %q", label)
 	}
 }
 

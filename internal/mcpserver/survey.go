@@ -59,8 +59,13 @@ func renderSurvey(d SurveyData) string {
 				}
 			}
 		}
-		fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, first exposed stone at z=%d (hidden layers below are undug rock — diggable)\n",
-			c.X, c.Y, soil, firstStone)
+		if firstStone == -1 {
+			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, no exposed stone in sampled range (hidden layers below are undug rock — diggable)\n",
+				c.X, c.Y, soil)
+		} else {
+			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, first exposed stone at z=%d (hidden layers below are undug rock — diggable)\n",
+				c.X, c.Y, soil, firstStone)
+		}
 	}
 	if d.SurfaceSlice != nil {
 		trees, grass := 0, 0
