@@ -2,8 +2,8 @@
 //
 // Implements the QUERY/QUERY_RESPONSE protocol. The orchestrator's
 // deliberator can issue read-only queries (list_orders, manager_orders,
-// dwarf_detail, building_status, workshop_jobs, stockpile_inventory)
-// and get structured JSON back.
+// dwarf_detail, building_status, workshop_jobs, stockpile_inventory,
+// sim_status, map_slice, column_profile) and get structured JSON back.
 //
 // Threading: executeQuery runs on the main DF thread (called from
 // plugin_onupdate after queue dispatch). Safe to read df::global state
@@ -28,6 +28,9 @@
 #include "modules/Items.h"
 #include "modules/Materials.h"
 #include "modules/World.h"
+#include "modules/Maps.h"
+#include "modules/MapCache.h"
+#include "TileTypes.h"
 
 #include "df/world.h"
 #include "df/job.h"
@@ -42,6 +45,8 @@
 #include "df/building_type.h"
 #include "df/item.h"
 #include "df/item_type.h"
+#include "df/tiletype.h"
+#include "df/tile_designation.h"
 
 #include "protocol.h"
 
@@ -406,6 +411,129 @@ static std::string handleSimStatus(const std::string &args, uint8_t &status) {
 }
 
 // ---------------------------------------------------------------------------
+// Classified map queries: map_slice + column_profile.
+// ---------------------------------------------------------------------------
+
+// classifyTile maps a tiletype + designation to one model-facing glyph.
+// Legend (keep in sync with internal/mapview and the look tool):
+//   ? hidden  # stone wall  % soil wall  = mineral wall  . floor  , grass
+//   T tree  t sapling/shrub  _ open air  < > X stairs  ^ ramp  ~ water
+//   L magma  F fortification
+static char classifyTile(df::tiletype tt, const df::tile_designation &des) {
+    if (des.bits.hidden) return '?';
+    if (des.bits.flow_size > 0)
+        return des.bits.liquid_type == df::tile_liquid::Magma ? 'L' : '~';
+    using S = df::tiletype_shape;
+    using M = df::tiletype_material;
+    S shape = tileShape(tt);
+    M mat = tileMaterial(tt);
+    switch (shape) {
+        case S::WALL:
+            // DF 50.x+ tree trunks are multi-tile plants that read as
+            // WALL shape with TREE material.
+            if (mat == M::TREE) return 'T';
+            if (mat == M::SOIL) return '%';
+            if (mat == M::MINERAL) return '=';
+            return '#';
+        case S::FLOOR: case S::BOULDER: case S::PEBBLES:
+            if (mat == M::GRASS_LIGHT || mat == M::GRASS_DARK ||
+                mat == M::GRASS_DRY || mat == M::GRASS_DEAD) return ',';
+            return '.';
+        case S::STAIR_UP: return '<';
+        case S::STAIR_DOWN: return '>';
+        case S::STAIR_UPDOWN: return 'X';
+        case S::RAMP: return '^';
+        case S::RAMP_TOP: return '_';
+        case S::SAPLING: case S::SHRUB: return 't';
+        case S::TRUNK_BRANCH: case S::BRANCH: case S::TWIG: return 'T';
+        case S::FORTIFICATION: return 'F';
+        case S::EMPTY: case S::NONE: default: return '_';
+    }
+}
+
+static std::string queryMapSlice(const std::string &args, uint8_t &status) {
+    int64_t x1 = jsonGetInt(args, "x1", -1), y1 = jsonGetInt(args, "y1", -1);
+    int64_t x2 = jsonGetInt(args, "x2", -1), y2 = jsonGetInt(args, "y2", -1);
+    int64_t z  = jsonGetInt(args, "z", -1);
+    status = QUERY_STATUS_ERROR;
+    if (x1 < 0 || y1 < 0 || x2 < x1 || y2 < y1 || z < 0)
+        return jsonError("map_slice needs x1,y1,z,x2,y2 with x2>=x1, y2>=y1");
+    if ((x2 - x1 + 1) > 48 || (y2 - y1 + 1) > 48)
+        return jsonError("map_slice region too large (max 48x48)");
+    if (!Maps::isValidTilePos((int16_t)x1, (int16_t)y1, (int16_t)z) ||
+        !Maps::isValidTilePos((int16_t)x2, (int16_t)y2, (int16_t)z))
+        return jsonError("map_slice out of bounds");
+
+    MapExtras::MapCache cache;
+    std::string rows = "[";
+    std::string designated = "[";
+    int desCount = 0;
+    for (int16_t y = (int16_t)y1; y <= (int16_t)y2; y++) {
+        std::string row;
+        for (int16_t x = (int16_t)x1; x <= (int16_t)x2; x++) {
+            df::coord pos(x, y, (int16_t)z);
+            df::tile_designation des = cache.designationAt(pos);
+            df::tiletype tt = cache.tiletypeAt(pos);
+            row += classifyTile(tt, des);
+            if (des.bits.dig != df::tile_dig_designation::No && desCount < 200) {
+                if (desCount) designated += ",";
+                designated += "[" + jsonInt(x) + "," + jsonInt(y) + "]";
+                desCount++;
+            }
+        }
+        if (y != (int16_t)y1) rows += ",";
+        rows += jsonStr(row);
+    }
+    rows += "]"; designated += "]";
+    status = QUERY_STATUS_SUCCESS;
+    return "{\"z\":" + jsonInt(z) + ",\"x1\":" + jsonInt(x1) + ",\"y1\":" + jsonInt(y1) +
+           ",\"rows\":" + rows + ",\"designated\":" + designated + "}";
+}
+
+static std::string queryColumnProfile(const std::string &args, uint8_t &status) {
+    int64_t x = jsonGetInt(args, "x", -1), y = jsonGetInt(args, "y", -1);
+    int64_t zt = jsonGetInt(args, "z_top", -1), zb = jsonGetInt(args, "z_bottom", -1);
+    status = QUERY_STATUS_ERROR;
+    if (x < 0 || y < 0 || zt < zb || zt < 0)
+        return jsonError("column_profile needs x,y,z_top>=z_bottom");
+    if ((zt - zb + 1) > 60) return jsonError("column_profile too tall (max 60)");
+    MapExtras::MapCache cache;
+    std::string levels = "[";
+    bool first = true;
+    for (int16_t z = (int16_t)zt; z >= (int16_t)zb; z--) {
+        if (!Maps::isValidTilePos((int16_t)x, (int16_t)y, z)) continue;
+        df::coord pos((int16_t)x, (int16_t)y, z);
+        df::tile_designation des = cache.designationAt(pos);
+        df::tiletype tt = cache.tiletypeAt(pos);
+        char g = classifyTile(tt, des);
+        const char *shape = "other"; const char *mat = "other";
+        switch (g) {
+            case '#': shape = "wall"; mat = "stone"; break;
+            case '%': shape = "wall"; mat = "soil"; break;
+            case '=': shape = "wall"; mat = "mineral"; break;
+            case '?': shape = "hidden"; mat = "unknown"; break;
+            case ',': shape = "floor"; mat = "grass"; break;
+            case '.': shape = "floor"; mat = "rock_or_soil"; break;
+            case '_': shape = "open"; mat = "air"; break;
+            case '~': shape = "liquid"; mat = "water"; break;
+            case 'L': shape = "liquid"; mat = "magma"; break;
+            case '<': case '>': case 'X': shape = "stair"; mat = "carved"; break;
+            case '^': shape = "ramp"; mat = "carved"; break;
+            case 'T': case 't': shape = "plant"; mat = "wood"; break;
+            case 'F': shape = "fortification"; mat = "stone"; break;
+        }
+        if (!first) levels += ",";
+        first = false;
+        levels += "{\"z\":" + jsonInt(z) + ",\"glyph\":" + jsonStr(std::string(1, g)) +
+                  ",\"shape\":" + jsonStr(shape) + ",\"material\":" + jsonStr(mat) +
+                  ",\"hidden\":" + (des.bits.hidden ? "true" : "false") + "}";
+    }
+    levels += "]";
+    status = QUERY_STATUS_SUCCESS;
+    return "{\"x\":" + jsonInt(x) + ",\"y\":" + jsonInt(y) + ",\"levels\":" + levels + "}";
+}
+
+// ---------------------------------------------------------------------------
 // Public entry: executeQuery — dispatcher called from main thread.
 // ---------------------------------------------------------------------------
 
@@ -428,6 +556,10 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
         data = handleStockpileInventory(args, status);
     } else if (name == "sim_status") {
         data = handleSimStatus(args, status);
+    } else if (name == "map_slice") {
+        data = queryMapSlice(args, status);
+    } else if (name == "column_profile") {
+        data = queryColumnProfile(args, status);
     } else {
         status = QUERY_STATUS_UNKNOWN;
         data = jsonError("unknown query name: " + name);
