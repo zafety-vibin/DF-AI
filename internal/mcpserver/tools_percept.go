@@ -136,6 +136,21 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 		if topo == nil {
 			return withDash(b, ctx, "topology not built yet (waiting for full state)"), nil, nil
 		}
+		// Validate against real map bounds before scanning: out-of-range z
+		// (or a degenerate footprint) would otherwise read StateUnknown
+		// everywhere and fabricate confident "fully solid" candidates on a
+		// nonexistent level — the exact failure mode this tool prevents.
+		w, h, d := topo.GetDimensions()
+		if in.Width <= 0 || in.Height <= 0 || in.Width > int(w) || in.Height > int(h) {
+			return withDash(b, ctx, fmt.Sprintf(
+				"invalid room size %dx%d: width and height must be between 1 and the map size (%dx%d)",
+				in.Width, in.Height, w, h)), nil, nil
+		}
+		if in.Z < 0 || in.Z >= int(d) {
+			return withDash(b, ctx, fmt.Sprintf(
+				"z=%d out of range: map has %d levels (valid z is 0..%d) — use cross_section or survey_site to pick a real level",
+				in.Z, d, int(d)-1)), nil, nil
+		}
 		sites := mapview.FindDigSites(topo, mapview.DigSiteRequest{
 			W: int16(in.Width), H: int16(in.Height), Z: int16(in.Z),
 			NearX: int16(in.NearX), NearY: int16(in.NearY), MaxCandidates: 5,
