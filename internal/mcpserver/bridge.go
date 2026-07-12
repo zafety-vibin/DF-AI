@@ -30,7 +30,7 @@ type Bridge struct {
 }
 
 func NewBridge(cfgPath string) (*Bridge, error) {
-	logger := logging.NewTextLogger("info") // stderr; stdout is MCP protocol
+	logger := logging.NewStderrTextLogger("info") // stdout is the MCP protocol channel
 	configMgr, err := config.NewConfigManager(cfgPath, logger)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
