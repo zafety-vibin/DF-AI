@@ -1,10 +1,20 @@
 # First Fort — supervised session runbook
 
-Setup: DF running with a FRESH embark (default 7 dwarves), plugin loaded,
-`ai-connect` done. The embark must be in a FRESHLY GENERATED world — DF
-53.15's extinct-species content only appears in new worlds, not worlds
-generated before that update. Open Claude Code in fortress/ (the .mcp.json
-here wires df-fortress).
+## Setup (order matters: the df-mcp listener must exist before ai-connect)
+
+1. Launch DF and load a FRESH embark (default 7 dwarves) with the df-ai
+   plugin loaded. The embark must be in a FRESHLY GENERATED world — DF
+   53.15's extinct-species content only appears in new worlds, not
+   worlds generated before that update.
+2. Open Claude Code in fortress/ (the .mcp.json here wires df-fortress).
+   This spawns the df-mcp server, which opens the listener the plugin
+   connects to — `ai-connect` has nothing to reach until this is up.
+3. In the DFHack console: `ai-connect`.
+4. In the DFHack console: `ai-auto-update on` — belt-and-braces periodic
+   state refresh that keeps the dashboard's data-age stamp fresh between
+   pause/step pushes.
+5. In the Claude session, call the `status` tool and confirm the
+   ground-truth header reports a live connection (not NOT CONNECTED).
 
 Config path note: `config/orchestrator.yaml` (used by the server) is
 resolved relative to the repo root, not to fortress/, so the df-mcp
@@ -48,8 +58,11 @@ memory/goals.md. Play turn by turn per CLAUDE.md."
       hidden-dig fix (F1) was already live-verified at the 2026-07-12
       checkpoint; the First Fort criterion here is that the MODEL
       exercises it end-to-end via MCP tools, unaided.
-- [ ] Carpenter workshop built; beds ordered, produced, and placed in a
-      zoned bedroom (wood chain: chop -> carpenter -> order -> build)
+- [ ] Carpenter workshop built; beds ordered, produced, and BUILT in dug
+      rooms, with dwarves sleeping in them (wood chain: chop ->
+      carpenter -> order -> build). Bedroom ZONE assignment is Phase 2:
+      the plugin's zone support is still a stub, so the zone tool
+      returns an error by design in this build.
 - [ ] Food/drink: farm plots zoned or gathering + still running; no
       starvation/dehydration deaths through the first migrant wave and
       into year 2 spring
