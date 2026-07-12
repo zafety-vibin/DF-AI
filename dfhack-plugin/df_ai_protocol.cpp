@@ -632,20 +632,24 @@ void handleCommand(const std::vector<uint8_t> &payload)
     g_command_queue.push({payload});
 }
 
-// Plugin onupdate - process queued commands on MAIN THREAD
-// CRITICAL FOR THREAD SAFETY: All DF data structure access must happen here
-DFhackCExport command_result plugin_onupdate(color_ostream &out)
+// drain_pending_work executes queued commands/queries, the step-repause
+// check, and any pending resync. Called from TWO contexts:
+//   1. plugin_onupdate (main thread) — while the simulation is running.
+//   2. The socket thread under CoreSuspender — because plugin_onupdate
+//      does NOT fire while DF is paused (confirmed live 2026-07-12), and
+//      a paused-deaf plugin deadlocks the turn protocol: the agent could
+//      never even send UNPAUSE. Suspension makes DF state access safe
+//      from the socket thread (standard DFHack remote-tools pattern);
+//      queue pops are mutex-guarded so the two contexts never double-run
+//      an item.
+static void drain_pending_work(color_ostream &out)
 {
-    if (!is_enabled) {
-        return CR_OK;
-    }
-
-    // Don't process commands if map isn't loaded (prevents crashes on startup/shutdown)
+    // Don't touch DF structures if no map is loaded (startup/shutdown).
     if (!Core::getInstance().isMapLoaded() || !df::global::world) {
-        return CR_OK;
+        return;
     }
 
-    // Process all queued commands (dequeue and execute on main thread)
+    // Process all queued commands
     while (true) {
         QueuedCommand cmd;
         {
@@ -656,43 +660,19 @@ DFhackCExport command_result plugin_onupdate(color_ostream &out)
             cmd = g_command_queue.front();
             g_command_queue.pop();
         }
-
-        // Execute command on main thread (SAFE to access DF data structures here)
         executeCommand(cmd.payload);
     }
 
     // Step-mode auto-repause: once the frame counter reaches the target,
-    // pause the simulation. plugin_onupdate keeps firing while DF is
-    // paused (DFHack Core::doUpdate calls per-frame handlers from the
-    // main event loop unconditionally), but this only matters while
-    // unpaused — frames advance, the target is reached, and we re-pause.
+    // pause the simulation. Frames only advance while unpaused, which is
+    // also when onupdate fires — so this check living here is sufficient.
     if (g_step_target_frame >= 0 &&
         (int64_t)df::global::world->frame_counter >= g_step_target_frame) {
         World::SetPauseState(true);
         g_step_target_frame = -1;
     }
 
-    // RESYNC requested by the socket thread — perform the full-state send
-    // here on the main thread.
-    if (g_resync_requested.exchange(false)) {
-        if (!send_full_state(out)) {
-            out.printerr("Failed to send full state\n");
-        }
-    }
-
-    // Poll DF announcements every ~5 seconds (50 onupdate ticks at 10Hz).
-    // Sends only NEW entries; safe to call frequently if you want lower
-    // latency. Skipped when not connected — no point queuing.
-    static int g_announcement_throttle = 0;
-    if (g_connected && g_socket && g_socket->IsSocketValid()) {
-        g_announcement_throttle++;
-        if (g_announcement_throttle >= 50) {
-            g_announcement_throttle = 0;
-            poll_and_send_announcements();
-        }
-    }
-
-    // Drain query queue (read-only DF accesses, safe on main thread).
+    // Drain query queue (read-only DF accesses).
     while (true) {
         QueuedQuery q;
         {
@@ -704,6 +684,51 @@ DFhackCExport command_result plugin_onupdate(color_ostream &out)
             g_query_queue.pop();
         }
         executeQuery(q.queryID, q.name, q.argsJSON);
+    }
+
+    // RESYNC requested by the socket thread — full-state send.
+    if (g_resync_requested.exchange(false)) {
+        if (!send_full_state(out)) {
+            out.printerr("Failed to send full state\n");
+        }
+    }
+}
+
+// drain_from_socket_thread suspends the core and drains pending work.
+// Invoked right after the socket thread enqueues a command/query/resync so
+// the plugin stays responsive while DF is paused. Unconditional (no pause
+// check): eliminates the pause-transition race, and command/query rates
+// are low enough that suspension cost is irrelevant.
+static void drain_from_socket_thread()
+{
+    CoreSuspender suspend;
+    drain_pending_work(Core::getInstance().getConsole());
+}
+
+// Plugin onupdate - process queued work on MAIN THREAD while unpaused
+DFhackCExport command_result plugin_onupdate(color_ostream &out)
+{
+    if (!is_enabled) {
+        return CR_OK;
+    }
+
+    // Don't process commands if map isn't loaded (prevents crashes on startup/shutdown)
+    if (!Core::getInstance().isMapLoaded() || !df::global::world) {
+        return CR_OK;
+    }
+
+    drain_pending_work(out);
+
+    // Poll DF announcements every ~5 seconds (50 onupdate ticks at 10Hz).
+    // Sends only NEW entries; safe to call frequently if you want lower
+    // latency. Skipped when not connected — no point queuing.
+    static int g_announcement_throttle = 0;
+    if (g_connected && g_socket && g_socket->IsSocketValid()) {
+        g_announcement_throttle++;
+        if (g_announcement_throttle >= 50) {
+            g_announcement_throttle = 0;
+            poll_and_send_announcements();
+        }
     }
 
     return CR_OK;
@@ -1439,13 +1464,15 @@ void message_receive_loop(color_ostream &out)
         // Handle message based on type
         switch (msg_type) {
             case MSG_TYPE_RESYNC_REQUEST:
-                out.print("Received RESYNC_REQUEST — queued for main thread\n");
+                out.print("Received RESYNC_REQUEST — queued\n");
                 g_resync_requested = true;
+                drain_from_socket_thread();
                 break;
 
             case MSG_TYPE_COMMAND:
                 out.print("Received COMMAND\n");
                 handleCommand(payload);
+                drain_from_socket_thread();
                 break;
 
             case MSG_TYPE_QUERY: {
@@ -1471,12 +1498,13 @@ void message_receive_loop(color_ostream &out)
                 }
                 std::string args(payload.begin() + off, payload.begin() + off + argsLen);
 
-                // Queue for main thread execution.
+                // Queue, then drain immediately (works while DF is paused).
                 {
                     std::lock_guard<std::mutex> lock(g_query_queue_mutex);
                     g_query_queue.push(QueuedQuery{queryID, name, args});
                 }
                 out.print("Received QUERY %s (id=%u)\n", name.c_str(), queryID);
+                drain_from_socket_thread();
                 break;
             }
 
