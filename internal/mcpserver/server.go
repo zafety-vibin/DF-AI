@@ -22,5 +22,6 @@ func New(bridge *Bridge) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "df-fortress", Version: Version}, nil)
 	registerStateTools(srv, bridge)
 	registerPerceptTools(srv, bridge)
+	registerActionTools(srv, bridge)
 	return srv
 }
