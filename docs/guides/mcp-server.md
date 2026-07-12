@@ -14,19 +14,19 @@ Run it with the repo root as cwd (the config path `config/orchestrator.yaml` is 
 - **Control** (`tools_control.go`): pause/unpause/step and `check_goals` (the predicate library as a verification critic).
 
 Cross-cutting contracts:
-- Every tool response is prefixed with the one-line ground-truth dashboard (`withDash`) — tick, date, dwarf/enemy counts, pause state — so the model never acts on remembered state.
-- Responses stay well under the MCP output cap: crops are radius-limited, lists are capped.
+- Every tool response is prefixed with the one-line ground-truth dashboard (`withDash`) — event counter (`events=`, perception messages ingested, NOT sim time), date, dwarf/enemy counts, pause state, and a data-age stamp (`data 3s old` / `data STALE (142s)`) — so the model never acts on remembered or frozen state.
+- Responses stay well under the MCP output cap: crops are radius-limited, lists are capped (dwarves at 50; raw stocks/orders payloads truncated at ~8 KB with a "refine your query" notice).
 - Tools degrade truthfully when disconnected ("plugin not connected", "connection lost mid-step") rather than erroring opaquely.
 
 ## The turn protocol
 
 Play is turn-based: pause → observe → decide → act → `step N` → read what changed.
 
-- `step` counts **simulation ticks** (1200 = one fortress day) and auto-repauses at the target; the tool polls `sim_status` until completion and reports new alerts and population changes — the "what happened while you weren't watching" payload.
+- `step` counts **simulation ticks** (1200 = one fortress day) and auto-repauses at the target; the tool polls `sim_status` until completion, waits for the plugin's completion state push, and reports sim-frame progress, new alerts, and population changes — the "what happened while you weren't watching" payload. If the poll deadline expires it says "step DID NOT complete" instead of pretending success.
 - The plugin answers queries and commands **while paused** (socket-thread drain) — pausing never deafens the system.
 - Patience is policy: dwarves path, drink, and take breaks by design. Work completes over game-days. Judge progress by alerts and step deltas; never re-issue a command that simply has not finished. A stable fort earns longer steps, not more polling.
 - Planned (see decisions log): critical announcements end a step early (tripwire), making multi-day steps safe.
 
 ## Adding a tool
 
-Register in the matching `tools_*.go` via `mcp.AddTool` with a typed input struct (`json` + `jsonschema` tags); return `withDash(b, ctx, text)`. Nil-bridge and disconnected paths must return readable text, not panics — the registration tests drive every tool through an in-memory MCP session against a nil bridge. Ship a unit test for any pure helper.
+Register in the matching `tools_*.go` via `mcp.AddTool` with a typed input struct (`json` + `jsonschema` tags); return `withDash(b, ctx, text)`. Nil-bridge and disconnected paths must return readable text, not panics — the registration sweep (`TestEveryToolNilBridge`) lists every tool and calls each against a nil bridge, so a tool with required inputs must add its minimal args to `minToolArgs` in `server_test.go`. Ship a unit test for any pure helper.

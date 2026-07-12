@@ -4,9 +4,46 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/df-ai/orchestrator/internal/protocol"
 )
+
+// maxDwarfList caps the dwarves listing; beyond it the tool summarizes.
+const maxDwarfList = 50
+
+// rawJSONCap bounds raw plugin-query payloads (stocks, orders) so one huge
+// response cannot blow the MCP output budget (~10k-token cap per response).
+const rawJSONCap = 8 * 1024
+
+// capRawJSON truncates an oversized raw payload at a rune boundary and says
+// so, instead of silently flooding the response.
+func capRawJSON(raw string) string {
+	if len(raw) <= rawJSONCap {
+		return raw
+	}
+	cut := rawJSONCap
+	for cut > 0 && !utf8.RuneStart(raw[cut]) {
+		cut--
+	}
+	return raw[:cut] + "\n...truncated, refine your query"
+}
+
+// renderDwarfList renders the id/position roster, capped at maxDwarfList.
+func renderDwarfList(dwarves []protocol.EntityInfo) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d dwarves:\n", len(dwarves))
+	for i, d := range dwarves {
+		if i >= maxDwarfList {
+			fmt.Fprintf(&sb, "... and %d more (use dwarf_detail by id)\n", len(dwarves)-maxDwarfList)
+			break
+		}
+		fmt.Fprintf(&sb, "- id=%d @(%d,%d,%d)\n", d.ID, d.X, d.Y, d.Z)
+	}
+	return sb.String()
+}
 
 func registerStateTools(srv *mcp.Server, b *Bridge) {
 	mcp.AddTool(srv, &mcp.Tool{
@@ -46,13 +83,7 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 		Name:        "dwarves",
 		Description: "List all dwarves with id and position. Use dwarf_detail for skills/mood/job of one dwarf.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
-		snap := b.Snapshot()
-		var sb strings.Builder
-		fmt.Fprintf(&sb, "%d dwarves:\n", len(snap.Entities.Dwarves))
-		for _, d := range snap.Entities.Dwarves {
-			fmt.Fprintf(&sb, "- id=%d @(%d,%d,%d)\n", d.ID, d.X, d.Y, d.Z)
-		}
-		return withDash(b, ctx, sb.String()), nil, nil
+		return withDash(b, ctx, renderDwarfList(b.Snapshot().Entities.Dwarves)), nil, nil
 	})
 
 	type dwarfDetailIn struct {
@@ -77,7 +108,7 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 		if err != nil {
 			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
 		}
-		return withDash(b, ctx, string(raw)), nil, nil
+		return withDash(b, ctx, capRawJSON(string(raw))), nil, nil
 	})
 
 	// queries.cpp handleWorkshopJobs rejects x<0 || y<0, so the workshop
@@ -110,7 +141,7 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 				fmt.Fprintf(&sb, "%s failed: %v\n", q, err)
 				continue
 			}
-			fmt.Fprintf(&sb, "%s: %s\n", q, string(raw))
+			fmt.Fprintf(&sb, "%s: %s\n", q, capRawJSON(string(raw)))
 		}
 		return withDash(b, ctx, sb.String()), nil, nil
 	})

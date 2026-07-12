@@ -38,6 +38,82 @@ func TestNilBridgeIsSafe(t *testing.T) {
 	}
 }
 
+// minToolArgs supplies minimal schema-valid arguments per tool for the
+// every-tool registration sweep. Tools absent here are called with {}.
+// ADDING A TOOL? If it has required inputs, add an entry — the sweep
+// fails loudly otherwise, which is the point.
+var minToolArgs = map[string]map[string]any{
+	"dwarf_detail":       {"id": 1},
+	"jobs":               {"x": 1, "y": 1, "z": 1},
+	"look":               {"x": 10, "y": 10, "z": 100},
+	"cross_section":      {"x": 10, "y": 10},
+	"find_dig_site":      {"width": 3, "height": 3, "z": 90, "near_x": 10, "near_y": 10},
+	"designate_dig":      {"type": "default", "x1": 1, "y1": 1, "z1": 1, "x2": 2, "y2": 2, "z2": 1},
+	"build":              {"type": "bed", "x": 1, "y": 1, "z": 1},
+	"zone":               {"type": "bedroom", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
+	"stockpile":          {"category": "all", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
+	"order":              {"item": "bed", "count": 1},
+	"unsuspend":          {"x": 1, "y": 1, "z": 1},
+	"cancel_designation": {"x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
+	"chop":               {"x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
+	"gather":             {"x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
+	"smooth":             {"mode": "smooth", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
+	"apply_blueprint":    {"name": "", "origin_x": 0, "origin_y": 0, "origin_z": 0},
+	"step":               {"ticks": 1},
+}
+
+// TestEveryToolNilBridge lists every registered tool and calls each one
+// with minimal valid arguments against a nil bridge: every tool must
+// return a readable text response — no panic, no protocol error. This is
+// the "registration tests drive every tool" contract in
+// docs/guides/mcp-server.md.
+func TestEveryToolNilBridge(t *testing.T) {
+	ctx := context.Background()
+	srv := New(nil)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := srv.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	list, err := clientSession.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	if len(list.Tools) == 0 {
+		t.Fatal("tools/list returned no tools")
+	}
+	for _, tool := range list.Tools {
+		args := minToolArgs[tool.Name]
+		if args == nil {
+			args = map[string]any{}
+		}
+		res, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: tool.Name, Arguments: args})
+		if err != nil {
+			t.Fatalf("call %s: %v (new tool with required args? add it to minToolArgs)", tool.Name, err)
+		}
+		if len(res.Content) == 0 {
+			t.Fatalf("%s: empty content", tool.Name)
+		}
+		tc, ok := res.Content[0].(*mcp.TextContent)
+		if !ok {
+			t.Fatalf("%s: expected *mcp.TextContent, got %T", tool.Name, res.Content[0])
+		}
+		if strings.TrimSpace(tc.Text) == "" {
+			t.Fatalf("%s: blank text response", tool.Name)
+		}
+	}
+}
+
 // TestStatusToolNotConnected drives the status tool over an in-memory
 // MCP session and checks the scaffold's NOT CONNECTED response.
 func TestStatusToolNotConnected(t *testing.T) {
