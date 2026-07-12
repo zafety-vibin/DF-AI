@@ -66,7 +66,9 @@ struct QueuedCommand {
 };
 
 // Global state
-static std::unique_ptr<CActiveSocket> g_socket;
+// g_socket has external linkage: announcements.cpp (and other translation
+// units) reference it via `extern std::unique_ptr<CActiveSocket> g_socket;`.
+std::unique_ptr<CActiveSocket> g_socket;
 static std::string g_server_host = "localhost";
 static uint16_t g_server_port = 5001;
 static uint32_t g_connection_id = 0;

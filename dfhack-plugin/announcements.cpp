@@ -50,40 +50,53 @@ static int32_t g_last_sent_report_id = -1;
 // orchestrator uses (0=info, 1=warn, 2=critical). The mapping is
 // deliberately broad — most "cancel" types are warn, combat / siege /
 // magma are critical, the rest is info.
+// Enum spellings verified against DFHack 53.15-r1 df/announcement_type.h.
+// The 53.15 enum split/renamed several pre-50.x names this file originally
+// used; the remap is recorded case-by-case below. Types with no 53.15
+// equivalent (SIEGE_BEGUN, FB_ARRIVAL, DROWNING, JOB_CANCEL_*, OBLIVIOUS,
+// TRAUMA, INTERRUPT_CONSTRUCTION) were dropped — they either no longer
+// exist as distinct announcement types or now arrive as CANCEL_JOB text.
 static uint8_t classify_severity(int16_t type)
 {
     using AT = df::announcement_type;
     switch (static_cast<df::announcement_type>(type)) {
         // Critical: things a player would drop everything to react to.
-        case AT::AMBUSH:
-        case AT::SIEGE_BEGUN:
+        // 53.15 split the old single AMBUSH into per-ambusher variants.
+        case AT::AMBUSH_DEFENDER:
+        case AT::AMBUSH_RESIDENT:
+        case AT::AMBUSH_THIEF:
+        case AT::AMBUSH_THIEF_SUPPORT_SKULKING:
+        case AT::AMBUSH_THIEF_SUPPORT_NATURE:
+        case AT::AMBUSH_THIEF_SUPPORT:
+        case AT::AMBUSH_MISCHIEVOUS:
+        case AT::AMBUSH_SNATCHER:
+        case AT::AMBUSH_SNATCHER_SUPPORT:
+        case AT::AMBUSH_AMBUSHER_NATURE:
+        case AT::AMBUSH_AMBUSHER:
+        case AT::AMBUSH_INJURED:
+        case AT::AMBUSH_OTHER:
+        case AT::AMBUSH_INCAPACITATED:
+        case AT::BEAST_AMBUSH:
         case AT::MEGABEAST_ARRIVAL:
-        case AT::FB_ARRIVAL:                     // forgotten beast
+        case AT::WEREBEAST_ARRIVAL:              // was BECOME_WEREBEAST-adjacent
         case AT::CAVE_COLLAPSE:
-        case AT::DROWNING:
-        case AT::MAGMA_BURNING:
-        case AT::DRAGONFIRE_BURNING:
-        case AT::FIRE_BURNING:
-        case AT::INSANITY:
-        case AT::BERSERK:
-        case AT::BECOME_VAMPIRE:
-        case AT::BECOME_WEREBEAST:
+        case AT::CAUGHT_IN_FLAMES:               // was MAGMA/DRAGONFIRE/FIRE_BURNING
+        case AT::FLAME_HIT:
+        case AT::CITIZEN_LOST_TO_STRESS:         // was INSANITY
+        case AT::BERSERK_CITIZEN:                // was BERSERK
+        case AT::BODY_TRANSFORMATION:            // was BECOME_VAMPIRE/BECOME_WEREBEAST
+        case AT::UNDEAD_ATTACK:
             return 2;
 
-        // Warn: cancellations, suspensions, depression, miasma. Routine
-        // attention required but not life-threatening.
+        // Warn: cancellations, suspensions, stress. Routine attention
+        // required but not life-threatening.
         case AT::CANCEL_JOB:
-        case AT::CANCEL_CONSTRUCTION:
-        case AT::JOB_CANCEL_THIRSTY:
-        case AT::JOB_CANCEL_HUNGRY:
-        case AT::JOB_CANCEL_SLEEPY:
-        case AT::JOB_CANCEL_DROWSY:
-        case AT::TANTRUM:
-        case AT::DEPRESSED:
-        case AT::OBLIVIOUS:
-        case AT::TRAUMA:
-        case AT::INTERRUPT_CONSTRUCTION:
-        case AT::INTERRUPT_BUILDING:
+        case AT::CONSTRUCTION_SUSPENDED:         // was CANCEL_CONSTRUCTION
+        case AT::CANNOT_CONSTRUCT:
+        case AT::UNABLE_TO_COMPLETE_BUILDING:    // was INTERRUPT_BUILDING
+        case AT::CITIZEN_TANTRUM:                // was TANTRUM
+        case AT::POSSESSED_TANTRUM:
+        case AT::STRESSED_CITIZEN:               // was DEPRESSED
         case AT::DIG_CANCEL_DAMP:
         case AT::DIG_CANCEL_WARM:
             return 1;
