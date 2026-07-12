@@ -31,6 +31,18 @@ func ackText(res *commands.CommandResult, err error, what string) string {
 	}
 }
 
+// buildWireCoords converts the model-facing build coordinate to the wire
+// semantic. The protocol's (x,y) is a building's NW CORNER (DFHack
+// allocInstance), but the tool promises CENTER for 3x3 workshops — the
+// natural way to think about placement. Workshops (0x10-0x2F) shift by
+// -1,-1; everything else is 1x1 where center == corner.
+func buildWireCoords(buildType uint8, x, y int) (int16, int16) {
+	if buildType >= 0x10 && buildType < 0x30 {
+		return int16(x - 1), int16(y - 1)
+	}
+	return int16(x), int16(y)
+}
+
 func digTypeFromName(s string) (uint8, error) {
 	switch strings.ToLower(s) {
 	case "default", "dig", "mine":
@@ -157,7 +169,8 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		if !ok {
 			return withDash(b, ctx, fmt.Sprintf("unknown build type %q", in.Type)), nil, nil
 		}
-		res, err := b.Exec.SendBuildCommand(int16(in.X), int16(in.Y), int16(in.Z), bt)
+		wx, wy := buildWireCoords(bt, in.X, in.Y)
+		res, err := b.Exec.SendBuildCommand(wx, wy, int16(in.Z), bt)
 		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("build %s at (%d,%d,%d)", in.Type, in.X, in.Y, in.Z))), nil, nil
 	})
 

@@ -83,3 +83,16 @@ func TestActionToolsNilBridge(t *testing.T) {
 		t.Errorf("expected NOT CONNECTED message, got %q", tc.Text)
 	}
 }
+
+func TestBuildWireCoords(t *testing.T) {
+	// Workshops (0x10-0x2F): model-facing center -> wire NW corner.
+	if x, y := buildWireCoords(0x10, 28, 52); x != 27 || y != 51 {
+		t.Fatalf("carpenter center (28,52) should wire as corner (27,51), got (%d,%d)", x, y)
+	}
+	// 1x1 buildings pass through unchanged.
+	for _, bt := range []uint8{0x01, 0x30, 0x50} {
+		if x, y := buildWireCoords(bt, 28, 52); x != 28 || y != 52 {
+			t.Fatalf("1x1 type 0x%02X must pass through, got (%d,%d)", bt, x, y)
+		}
+	}
+}
