@@ -28,6 +28,7 @@
 #include "ActiveSocket.h"
 
 #include <vector>
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <memory>
@@ -43,8 +44,11 @@ extern void write_int16_be(std::vector<uint8_t> &buf, int16_t value);
 extern void write_uint32_be(std::vector<uint8_t> &buf, uint32_t value);
 
 // Plugin-local state: highest report ID we've already sent. Reset when the
-// plugin is unloaded or the connection drops.
-static int32_t g_last_sent_report_id = -1;
+// plugin is unloaded or the connection drops. Atomic: the reset runs on
+// socket-thread teardown with no core suspension, racing the sim-thread
+// poller's read-modify-write; atomicity keeps the reset from being lost
+// (announcements silently never re-sent after reconnect).
+static std::atomic<int32_t> g_last_sent_report_id{-1};
 
 // classify_severity maps a raw announcement_type to the severity tier the
 // orchestrator uses (0=info, 1=warn, 2=critical). The mapping is

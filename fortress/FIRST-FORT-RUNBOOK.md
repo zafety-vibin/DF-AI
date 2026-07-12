@@ -10,10 +10,11 @@
    This spawns the df-mcp server, which opens the listener the plugin
    connects to — `ai-connect` has nothing to reach until this is up.
 3. In the DFHack console: `ai-connect`.
-4. In the DFHack console: `ai-auto-update on` — belt-and-braces periodic
-   state refresh that keeps the dashboard's data-age stamp fresh between
-   pause/step pushes.
-5. In the Claude session, call the `status` tool and confirm the
+   Do NOT run `ai-auto-update on` — the turn-based flow refreshes state
+   at every pause/step boundary, and the legacy auto-update path is not
+   teardown-safe. If the dashboard's data-age stamp reads STALE, pause
+   or step to trigger a fresh push.
+4. In the Claude session, call the `status` tool and confirm the
    ground-truth header reports a live connection (not NOT CONNECTED).
 
 Config path note: `config/orchestrator.yaml` (used by the server) is

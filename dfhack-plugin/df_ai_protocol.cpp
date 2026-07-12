@@ -75,7 +75,9 @@ std::unique_ptr<CActiveSocket> g_socket;
 static std::string g_server_host = "localhost";
 static uint16_t g_server_port = 5001;
 static uint32_t g_connection_id = 0;
-static bool g_connected = false;
+// Atomic: written by socket-thread teardown (close_socket_and_reset) with
+// no core suspension held; read by the sim thread in plugin_onupdate.
+static std::atomic<bool> g_connected{false};
 static uint64_t g_last_heartbeat_ms = 0;  // Last time we received heartbeat from server
 static uint32_t g_reconnect_delay_ms = 1000;  // Current reconnection backoff delay
 static std::unique_ptr<std::thread> g_message_thread;  // Background message handler

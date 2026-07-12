@@ -48,6 +48,7 @@ func renderSurvey(d SurveyData) string {
 			continue
 		}
 		soil, stone, firstStone := 0, 0, int16(-1)
+		firstStoneHidden := false
 		for _, lv := range c.Levels {
 			switch lv.Material {
 			case "soil":
@@ -56,14 +57,19 @@ func renderSurvey(d SurveyData) string {
 				stone++
 				if firstStone == -1 {
 					firstStone = lv.Z
+					firstStoneHidden = lv.Hidden
 				}
 			}
 		}
-		if firstStone == -1 {
-			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, no exposed stone in sampled range (hidden layers below are undug rock — diggable)\n",
+		switch {
+		case firstStone == -1:
+			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, no stone in sampled range\n",
 				c.X, c.Y, soil)
-		} else {
-			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, first exposed stone at z=%d (hidden layers below are undug rock — diggable)\n",
+		case firstStoneHidden:
+			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, first stone at z=%d (under fog — undug, diggable)\n",
+				c.X, c.Y, soil, firstStone)
+		default:
+			fmt.Fprintf(&sb, "column (%d,%d): %d soil layers, first exposed stone at z=%d\n",
 				c.X, c.Y, soil, firstStone)
 		}
 	}
