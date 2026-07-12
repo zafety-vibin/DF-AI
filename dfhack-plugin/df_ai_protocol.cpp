@@ -33,6 +33,7 @@
 #include <mutex>
 #include <queue>
 #include <atomic>
+#include <exception>
 
 using namespace DFHack;
 
@@ -460,6 +461,16 @@ void executeCommand(const std::vector<uint8_t> &payload)
     std::string error;
     bool success = false;
 
+    // Defense-in-depth: DFHack module APIs validate preconditions with
+    // CHECK_NULL_POINTER / CHECK_INVALID_ARGUMENT macros that THROW C++
+    // exceptions (dfhack library/include/Error.h:74-84). DFHack's own
+    // consumers always invoke them under a catch wrapper (the Lua bindings,
+    // LuaTypes.cpp:1249-1258); an exception that escapes a plugin thread
+    // calls std::terminate and kills DF instantly with no trace. That is
+    // exactly what happened live on 2026-07-12 when constructAbstract threw
+    // InvalidArgument for a workshop BUILD. Convert any such exception into
+    // a command NACK instead.
+    try {
     switch (cmdType) {
         case 0x01: {  // DIG
             // Call the fixed version from designations.cpp (not the old one below)
@@ -618,6 +629,12 @@ void executeCommand(const std::vector<uint8_t> &payload)
         default:
             sendCommandAck(cmdID, 0x02, "Unknown command type");
             return;
+    }
+    } catch (std::exception &e) {
+        // DFHack::Error::All derives from std::exception (Error.h:52), so
+        // this catches both DFHack precondition failures and anything else.
+        sendCommandAck(cmdID, 0x02, std::string("DFHack exception: ") + e.what());
+        return;
     }
 
     sendCommandAck(cmdID, success ? 0x00 : 0x02, error);
