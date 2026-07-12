@@ -8,8 +8,8 @@ import (
 	"github.com/df-ai/orchestrator/internal/mapview"
 )
 
-// NOTE: Tasks 10 and 11 add survey_site and find_dig_site to this file and
-// extend this import block with "fmt" and "strings" when their code needs it.
+// NOTE: Task 11 adds find_dig_site to this file and extends this import
+// block with "fmt" and "strings" when its code needs it.
 
 func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 	type lookIn struct {
@@ -89,5 +89,36 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 			return withDash(b, ctx, "cross_section failed: "+err.Error()), nil, nil
 		}
 		return withDash(b, ctx, mapview.RenderColumn(c, surfaceZ)), nil, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "survey_site",
+		Description: "Embark orientation report: map dimensions, surface z, dwarf cluster, sampled soil/stone stratigraphy, surface vegetation. Call FIRST on any new fort or after reconnecting.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+		snap := b.Snapshot()
+		topo := b.Topo()
+		if topo == nil || len(snap.Entities.Dwarves) == 0 {
+			return withDash(b, ctx, "survey unavailable: waiting for full state / dwarves (is ai-connect done?)"), nil, nil
+		}
+		w, h, d := topo.GetDimensions()
+		surfaceZ := snap.Entities.Dwarves[0].Z
+		cx, cy := snap.Entities.Dwarves[0].X, snap.Entities.Dwarves[0].Y
+		for _, e := range snap.Entities.Dwarves {
+			if e.Z > surfaceZ {
+				surfaceZ, cx, cy = e.Z, e.X, e.Y
+			}
+		}
+		data := SurveyData{MapW: w, MapH: h, MapD: d, SurfaceZ: surfaceZ, Dwarves: snap.Entities.Dwarves}
+		// Three stratigraphy samples: at the crew and two offsets.
+		for _, off := range [][2]int16{{0, 0}, {12, 0}, {0, 12}} {
+			c, err := b.ColumnProfile(ctx, cx+off[0], cy+off[1], surfaceZ+2, surfaceZ-25)
+			if err == nil {
+				data.Columns = append(data.Columns, c)
+			}
+		}
+		if s, err := b.MapSlice(ctx, cx-15, cy-15, surfaceZ, cx+15, cy+15); err == nil {
+			data.SurfaceSlice = s
+		}
+		return withDash(b, ctx, renderSurvey(data)), nil, nil
 	})
 }
