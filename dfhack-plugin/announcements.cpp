@@ -85,7 +85,6 @@ static uint8_t classify_severity(int16_t type)
         case AT::CITIZEN_LOST_TO_STRESS:         // was INSANITY
         case AT::BERSERK_CITIZEN:                // was BERSERK
         case AT::BODY_TRANSFORMATION:            // was BECOME_VAMPIRE/BECOME_WEREBEAST
-        case AT::UNDEAD_ATTACK:
             return 2;
 
         // Warn: cancellations, suspensions, stress. Routine attention
