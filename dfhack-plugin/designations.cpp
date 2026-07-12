@@ -112,11 +112,11 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
     //     digType. For multi-Z non-stair digs (e.g. excavating a full
     //     underground complex), we still respect the per-tile dig type.
     //
-    // Hidden tiles: shaft designations span hidden terrain by design (DF's
-    // own UI does this), so we don't skip them in the shaft path. For
-    // single-Z non-shaft digs we still skip hidden tiles, to match the
-    // earlier behaviour where the agent expected an error when it tried
-    // to dig into fog of war on a known Z.
+    // Hidden tiles: ALL dig paths designate through hidden terrain, exactly
+    // like DF's own designation UI. Every undug underground tile is hidden
+    // (fog of war), so skipping hidden tiles made underground rooms
+    // undesignatable. Dwarves reveal tiles as they dig; DF's job system
+    // handles the rest. Bounds are already screened by isValidTilePos above.
     if (z1 > z2) std::swap(z1, z2);
 
     bool isStairShaft = (z1 != z2) &&
@@ -141,12 +141,10 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
                     cache.setDesignationAt(pos, des);
                     designated++;
                 } else {
-                    // Single-Z (or multi-Z non-stair) dig: skip hidden tiles
-                    // so the agent gets a clear "blocked" count.
-                    if (des.bits.hidden) {
-                        blocked++;
-                        continue;
-                    }
+                    // Hidden tiles are designated like DF's own UI does — fog
+                    // of war is where forts get dug. Nothing increments
+                    // blocked here today; it stays for future per-tile
+                    // rejection paths (e.g. non-diggable screening).
                     des.bits.dig = dfDigType;
                     cache.setDesignationAt(pos, des);
                     designated++;
