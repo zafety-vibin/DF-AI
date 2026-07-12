@@ -121,9 +121,11 @@ func (b *Bridge) Query(ctx context.Context, name, argsJSON string) ([]byte, erro
 
 func (b *Bridge) StatusLine(ctx context.Context) string {
 	if b == nil {
-		return renderDashboard(worldmodel.Snapshot{}, false, "{}")
+		return renderDashboard(worldmodel.Snapshot{}, false, "")
 	}
-	sim := "{}"
+	// Empty string = pause state unknown (query failed or timed out);
+	// renderDashboard keeps paused=unknown rather than asserting false.
+	sim := ""
 	if raw, err := b.Query(ctx, "sim_status", "{}"); err == nil {
 		sim = string(raw)
 	}

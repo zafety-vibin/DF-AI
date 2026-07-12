@@ -22,7 +22,9 @@ func renderDashboard(snap worldmodel.Snapshot, connected bool, simJSON string) s
 		Paused   bool `json:"paused"`
 		Stepping bool `json:"stepping"`
 	}
-	if json.Unmarshal([]byte(simJSON), &sim) == nil {
+	// Empty simJSON means the sim_status fetch failed: keep paused=unknown
+	// instead of letting a zero-value unmarshal assert paused=false.
+	if simJSON != "" && json.Unmarshal([]byte(simJSON), &sim) == nil {
 		if sim.Stepping {
 			paused = "stepping"
 		} else if sim.Paused {

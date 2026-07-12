@@ -25,3 +25,17 @@ func TestRenderDashboard(t *testing.T) {
 		t.Fatalf("dashboard must be one line, got %q", out)
 	}
 }
+
+// A failed sim_status fetch (empty simJSON sentinel) must report
+// paused=unknown, never assert paused=false as ground truth.
+func TestRenderDashboardPausedUnknownOnFailedFetch(t *testing.T) {
+	snap := worldmodel.Snapshot{Tick: 100}
+	snap.Fort.Valid = true
+	out := renderDashboard(snap, true, "")
+	if !strings.Contains(out, "paused=unknown") {
+		t.Fatalf("expected paused=unknown on failed sim_status fetch, got %q", out)
+	}
+	if strings.Contains(out, "paused=false") {
+		t.Fatalf("dashboard asserted paused=false with unknown pause state: %q", out)
+	}
+}
