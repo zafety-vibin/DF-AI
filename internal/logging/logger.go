@@ -70,6 +70,35 @@ func NewTextLogger(level string) *Logger {
 	}
 }
 
+// NewStderrTextLogger creates a text-formatted logger that writes to
+// stderr. REQUIRED for any process whose stdout is a protocol channel —
+// the MCP stdio server (cmd/df-mcp) speaks JSON-RPC on stdout, so a
+// single stdout log line corrupts the stream.
+func NewStderrTextLogger(level string) *Logger {
+	var logLevel slog.Level
+	switch level {
+	case "debug":
+		logLevel = slog.LevelDebug
+	case "info":
+		logLevel = slog.LevelInfo
+	case "warn":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	default:
+		logLevel = slog.LevelInfo
+	}
+
+	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: logLevel,
+	})
+
+	return &Logger{
+		handler: handler,
+		logger:  slog.New(handler),
+	}
+}
+
 // Debug logs a debug-level message with structured fields
 func (l *Logger) Debug(msg string, fields ...Field) {
 	attrs := fieldsToAttrs(fields)
