@@ -8,6 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/df-ai/orchestrator/internal/commands"
+	"github.com/df-ai/orchestrator/internal/modifications"
 	"github.com/df-ai/orchestrator/internal/protocol"
 )
 
@@ -282,5 +283,38 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		}
 		res, err := b.Exec.SendSmoothCommand(st, int16(in.X1), int16(in.Y1), int16(in.Z), int16(in.X2), int16(in.Y2))
 		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("%s (%d,%d)-(%d,%d) z=%d", in.Mode, in.X1, in.Y1, in.X2, in.Y2, in.Z))), nil, nil
+	})
+
+	type bpIn struct {
+		Name    string `json:"name" jsonschema:"blueprint name from the list shown on error/empty name"`
+		OriginX int    `json:"origin_x" jsonschema:"absolute x where the blueprint's (0,0,0) lands"`
+		OriginY int    `json:"origin_y"`
+		OriginZ int    `json:"origin_z"`
+		DryRun  bool   `json:"dry_run,omitempty" jsonschema:"true = preview only (ALWAYS dry-run first)"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "apply_blueprint",
+		Description: "Apply a dig blueprint from the library at an origin. ALWAYS dry_run=true first: it reports how many tiles would carve solid ground vs hit open space. Empty name lists available blueprints.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in bpIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		if in.Name == "" {
+			return withDash(b, ctx, "available blueprints: "+strings.Join(b.Blueprints.ListBlueprints(), ", ")), nil, nil
+		}
+		origin := modifications.Coordinate{X: int16(in.OriginX), Y: int16(in.OriginY), Z: int16(in.OriginZ)}
+		cmds, err := expandBlueprint(b.Blueprints, in.Name, origin)
+		if err != nil {
+			return withDash(b, ctx, err.Error()), nil, nil
+		}
+		if in.DryRun {
+			return withDash(b, ctx, summarizeDryRun(b.Topo(), cmds)), nil, nil
+		}
+		ok, fail, firstErr := applyBlueprintCmds(ctx, b, cmds)
+		body := fmt.Sprintf("applied %q: %d tiles designated, %d failed", in.Name, ok, fail)
+		if firstErr != "" {
+			body += " — first failure: " + firstErr
+		}
+		return withDash(b, ctx, body), nil, nil
 	})
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/df-ai/orchestrator/internal/blueprints"
 	"github.com/df-ai/orchestrator/internal/commands"
 	"github.com/df-ai/orchestrator/internal/config"
 	"github.com/df-ai/orchestrator/internal/dfhack"
@@ -21,13 +22,14 @@ import (
 // Bridge owns the game connection: dfhack client, command executor,
 // world model + overlays, predicate library. One Bridge per server.
 type Bridge struct {
-	Client    *dfhack.Client
-	Exec      *commands.CommandExecutor
-	WM        *worldmodel.WorldModel
-	Populator *worldmodel.Populator
-	Preds     *predicate.Library
-	Logger    *logging.Logger
-	port      uint16
+	Client     *dfhack.Client
+	Exec       *commands.CommandExecutor
+	WM         *worldmodel.WorldModel
+	Populator  *worldmodel.Populator
+	Preds      *predicate.Library
+	Blueprints *blueprints.BlueprintLibrary
+	Logger     *logging.Logger
+	port       uint16
 }
 
 func NewBridge(cfgPath string) (*Bridge, error) {
@@ -45,8 +47,10 @@ func NewBridge(cfgPath string) (*Bridge, error) {
 
 	b := &Bridge{
 		Client: client, Exec: exec, WM: wm, Populator: populator,
-		Preds: predicate.NewStarterLibrary(), Logger: logger,
-		port: cfg.ListenPort,
+		Preds:      predicate.NewStarterLibrary(),
+		Blueprints: blueprints.NewBlueprintLibrary("blueprints"),
+		Logger:     logger,
+		port:       cfg.ListenPort,
 	}
 
 	client.SetOnFullState(func(state *protocol.FullStateMessage) {
