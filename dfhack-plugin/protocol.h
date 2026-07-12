@@ -158,3 +158,11 @@ void write_uint64_be(std::vector<uint8_t> &buf, uint64_t value);
 
 // Big-endian payload reader (implemented in designations.cpp).
 uint32_t read_uint32_be(const std::vector<uint8_t> &data, size_t offset);
+
+// Thread-safe socket send (implemented in df_ai_protocol.cpp). Serializes
+// all frame writes to the shared socket under one mutex — the socket
+// thread (heartbeat echo, auto-update) and the main thread (acks, query
+// responses, announcements) both send frames, and interleaved partial
+// writes would corrupt the stream. Returns bytes sent, or -1 if the
+// socket is gone. ALL g_socket->Send calls must go through this.
+int32_t socket_send_locked(const uint8_t *data, size_t len);

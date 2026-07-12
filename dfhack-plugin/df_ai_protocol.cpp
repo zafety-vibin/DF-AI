@@ -124,6 +124,16 @@ void handleCommand(const std::vector<uint8_t> &payload);  // From designations.c
 // Helper: Read exactly n bytes from socket
 bool read_exact(uint8_t *buffer, size_t n);
 
+// Send mutex — serializes every frame write to g_socket (see protocol.h).
+static std::mutex g_send_mutex;
+
+int32_t socket_send_locked(const uint8_t *data, size_t len)
+{
+    std::lock_guard<std::mutex> lock(g_send_mutex);
+    if (!g_socket) return -1;
+    return g_socket->Send(data, len);
+}
+
 // Helper: Get current time in milliseconds
 uint64_t get_time_ms()
 {
@@ -220,7 +230,7 @@ void sendCommandAck(uint32_t cmdID, uint8_t status, const std::string &error)
     msg[2] = (length >> 8) & 0xFF;
     msg[3] = length & 0xFF;
 
-    g_socket->Send(msg.data(), msg.size());
+    socket_send_locked(msg.data(), msg.size());
 }
 
 // Send query response back to server.
@@ -256,7 +266,7 @@ void sendQueryResponse(uint32_t queryID, uint8_t status, const std::string &data
     msg[2] = (length >> 8) & 0xFF;
     msg[3] = length & 0xFF;
 
-    g_socket->Send(msg.data(), msg.size());
+    socket_send_locked(msg.data(), msg.size());
 }
 
 // OLD IMPLEMENTATION - DEPRECATED
@@ -861,7 +871,7 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             // Serialize and send
             std::vector<uint8_t> message = serialize_entity_update(entities);
 
-            int sent = g_socket->Send(message.data(), message.size());
+            int sent = socket_send_locked(message.data(), message.size());
             if (sent != (int)message.size()) {
                 out.printerr("Failed to send ENTITY_UPDATE (%d/%d bytes)\n", sent, (int)message.size());
                 return CR_FAILURE;
@@ -902,7 +912,7 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             msg[2] = (length >> 8) & 0xFF;
             msg[3] = length & 0xFF;
 
-            int sent = g_socket->Send(msg.data(), msg.size());
+            int sent = socket_send_locked(msg.data(), msg.size());
             if (sent != (int)msg.size()) {
                 out.printerr("Failed to send save request\n");
                 return CR_FAILURE;
@@ -1103,7 +1113,7 @@ void disconnect_from_server()
         message[3] = length & 0xFF;
 
         // Send (ignore errors, we're shutting down anyway)
-        g_socket->Send(message.data(), message.size());
+        socket_send_locked(message.data(), message.size());
     }
 
     if (g_socket) {
@@ -1149,7 +1159,7 @@ bool send_handshake(color_ostream &out)
     message[3] = length & 0xFF;
 
     // Send
-    int32_t sent = g_socket->Send(message.data(), message.size());
+    int32_t sent = socket_send_locked(message.data(), message.size());
     if (sent != (int32_t)message.size()) {
         out.printerr("Failed to send handshake: sent %d/%d bytes\n", sent, (int)message.size());
         return false;
@@ -1288,7 +1298,7 @@ bool send_full_state(color_ostream &out)
     message[3] = length & 0xFF;
 
     // Send
-    int32_t sent = g_socket->Send(message.data(), message.size());
+    int32_t sent = socket_send_locked(message.data(), message.size());
     if (sent != (int32_t)message.size()) {
         out.printerr("Failed to send full state: sent %d/%d bytes\n", sent, (int)message.size());
         return false;
@@ -1342,7 +1352,7 @@ bool send_tile_update(color_ostream &out, const std::vector<uint8_t> &tiles)
     out.print("\n");
 
     // Send
-    int32_t sent = g_socket->Send(message.data(), message.size());
+    int32_t sent = socket_send_locked(message.data(), message.size());
     if (sent != (int32_t)message.size()) {
         out.printerr("Failed to send tile update: sent %d/%d bytes\n", sent, (int)message.size());
         return false;
@@ -1389,7 +1399,7 @@ bool send_heartbeat_echo(color_ostream &out, uint64_t timestamp, uint8_t sequenc
     message[3] = length & 0xFF;
 
     // Send
-    int32_t sent = g_socket->Send(message.data(), message.size());
+    int32_t sent = socket_send_locked(message.data(), message.size());
     if (sent != (int32_t)message.size()) {
         out.printerr("Failed to send heartbeat echo: sent %d/%d bytes\n", sent, (int)message.size());
         return false;
@@ -1507,7 +1517,7 @@ void message_receive_loop(color_ostream &out)
                             std::vector<EntityInfo> entities = extract_entities();
                             std::vector<uint8_t> entity_msg = serialize_entity_update(entities);
                             if (g_socket && g_socket->IsSocketValid()) {
-                                g_socket->Send(entity_msg.data(), entity_msg.size());
+                                socket_send_locked(entity_msg.data(), entity_msg.size());
                             }
                         }
                     }

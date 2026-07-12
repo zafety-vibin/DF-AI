@@ -98,6 +98,10 @@ static uint8_t classify_severity(int16_t type)
         case AT::STRESSED_CITIZEN:               // was DEPRESSED
         case AT::DIG_CANCEL_DAMP:
         case AT::DIG_CANCEL_WARM:
+        // New in 53.x (dinosaur update): stuck creatures/citizens are
+        // actionable for the agent (pathing broke — dig them out).
+        case AT::CREATURE_STUCK:
+        case AT::CITIZEN_STUCK:
             return 1;
 
         // Info: arrivals, completions, weather, narration.
@@ -169,7 +173,7 @@ static size_t send_announcement_update(const std::vector<df::report*> &news)
     msg[2] = (length >> 8) & 0xFF;
     msg[3] = length & 0xFF;
 
-    g_socket->Send(msg.data(), msg.size());
+    socket_send_locked(msg.data(), msg.size());
     return sendCount;
 }
 

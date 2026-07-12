@@ -85,6 +85,11 @@ bool applyWorkOrder(uint8_t orderType, uint16_t quantity, std::string &error)
     // shape: job_type, item_type, item_subtype, mat_type, mat_index,
     // amount_total, amount_left, status. Some versions split status into
     // a flags struct.
+    // Assign a unique order id from DF's own counter (53.15:
+    // world->manager_orders is a workquota_handlerst carrying the .all
+    // vector and manager_order_next_id). Without this every order gets
+    // id 0, which breaks order lookup/removal and the manager UI.
+    order->id = df::global::world->manager_orders.manager_order_next_id++;
     order->job_type = (df::job_type) jobType;
     order->item_type = df::item_type::NONE;       // let manager pick item subtype
     order->item_subtype = -1;
