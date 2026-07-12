@@ -3,7 +3,7 @@
     "df-fortress": {
       "type": "stdio",
       "command": "go",
-      "args": ["run", "../cmd/df-mcp"],
+      "args": ["run", "-C", "..", "./cmd/df-mcp"],
       "env": {}
     }
   }

@@ -4,18 +4,38 @@ Setup: DF running with a FRESH embark (default 7 dwarves), plugin loaded,
 `ai-connect` done. The embark must be in a FRESHLY GENERATED world — DF
 53.15's extinct-species content only appears in new worlds, not worlds
 generated before that update. Open Claude Code in fortress/ (the .mcp.json
-here wires df-fortress; if `go run ../cmd/df-mcp` fails, `go build -o
-../bin/df-mcp.exe ../cmd/df-mcp` and point .mcp.json's command at the exe).
+here wires df-fortress).
 
 Config path note: `config/orchestrator.yaml` (used by the server) is
-resolved relative to the repo root, not to fortress/. Whether you launch
-via `go run ../cmd/df-mcp` or the built `bin/df-mcp.exe`, the server
-process must be started with the repo root as its working directory —
-this is true for either launch method, not just the fallback. If `go
-run`'s working-directory resolution misbehaves (it resolves the module
-from the parent dir, which can be inconsistent depending on how Claude
-Code spawns the MCP server), building the binary first and pointing
-`command` at `bin/df-mcp.exe` from the repo root is the reliable fallback.
+resolved relative to the repo root, not to fortress/, so the df-mcp
+process must be launched with the repo root as its working directory.
+Claude Code spawns the MCP server with fortress/ as its working directory
+(that's where .mcp.json lives), so `.mcp.json`'s command uses
+`go run -C .. ./cmd/df-mcp`: the `-C ..` tells `go` to change to the repo
+root before running, which makes the resulting process's cwd the repo
+root even though Claude Code itself is open in fortress/. This was
+verified empirically — plain `go run ../cmd/df-mcp` (no `-C`), run from
+fortress/, fails with `open config/orchestrator.yaml: The system cannot
+find the path specified`, because it only resolves the *module* from the
+parent dir, it does not change the *process's* working directory. `-C`
+fixes that.
+
+If `go run -C ..` misbehaves, build the binary from the repo root first:
+
+    go build -o bin/df-mcp.exe ./cmd/df-mcp
+
+then point `.mcp.json`'s `df-fortress` entry at a wrapper that also
+forces repo-root cwd, e.g.:
+
+    "command": "cmd",
+    "args": ["/c", "cd .. && bin\\df-mcp.exe"]
+
+(run from fortress/, `cd ..` lands in the repo root, matching where
+`bin/df-mcp.exe` and `config/orchestrator.yaml` actually live). Do not
+point `command` straight at `../bin/df-mcp.exe` without the `cd` first —
+that inherits fortress/ as cwd and fails the same way plain `go run`
+does. Both the `-C` form and the `cd &&` wrapper were run from fortress/
+and confirmed to load `config/orchestrator.yaml` successfully.
 
 Kickoff prompt: "You're taking over this fresh embark. Survey the site,
 establish an underground fort, and work toward the goals in
