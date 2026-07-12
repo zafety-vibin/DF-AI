@@ -125,8 +125,9 @@ func main() {
 // runREPL keeps ONE plugin connection alive across many commands — used at
 // live checkpoints so the user doesn't re-run ai-connect per test.
 // Commands: dig <type> <x1> <y1> <z1> <x2> <y2> <z2> | build <typebyte> <x> <y> <z>
-//           order <typebyte> <qty> | query <name> [argsJSON] | pause | unpause
-//           step <ticks> | quit
+//
+//	order <typebyte> <qty> | query <name> [argsJSON] | pause | unpause
+//	step <ticks> | quit
 func runREPL(ctx context.Context, client *dfhack.Client, exec *commands.CommandExecutor) {
 	sc := bufio.NewScanner(os.Stdin)
 	fmt.Println("REPL ready (dig/build/order/query/pause/unpause/step/quit)")
