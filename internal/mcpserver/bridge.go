@@ -10,6 +10,7 @@ import (
 	"github.com/df-ai/orchestrator/internal/dfhack"
 	"github.com/df-ai/orchestrator/internal/hazards"
 	"github.com/df-ai/orchestrator/internal/logging"
+	"github.com/df-ai/orchestrator/internal/mapview"
 	"github.com/df-ai/orchestrator/internal/modifications"
 	"github.com/df-ai/orchestrator/internal/predicate"
 	"github.com/df-ai/orchestrator/internal/protocol"
@@ -117,6 +118,26 @@ func (b *Bridge) Query(ctx context.Context, name, argsJSON string) ([]byte, erro
 	qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return b.Client.SendQuery(qctx, name, argsJSON, 10*time.Second)
+}
+
+// MapSlice / ColumnProfile implement mapview.SliceProvider over the
+// plugin query channel.
+func (b *Bridge) MapSlice(ctx context.Context, x1, y1, z, x2, y2 int16) (*mapview.Slice, error) {
+	args := fmt.Sprintf(`{"x1":%d,"y1":%d,"z":%d,"x2":%d,"y2":%d}`, x1, y1, z, x2, y2)
+	raw, err := b.Query(ctx, "map_slice", args)
+	if err != nil {
+		return nil, err
+	}
+	return mapview.DecodeSlice(raw)
+}
+
+func (b *Bridge) ColumnProfile(ctx context.Context, x, y, zTop, zBottom int16) (*mapview.ColumnProfile, error) {
+	args := fmt.Sprintf(`{"x":%d,"y":%d,"z_top":%d,"z_bottom":%d}`, x, y, zTop, zBottom)
+	raw, err := b.Query(ctx, "column_profile", args)
+	if err != nil {
+		return nil, err
+	}
+	return mapview.DecodeColumnProfile(raw)
 }
 
 func (b *Bridge) StatusLine(ctx context.Context) string {

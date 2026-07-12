@@ -21,5 +21,6 @@ func TextResult(s string) *mcp.CallToolResult {
 func New(bridge *Bridge) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "df-fortress", Version: Version}, nil)
 	registerStateTools(srv, bridge)
+	registerPerceptTools(srv, bridge)
 	return srv
 }
