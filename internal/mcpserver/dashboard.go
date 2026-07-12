@@ -42,15 +42,8 @@ func renderDashboard(snap worldmodel.Snapshot, connected bool, simJSON string) s
 		len(snap.Entities.Dwarves), len(snap.Entities.Enemies), paused, nAlerts)
 }
 
-// withDash prepends the dashboard to a tool body.
+// withDash prepends the dashboard to a tool body. The sim_status fetch +
+// render lives in exactly one place: Bridge.StatusLine (nil-safe).
 func withDash(b *Bridge, ctx context.Context, body string) *mcp.CallToolResult {
-	dash := "[GROUND TRUTH unavailable]"
-	if b != nil {
-		sim := "{}"
-		if raw, err := b.Query(ctx, "sim_status", "{}"); err == nil {
-			sim = string(raw)
-		}
-		dash = renderDashboard(b.Snapshot(), b.Connected(), sim)
-	}
-	return TextResult(dash + "\n\n" + body)
+	return TextResult(b.StatusLine(ctx) + "\n\n" + body)
 }
