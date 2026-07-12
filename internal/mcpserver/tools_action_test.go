@@ -66,21 +66,32 @@ func TestActionToolsNilBridge(t *testing.T) {
 	}
 	defer clientSession.Close()
 
-	res, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
-		Name: "designate_dig",
-		Arguments: map[string]any{
+	calls := []struct {
+		name string
+		args map[string]any
+	}{
+		{"designate_dig", map[string]any{
 			"type": "stairs", "x1": 10, "y1": 10, "z1": 100, "x2": 11, "y2": 11, "z2": 94,
-		},
-	})
-	if err != nil {
-		t.Fatalf("call designate_dig: %v", err)
+		}},
+		{"chop", map[string]any{"x1": 10, "y1": 10, "z": 110, "x2": 30, "y2": 30}},
+		{"gather", map[string]any{"x1": 10, "y1": 10, "z": 110, "x2": 30, "y2": 30}},
+		{"cancel_designation", map[string]any{"x1": 10, "y1": 10, "z": 110, "x2": 30, "y2": 30}},
+		{"zone", map[string]any{"type": "bedroom", "x1": 10, "y1": 10, "z": 90, "x2": 12, "y2": 12}},
 	}
-	tc, ok := res.Content[0].(*mcp.TextContent)
-	if !ok {
-		t.Fatalf("expected *mcp.TextContent, got %T", res.Content[0])
-	}
-	if !strings.Contains(tc.Text, "NOT CONNECTED") {
-		t.Errorf("expected NOT CONNECTED message, got %q", tc.Text)
+	for _, call := range calls {
+		res, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+			Name: call.name, Arguments: call.args,
+		})
+		if err != nil {
+			t.Fatalf("call %s: %v", call.name, err)
+		}
+		tc, ok := res.Content[0].(*mcp.TextContent)
+		if !ok {
+			t.Fatalf("%s: expected *mcp.TextContent, got %T", call.name, res.Content[0])
+		}
+		if !strings.Contains(tc.Text, "NOT CONNECTED") {
+			t.Errorf("%s: expected NOT CONNECTED message, got %q", call.name, tc.Text)
+		}
 	}
 }
 

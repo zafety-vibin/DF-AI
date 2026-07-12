@@ -152,6 +152,38 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 
+	// Chop, gather, and cancel share the plugin's single-Z rectangle
+	// commands (executor.go: (x1,y1,z,x2,y2)) — the input mirrors that
+	// instead of exposing an unusable z2.
+	type rectZIn struct {
+		X1 int `json:"x1"`
+		Y1 int `json:"y1"`
+		Z  int `json:"z"`
+		X2 int `json:"x2"`
+		Y2 int `json:"y2"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "chop",
+		Description: "Designate tree felling over a rectangle on one z-level (trees are 'T' in look crops). Dwarves with axes fell them over game time — this starts the wood chain.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in rectZIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		res, err := b.Exec.SendChopCommand(int16(in.X1), int16(in.Y1), int16(in.Z), int16(in.X2), int16(in.Y2))
+		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("chop (%d,%d)-(%d,%d) z=%d", in.X1, in.Y1, in.X2, in.Y2, in.Z))), nil, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "gather",
+		Description: "Designate plant gathering over a rectangle on one z-level (harvest wild shrubs and berries for food without farming).",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in rectZIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		res, err := b.Exec.SendGatherCommand(int16(in.X1), int16(in.Y1), int16(in.Z), int16(in.X2), int16(in.Y2))
+		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("gather (%d,%d)-(%d,%d) z=%d", in.X1, in.Y1, in.X2, in.Y2, in.Z))), nil, nil
+	})
+
 	type buildIn struct {
 		Type string `json:"type" jsonschema:"workshop (carpenter|mason|still|farmer|craftsdwarf|mechanic|butcher|kitchen|fishery), furniture (bed|table|chair|cabinet|coffer), door|hatch, or construction (wall|floor|upstair|downstair|updownstair|ramp)"`
 		X    int    `json:"x" jsonschema:"for workshops this is the CENTER of the 3x3 footprint"`
@@ -184,7 +216,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "zone",
-		Description: "Designate an activity zone rectangle on one z-level (bedroom/dining/farm/...). Farms go on soil or muddied stone.",
+		Description: "Designate an activity zone rectangle on one z-level (bedroom/dining/farm/...). NOT YET FUNCTIONAL: the plugin's zone support is a stub in this build, so this command WILL return an error. Plan with dig + build + stockpile instead; zone assignment lands in a later phase.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in zoneIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -255,19 +287,10 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("unsuspend (%d,%d,%d)", in.X, in.Y, in.Z))), nil, nil
 	})
 
-	// SendCancelCommand is single-Z (executor.go): (x1,y1,z,x2,y2) — the
-	// tool input mirrors that instead of exposing an unusable z2.
-	type cancelIn struct {
-		X1 int `json:"x1"`
-		Y1 int `json:"y1"`
-		Z  int `json:"z"`
-		X2 int `json:"x2"`
-		Y2 int `json:"y2"`
-	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "cancel_designation",
 		Description: "Clear dig designations in a rectangle on one z-level (undo a mistaken dig order).",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in cancelIn) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in rectZIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
 		}
