@@ -15,15 +15,15 @@ import (
 
 // SessionMetrics tracks connection statistics
 type SessionMetrics struct {
-	ConnectionTime    time.Time
-	MessagesSent      uint64
-	MessagesReceived  uint64
-	BytesSent         uint64
-	BytesReceived     uint64
-	ErrorCount        uint64
-	LastError         error
-	LastErrorTime     time.Time
-	HeartbeatsSent    uint64
+	ConnectionTime     time.Time
+	MessagesSent       uint64
+	MessagesReceived   uint64
+	BytesSent          uint64
+	BytesReceived      uint64
+	ErrorCount         uint64
+	LastError          error
+	LastErrorTime      time.Time
+	HeartbeatsSent     uint64
 	HeartbeatsReceived uint64
 }
 
@@ -47,7 +47,7 @@ type Client struct {
 	metrics          SessionMetrics
 	metricsMu        sync.Mutex
 	onFullState      func(*protocol.FullStateMessage) // Callback for FULL_STATE messages
-	onSaveRequest    func()                            // Callback for save requests
+	onSaveRequest    func()                           // Callback for save requests
 
 	// Query infrastructure
 	queryNextID  uint32
@@ -529,6 +529,22 @@ func (c *Client) handleHeartbeat(conn *protocol.Connection, hb *protocol.Heartbe
 		logging.Field{Key: "rtt_ms", Value: rtt})
 }
 
+// heartbeatStale reports whether a heartbeat goroutine bound to conn should
+// exit: either the client rebound to a different connection (plugin
+// reconnected — handleConnection starts a fresh heartbeat for the new conn,
+// so the old goroutine must die instead of erroring every tick forever), or
+// the bound connection itself is no longer usable.
+func (c *Client) heartbeatStale(conn *protocol.Connection) bool {
+	c.mu.RLock()
+	current := c.conn
+	c.mu.RUnlock()
+	if current != conn {
+		return true
+	}
+	state := conn.State()
+	return state == protocol.StateError || state == protocol.StateDisconnected
+}
+
 // startHeartbeat begins sending periodic heartbeats to the plugin
 func (c *Client) startHeartbeat(conn *protocol.Connection) {
 	c.wg.Add(1)
@@ -548,6 +564,14 @@ func (c *Client) startHeartbeat(conn *protocol.Connection) {
 			case <-c.stopCh:
 				return
 			case <-ticker.C:
+				// Exit if the plugin reconnected (this goroutine's conn was
+				// replaced) or the bound connection died. The replacement
+				// connection gets its own heartbeat via handleConnection.
+				if c.heartbeatStale(conn) {
+					c.logger.Info("heartbeat sender exiting: connection replaced or dead")
+					return
+				}
+
 				// Send heartbeat
 				c.heartbeatMu.Lock()
 				c.heartbeatSeq++
@@ -566,6 +590,12 @@ func (c *Client) startHeartbeat(conn *protocol.Connection) {
 					c.metrics.LastError = err
 					c.metrics.LastErrorTime = time.Now()
 					c.metricsMu.Unlock()
+					// A failed send marks the connection Error; exit now
+					// instead of waiting for the next tick's stale check.
+					if c.heartbeatStale(conn) {
+						c.logger.Info("heartbeat sender exiting: connection replaced or dead")
+						return
+					}
 					continue
 				}
 
