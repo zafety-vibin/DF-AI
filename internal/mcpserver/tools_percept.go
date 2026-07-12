@@ -2,14 +2,13 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/df-ai/orchestrator/internal/mapview"
 )
-
-// NOTE: Task 11 adds find_dig_site to this file and extends this import
-// block with "fmt" and "strings" when its code needs it.
 
 func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 	type lookIn struct {
@@ -120,5 +119,36 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 			data.SurfaceSlice = s
 		}
 		return withDash(b, ctx, renderSurvey(data)), nil, nil
+	})
+
+	type findIn struct {
+		Width  int `json:"width" jsonschema:"room width in tiles"`
+		Height int `json:"height" jsonschema:"room height in tiles"`
+		Z      int `json:"z" jsonschema:"z-level to search (use cross_section to pick a stone level)"`
+		NearX  int `json:"near_x" jsonschema:"anchor x (e.g. your stair shaft)"`
+		NearY  int `json:"near_y" jsonschema:"anchor y"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "find_dig_site",
+		Description: "Search a z-level for fully-solid rectangles where a WxH room can be dug, ranked by distance from your anchor. Returns concrete coordinates — use these instead of guessing. Solid includes hidden fog tiles (they're undug rock: diggable).",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in findIn) (*mcp.CallToolResult, any, error) {
+		topo := b.Topo()
+		if topo == nil {
+			return withDash(b, ctx, "topology not built yet (waiting for full state)"), nil, nil
+		}
+		sites := mapview.FindDigSites(topo, mapview.DigSiteRequest{
+			W: int16(in.Width), H: int16(in.Height), Z: int16(in.Z),
+			NearX: int16(in.NearX), NearY: int16(in.NearY), MaxCandidates: 5,
+		})
+		if len(sites) == 0 {
+			return withDash(b, ctx, "no fully-solid candidates on that z — try another level or smaller room"), nil, nil
+		}
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "%d candidates for a %dx%d room on z=%d:\n", len(sites), in.Width, in.Height, in.Z)
+		for i, s := range sites {
+			fmt.Fprintf(&sb, "%d. dig from (%d,%d,%d) to (%d,%d,%d) — %s\n",
+				i+1, s.X1, s.Y1, s.Z, s.X2, s.Y2, s.Z, s.Rationale)
+		}
+		return withDash(b, ctx, sb.String()), nil, nil
 	})
 }

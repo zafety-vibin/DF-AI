@@ -40,7 +40,7 @@ func TestPerceptToolsRegistered(t *testing.T) {
 	for _, tool := range res.Tools {
 		found[tool.Name] = true
 	}
-	for _, name := range []string{"look", "cross_section"} {
+	for _, name := range []string{"look", "cross_section", "find_dig_site"} {
 		if !found[name] {
 			t.Errorf("tool %q not registered", name)
 		}
