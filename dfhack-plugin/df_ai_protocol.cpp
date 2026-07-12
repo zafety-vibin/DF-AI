@@ -79,7 +79,7 @@ static bool g_connected = false;
 static uint64_t g_last_heartbeat_ms = 0;  // Last time we received heartbeat from server
 static uint32_t g_reconnect_delay_ms = 1000;  // Current reconnection backoff delay
 static std::unique_ptr<std::thread> g_message_thread;  // Background message handler
-static bool g_stop_message_loop = false;  // Signal to stop message thread
+static std::atomic<bool> g_stop_message_loop{false};  // Signal to stop message thread (set from console/main threads, read from socket thread)
 static bool g_auto_update_enabled = false;  // Auto-update toggle flag
 static uint32_t g_heartbeat_counter = 0;  // Count heartbeats for auto-update trigger
 
@@ -302,7 +302,11 @@ bool applyDigDesignation(uint8_t digType, int16_t x1, int16_t y1, int16_t z, int
 bool applyZoneDesignation(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error)
 {
     (void)zoneType; (void)x1; (void)y1; (void)z; (void)x2; (void)y2;
-    error = "Zone designation API not yet ported to DFHack 53.12 (civzone refactor); see designations.cpp comment";
+    // Keep this message actionable for the playing model, not a code
+    // pointer: it should route around the gap, not retry.
+    error = "zones are not implemented in this plugin build - do not retry ZONE commands; "
+            "place beds/furniture and workshops instead (dwarves will use unzoned beds); "
+            "zone support is planned";
     return false;
 }
 
@@ -431,6 +435,41 @@ bool applyBlueprintDesignation(const std::string& blueprintName, int16_t originX
     // TODO: Fix blueprint execution after resolving thread safety
     error = "Blueprint command temporarily disabled due to thread safety issues";
     return false;
+}
+
+// push_state_refresh sends the full turn-boundary refresh bundle:
+// ENTITY_UPDATE, tile deltas (only if non-empty), and any new
+// announcements. Called whenever the simulation stops at a turn boundary —
+// step auto-repause and explicit PAUSE commands — so the model's world
+// state is re-grounded instead of frozen at connect time (nothing else
+// pushes updates in the turn-based flow; auto-update is off by default).
+//
+// THREAD SAFETY: runs wherever drain_pending_work runs — plugin_onupdate
+// (simulation thread) or the socket thread under drain_from_socket_thread's
+// suspension. Both are safe for DF reads; extract_entities and
+// detect_tile_changes additionally take their own (recursive) CoreSuspender.
+// All sends go through socket_send_locked.
+static void push_state_refresh()
+{
+    if (!g_connected || !g_socket || !g_socket->IsSocketValid()) {
+        return;
+    }
+
+    color_ostream_proxy out(Core::getInstance().getConsole());
+
+    // Tile deltas first (matches the auto-update ordering), only if any.
+    std::vector<uint8_t> tile_changes = detect_tile_changes();
+    if (!tile_changes.empty()) {
+        send_tile_update(out, tile_changes);
+    }
+
+    // Entities (dwarf positions/jobs move every step).
+    std::vector<EntityInfo> entities = extract_entities();
+    std::vector<uint8_t> entity_msg = serialize_entity_update(entities);
+    socket_send_locked(entity_msg.data(), entity_msg.size());
+
+    // Announcements since the last poll.
+    poll_and_send_announcements();
 }
 
 // Execute COMMAND on main thread - called from plugin_onupdate()
@@ -613,6 +652,9 @@ void executeCommand(const std::vector<uint8_t> &payload)
                 World::SetPauseState(true);
                 g_step_target_frame = -1;
                 sendCommandAck(cmdID, ACK_STATUS_SUCCESS, "");
+                // Manual pause is a turn boundary: re-ground the model
+                // with a fresh entity/tile/announcement bundle.
+                push_state_refresh();
             } else if (mode == 0x00) {       // unpause
                 World::SetPauseState(false);
                 g_step_target_frame = -1;
@@ -659,7 +701,7 @@ void handleCommand(const std::vector<uint8_t> &payload)
 //      from the socket thread (standard DFHack remote-tools pattern);
 //      queue pops are mutex-guarded so the two contexts never double-run
 //      an item.
-static void drain_pending_work(color_ostream &out)
+static void drain_pending_work_impl(color_ostream &out)
 {
     // Don't touch DF structures if no map is loaded (startup/shutdown).
     if (!Core::getInstance().isMapLoaded() || !df::global::world) {
@@ -687,6 +729,11 @@ static void drain_pending_work(color_ostream &out)
         (int64_t)df::global::world->frame_counter >= g_step_target_frame) {
         World::SetPauseState(true);
         g_step_target_frame = -1;
+        // STEP-COMPLETION PUSH: the step just finished — this is the turn
+        // boundary the agent reasons from. Push entities, tile deltas, and
+        // announcements now, or the model plays against a world state
+        // frozen at connect time.
+        push_state_refresh();
     }
 
     // Drain query queue (read-only DF accesses).
@@ -711,15 +758,55 @@ static void drain_pending_work(color_ostream &out)
     }
 }
 
+// drain_pending_work — exception barrier of last resort around the queued
+// work. executeCommand and executeQuery carry their own guards; anything
+// that still escapes (state extraction in send_full_state /
+// push_state_refresh, a DFHack CHECK-macro throw from an unexpected path)
+// would otherwise unwind into plugin_onupdate or the socket thread's stack
+// and std::terminate DF (DFHack precondition macros THROW — see the guard
+// note in executeCommand).
+static void drain_pending_work(color_ostream &out)
+{
+    try {
+        drain_pending_work_impl(out);
+    } catch (std::exception &e) {
+        out.printerr("df_ai_protocol: exception in drain_pending_work: %s\n", e.what());
+    } catch (...) {
+        out.printerr("df_ai_protocol: unknown exception in drain_pending_work\n");
+    }
+}
+
 // drain_from_socket_thread suspends the core and drains pending work.
 // Invoked right after the socket thread enqueues a command/query/resync so
 // the plugin stays responsive while DF is paused. Unconditional (no pause
 // check): eliminates the pause-transition race, and command/query rates
 // are low enough that suspension cost is irrelevant.
+//
+// THREADING: this must NOT block indefinitely on the core lock. The
+// external teardown paths join this thread while they may themselves hold
+// CoreSuspendMutex — DFHack runs non-`unlocked` plugin commands (our
+// ai-disconnect) under CoreSuspender (dfhack library/PluginManager.cpp:
+// 513-516), and at DF exit Core::Shutdown (library/Core.cpp:1916-1947)
+// stops servicing suspend requests (Core::Update's CoreWakeup.wait,
+// Core.cpp:1651-1652, never runs again) before Plugin::unload calls
+// plugin_shutdown (library/PluginManager.cpp:441-442). A plain
+// CoreSuspender here (blocking lock on the recursive_timed_mutex
+// CoreSuspendMutex, Core.h:327,457-461) would then never return -> the
+// joiner waits on us, we wait on the lock: deadlock. So: bounded
+// try-suspend (ConditionalCoreSuspender = try_lock_for(100ms), Core.h:
+// 376-381,505-511 — same pattern as dfhack Core.cpp:407-414) and recheck
+// the stop flag between attempts.
 static void drain_from_socket_thread()
 {
-    CoreSuspender suspend;
-    drain_pending_work(Core::getInstance().getConsole());
+    while (!g_stop_message_loop) {
+        ConditionalCoreSuspender suspend;
+        if (suspend) {
+            drain_pending_work(Core::getInstance().getConsole());
+            return;
+        }
+        // Couldn't get the core within 100ms — teardown may be waiting to
+        // join us. Re-check the flag and retry.
+    }
 }
 
 // Plugin onupdate - process queued work on MAIN THREAD while unpaused
@@ -1045,6 +1132,20 @@ bool connect_to_server(color_ostream &out)
         return true;
     }
 
+    // Reap a message thread that tore itself down (heartbeat timeout /
+    // server DISCONNECT leave an exited-but-joinable thread behind; see
+    // teardown_from_socket_thread). Overwriting g_message_thread below
+    // while it is still joinable would std::terminate in ~thread(). The
+    // join returns immediately since the thread has already exited.
+    if (g_message_thread &&
+        g_message_thread->get_id() != std::this_thread::get_id()) {
+        g_stop_message_loop = true;
+        if (g_message_thread->joinable()) {
+            g_message_thread->join();
+        }
+        g_message_thread.reset();
+    }
+
     out.print("Connecting to %s:%d...\n", g_server_host.c_str(), g_server_port);
 
     // Create socket
@@ -1122,16 +1223,14 @@ bool connect_with_retry(color_ostream &out, int max_attempts = 5)
     return false;
 }
 
-// Disconnect from server
-void disconnect_from_server()
+// Shared teardown tail: send best-effort DISCONNECT, close + free the
+// socket, reset connection state. Does NOT touch g_message_thread, so it
+// is safe from ANY thread — including the socket thread itself. The
+// Close()/reset() runs under g_send_mutex so a concurrent
+// socket_send_locked (acks/announcements from the main thread) can never
+// dereference a freed socket.
+static void close_socket_and_reset()
 {
-    // Stop message thread first
-    g_stop_message_loop = true;
-    if (g_message_thread && g_message_thread->joinable()) {
-        g_message_thread->join();
-        g_message_thread.reset();
-    }
-
     if (g_socket && g_connected) {
         // Send graceful DISCONNECT message (best effort)
         std::vector<uint8_t> message;
@@ -1158,12 +1257,60 @@ void disconnect_from_server()
         socket_send_locked(message.data(), message.size());
     }
 
-    if (g_socket) {
-        g_socket->Close();
-        g_socket.reset();
+    {
+        std::lock_guard<std::mutex> lock(g_send_mutex);
+        if (g_socket) {
+            g_socket->Close();
+            g_socket.reset();
+        }
     }
     g_connected = false;
     reset_announcement_cursor();
+}
+
+// Teardown path for the SOCKET THREAD ONLY (heartbeat timeout, server-sent
+// DISCONNECT). Never joins: std::thread::join() from the thread itself
+// throws std::system_error(resource_deadlock_would_occur), which escapes
+// message_receive_loop and std::terminate()s DF — that was killing DF
+// ~15s after every orchestrator exit. Instead: set the stop flag, close
+// the socket, and let message_receive_loop return on its own. The
+// exited-but-still-joinable std::thread object is reaped later by
+// disconnect_from_server() or the next connect_to_server() call, both of
+// which run on other threads.
+static void teardown_from_socket_thread()
+{
+    g_stop_message_loop = true;
+    close_socket_and_reset();
+}
+
+// Disconnect from server — EXTERNAL path (ai-disconnect console command,
+// plugin_enable(false), plugin_shutdown). Joins the message thread, so it
+// must never run ON the message thread; a std::this_thread guard falls
+// back to the no-join teardown just in case. The join itself cannot
+// deadlock against drain_from_socket_thread even though DFHack invokes
+// non-`unlocked` plugin commands under CoreSuspender
+// (dfhack library/PluginManager.cpp:513-516) — i.e. we may HOLD
+// CoreSuspendMutex right here — because the drain only try-locks with a
+// 100ms bound and rechecks g_stop_message_loop between attempts.
+void disconnect_from_server()
+{
+    // Stop message thread first
+    g_stop_message_loop = true;
+    if (g_message_thread) {
+        if (g_message_thread->get_id() == std::this_thread::get_id()) {
+            // Defensive: self-join would terminate DF (see
+            // teardown_from_socket_thread). Should be unreachable — the
+            // socket thread never calls disconnect_from_server anymore.
+            teardown_from_socket_thread();
+            return;
+        }
+        if (g_message_thread->joinable()) {
+            g_message_thread->join();
+        }
+        g_message_thread.reset();
+    }
+
+    close_socket_and_reset();
 }
 
 // Send handshake message
@@ -1471,7 +1618,8 @@ void message_receive_loop(color_ostream &out)
 
                 if (elapsed > HEARTBEAT_TIMEOUT_MS) {
                     out.printerr("Heartbeat timeout detected (%llu ms since last heartbeat)\n", elapsed);
-                    disconnect_from_server();
+                    // We ARE the message thread — must not join ourselves.
+                    teardown_from_socket_thread();
                     return;
                 }
             }
@@ -1571,7 +1719,8 @@ void message_receive_loop(color_ostream &out)
 
             case MSG_TYPE_DISCONNECT:
                 out.print("Server requested disconnect\n");
-                disconnect_from_server();
+                // We ARE the message thread — must not join ourselves.
+                teardown_from_socket_thread();
                 return;
 
             default:

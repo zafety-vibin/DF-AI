@@ -414,13 +414,20 @@ static std::string handleSimStatus(const std::string &args, uint8_t &status) {
 // Classified map queries: map_slice + column_profile.
 // ---------------------------------------------------------------------------
 
-// classifyTile maps a tiletype + designation to one model-facing glyph.
+// classifyTileRevealed maps a tiletype + liquid state to one model-facing
+// glyph, IGNORING the hidden (fog-of-war) bit. The HIDDEN designation bit
+// only controls what the *dwarves/UI* have revealed; the real tiletype
+// under fog is present in the map block and MapCache::tiletypeAt returns
+// it regardless. column_profile uses this directly so surveys report true
+// stratigraphy (soil/stone/mineral/liquid) for unexplored tiles — that is
+// exactly what a survey is for, and the overseer in DF can see site
+// stratigraphy via pre-embark/tools anyway. Mapping hidden tiles to
+// "unknown" made column_profile useless on a fresh embark.
 // Legend (keep in sync with internal/mapview and the look tool):
 //   ? hidden  # stone wall  % soil wall  = mineral wall  . floor  , grass
 //   T tree  t sapling/shrub  _ open air  < > X stairs  ^ ramp  ~ water
 //   L magma  F fortification
-static char classifyTile(df::tiletype tt, const df::tile_designation &des) {
-    if (des.bits.hidden) return '?';
+static char classifyTileRevealed(df::tiletype tt, const df::tile_designation &des) {
     if (des.bits.flow_size > 0)
         return des.bits.liquid_type == df::tile_liquid::Magma ? 'L' : '~';
     using S = df::tiletype_shape;
@@ -449,6 +456,14 @@ static char classifyTile(df::tiletype tt, const df::tile_designation &des) {
         case S::FORTIFICATION: return 'F';
         case S::EMPTY: case S::NONE: default: return '_';
     }
+}
+
+// classifyTile: the fog-respecting variant used for map_slice rows — the
+// grid keeps '?' for hidden tiles so the model can still distinguish
+// explored from unexplored terrain at a glance.
+static char classifyTile(df::tiletype tt, const df::tile_designation &des) {
+    if (des.bits.hidden) return '?';
+    return classifyTileRevealed(tt, des);
 }
 
 static std::string queryMapSlice(const std::string &args, uint8_t &status) {
@@ -506,12 +521,18 @@ static std::string queryColumnProfile(const std::string &args, uint8_t &status) 
         df::tile_designation des = cache.designationAt(pos);
         df::tiletype tt = cache.tiletypeAt(pos);
         char g = classifyTile(tt, des);
+        // Hidden tiles keep glyph '?' and hidden:true, but shape/material
+        // report the TRUTH from the real tiletype under the fog (see
+        // classifyTileRevealed). DF's designation bits can't reveal hidden
+        // material — but DFHack reads the tiletype directly, and a survey
+        // that answers "unknown" for every undug tile is no survey at all.
+        char cls = des.bits.hidden ? classifyTileRevealed(tt, des) : g;
         const char *shape = "other"; const char *mat = "other";
-        switch (g) {
+        switch (cls) {
             case '#': shape = "wall"; mat = "stone"; break;
             case '%': shape = "wall"; mat = "soil"; break;
             case '=': shape = "wall"; mat = "mineral"; break;
-            case '?': shape = "hidden"; mat = "unknown"; break;
+            case '?': shape = "hidden"; mat = "unknown"; break; // unreachable; kept as a safe default
             case ',': shape = "floor"; mat = "grass"; break;
             case '.': shape = "floor"; mat = "rock_or_soil"; break;
             case '_': shape = "open"; mat = "air"; break;
@@ -542,27 +563,44 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
     uint8_t status = QUERY_STATUS_UNKNOWN;
     std::string data;
 
-    if (name == "list_orders") {
-        data = handleListOrders(args, status);
-    } else if (name == "manager_orders") {
-        data = handleManagerOrders(args, status);
-    } else if (name == "dwarf_detail") {
-        data = handleDwarfDetail(args, status);
-    } else if (name == "building_status") {
-        data = handleBuildingStatus(args, status);
-    } else if (name == "workshop_jobs") {
-        data = handleWorkshopJobs(args, status);
-    } else if (name == "stockpile_inventory") {
-        data = handleStockpileInventory(args, status);
-    } else if (name == "sim_status") {
-        data = handleSimStatus(args, status);
-    } else if (name == "map_slice") {
-        data = queryMapSlice(args, status);
-    } else if (name == "column_profile") {
-        data = queryColumnProfile(args, status);
-    } else {
-        status = QUERY_STATUS_UNKNOWN;
-        data = jsonError("unknown query name: " + name);
+    // Exception barrier: DFHack module APIs used by these handlers
+    // (Buildings::findAtTile in building_status/workshop_jobs, MapCache,
+    // Items/Materials helpers) validate preconditions with
+    // CHECK_NULL_POINTER / CHECK_INVALID_ARGUMENT macros that THROW
+    // (dfhack library/include/Error.h). An exception escaping here unwinds
+    // into drain_pending_work's caller — plugin_onupdate or the socket
+    // thread — and without a guard would std::terminate DF. Mirror
+    // executeCommand's guard (df_ai_protocol.cpp): convert to a
+    // QUERY_STATUS_ERROR response carrying the exception text.
+    try {
+        if (name == "list_orders") {
+            data = handleListOrders(args, status);
+        } else if (name == "manager_orders") {
+            data = handleManagerOrders(args, status);
+        } else if (name == "dwarf_detail") {
+            data = handleDwarfDetail(args, status);
+        } else if (name == "building_status") {
+            data = handleBuildingStatus(args, status);
+        } else if (name == "workshop_jobs") {
+            data = handleWorkshopJobs(args, status);
+        } else if (name == "stockpile_inventory") {
+            data = handleStockpileInventory(args, status);
+        } else if (name == "sim_status") {
+            data = handleSimStatus(args, status);
+        } else if (name == "map_slice") {
+            data = queryMapSlice(args, status);
+        } else if (name == "column_profile") {
+            data = queryColumnProfile(args, status);
+        } else {
+            status = QUERY_STATUS_UNKNOWN;
+            data = jsonError("unknown query name: " + name);
+        }
+    } catch (std::exception &e) {
+        status = QUERY_STATUS_ERROR;
+        data = jsonError(std::string("DFHack exception: ") + e.what());
+    } catch (...) {
+        status = QUERY_STATUS_ERROR;
+        data = jsonError("DFHack exception: unknown non-standard exception");
     }
 
     sendQueryResponse(queryID, status, data);
