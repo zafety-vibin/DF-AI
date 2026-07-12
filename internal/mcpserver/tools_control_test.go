@@ -1,8 +1,11 @@
 package mcpserver
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/df-ai/orchestrator/internal/predicate"
 )
@@ -33,6 +36,55 @@ func TestRenderGoalsHorizonSections(t *testing.T) {
 	}
 	if strings.Contains(out, "SOON:") {
 		t.Fatalf("empty horizon should be omitted:\n%s", out)
+	}
+}
+
+// TestControlToolsNilBridge drives every control tool over an in-memory
+// MCP session against a nil bridge: no panics, each reports NOT CONNECTED.
+func TestControlToolsNilBridge(t *testing.T) {
+	ctx := context.Background()
+	srv := New(nil)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := srv.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	for _, name := range []string{"pause", "unpause", "check_goals"} {
+		res, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: name})
+		if err != nil {
+			t.Fatalf("call %s: %v", name, err)
+		}
+		tc, ok := res.Content[0].(*mcp.TextContent)
+		if !ok {
+			t.Fatalf("%s: expected *mcp.TextContent, got %T", name, res.Content[0])
+		}
+		if !strings.Contains(tc.Text, "NOT CONNECTED") {
+			t.Errorf("%s: expected NOT CONNECTED, got %q", name, tc.Text)
+		}
+	}
+
+	res, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "step", Arguments: map[string]any{"ticks": 600},
+	})
+	if err != nil {
+		t.Fatalf("call step: %v", err)
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("step: expected *mcp.TextContent, got %T", res.Content[0])
+	}
+	if !strings.Contains(tc.Text, "NOT CONNECTED") {
+		t.Errorf("step: expected NOT CONNECTED, got %q", tc.Text)
 	}
 }
 

@@ -51,6 +51,9 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 		Name:        "pause",
 		Description: "Pause the DF simulation. Think while paused; nothing moves.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
 		res, err := b.Exec.SendPauseCommand(true)
 		return withDash(b, ctx, ackText(res, err, "pause")), nil, nil
 	})
@@ -59,6 +62,9 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 		Name:        "unpause",
 		Description: "Unpause DF and let it run free (prefer step for turn-based play).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
 		res, err := b.Exec.SendPauseCommand(false)
 		return withDash(b, ctx, ackText(res, err, "unpause")), nil, nil
 	})
@@ -70,6 +76,9 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 		Name:        "step",
 		Description: "Run the simulation for N ticks then auto-pause, and report what happened (new alerts, arrivals). This is your end-of-turn: act, then step, then observe.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in stepIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
 		if in.Ticks <= 0 {
 			in.Ticks = 600
 		}
@@ -129,6 +138,9 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 		Name:        "check_goals",
 		Description: "Evaluate the survival/headroom/trajectory predicates against live state, with evidence. Your verification critic — call after milestones and before claiming success.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+		if b == nil || b.Preds == nil {
+			return TextResult("NOT CONNECTED: start DF, then run `ai-connect` in the DFHack console."), nil, nil
+		}
 		return withDash(b, ctx, renderGoals(b.Preds.CheckAll(b.WM))), nil, nil
 	})
 }
