@@ -26,3 +26,11 @@ Volumetric/ASCII-3D renderings are rejected on evidence: grid-reading accuracy c
 - The glyph legend is defined once (`internal/mapview.Legend`, mirrored by the plugin's `classifyTile`) — keep them in sync; every crop ships the legend.
 - Grass vs stone vs soil vs mineral distinctions come from DFHack's material classification. If a new tile kind renders wrongly, fix `classifyTile` in `dfhack-plugin/queries.cpp`, not the renderer.
 - The z-axis runs UP (higher z = sky). Surface ≈ the dwarves' embark level. 1200 ticks = 1 game day.
+
+## Stair-kind rule
+
+A multi-z stair shaft needs the right kind at each level or dwarves can't climb it: the bottom tile is UpStair, the top tile is DownStair, every tile between is UpDownStair. The plugin also honors **continuation**: if the top of a new range abuts an already-carved stair from above (or below), the adjoining tile is promoted to UpDownStair so the new shaft joins the existing one instead of leaving a one-tile gap; tiles that are already carved stairs are skipped rather than re-designated. This is why `designate_dig` with `stairs` is safe to call repeatedly to extend a shaft deeper — it reads what's already carved before deciding what each tile needs.
+
+## Water, aquifers, and damp
+
+Standing/flowing water and the aquifer bit are exposed everywhere depth matters — `map_slice`, `column_profile`, and `survey_site` all report water depth (from DF's own flow-size digit) and an aquifer flag, plus a derived "damp" flag for tiles adjacent to wet ground. These are surfaced **including hidden tiles**, an intentional exception to the fog rule above: DF's own dig-cancellation warnings ("water" / "damp stone") already make aquifers knowable to an attentive player without breaching them, so hiding that signal from the model would only manufacture surprises DF itself doesn't intend.

@@ -15,6 +15,7 @@
 - **Reachability dry-run**: Go pathfinding over the topology graph answering "can dwarves reach these designated tiles from dug/open space?" — designate tools gain a warn-on-unreachable.
 - **Region graph + named places**: auto-detect dug components per z; `name_place`/`list_places` tools; name↔bbox translation in both directions. Names-over-coordinates is the cheapest emergence lever and free stream narration.
 - Deferred-from-008 cleanups that belong here: `cross_section` z=0 sentinel (pointer-int inputs), RenderCrop empty-rows guard, survey edge-clamping "N samples unavailable" notes.
+- Water/damp/aquifer perception (map_slice, column_profile, survey), stocks material names + economic flag, and `buildings`/`remove_building` shipped early in the 008 session-1 fix wave (2026-07-12); the remaining round-2 items above (glyph overlays in `look`, elevation view, reachability, named places) still stand.
 
 ### 3. Skills as culture (.claude/skills conversion)
 Convert the 11 Go skills (internal/skill/builtins.go) to fortress/.claude/skills/*/SKILL.md preserving the HOUSE RULE: order/dependencies/tradeoffs, never dimensions/materials/coordinates. Add curated DF-mechanics reference skills (aquifers, moods, military basics) as progressive-disclosure references. Then the **learning loop**: after a `check_goals`-verified milestone or an instructive death, the playing model writes/updates a skill; verified-only entry (Voyager's rule); human audit during early iterations. Skill count stays small until description-matching strains (~50+; embedding retrieval is premature before that).
@@ -23,7 +24,7 @@ Convert the 11 Go skills (internal/skill/builtins.go) to fortress/.claude/skills
 Predicates today measure dug tiles and counts. Expand with the data now flowing: food/drink stocks quantified (stockpile_inventory → predicates), mood/stress risk (dwarf_detail), defense posture (entrance sealed?). `check_goals` becomes the model's habitual self-critic (charter already mandates it; make its output goal-diff-aware: "changed since last check").
 
 ### 5. Turn-flow quality
-- **Step tripwires** (plugin): critical-severity announcement during a step → auto-repause early + reason in the step return. Makes multi-day steps safe; "let it run and react" becomes the default rhythm.
+- **Step tripwires** (plugin): critical-severity announcement during a step → auto-repause early + reason in the step return. Makes multi-day steps safe; "let it run and react" becomes the default rhythm. (LANDED early — 008 session-1 fix wave, 2026-07-12; keep here only the step-return job-completion enrichment)
 - Step return enrichment: job-completion summaries (orders finished, constructions built) alongside alerts.
 - **Homeostasis executors** (df-ai's lesson, opt-in): threshold-driven Go automations the model can toggle (re-order drinks below N, auto-refuse hauling) — the LLM spends turns on strategy, not bookkeeping. Start with ONE (drink threshold) and evaluate.
 
