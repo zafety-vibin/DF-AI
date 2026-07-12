@@ -19,11 +19,11 @@ import (
 
 var (
 	port     = flag.Uint("port", 5000, "TCP port to listen on (must match plugin)")
-	cmd      = flag.String("cmd", "", "dig|build|order|query")
+	cmd      = flag.String("cmd", "", "dig|build|order|query|pause|unpause|step")
 	digtype  = flag.String("digtype", "default", "default|stairs|channel|ramp|upstair|downstair")
 	buildtyp = flag.Uint("buildtype", 0x10, "protocol BuildType byte (0x10=carpenter)")
 	ordertyp = flag.Uint("ordertype", 1, "protocol OrderType byte (1=bed)")
-	qty      = flag.Uint("qty", 1, "work order quantity")
+	qty      = flag.Uint("qty", 1, "work order quantity / step tick count")
 	qname    = flag.String("name", "sim_status", "query name")
 	qargs    = flag.String("args", "{}", "query args JSON")
 	x1       = flag.Int("x1", 0, "")
@@ -95,8 +95,14 @@ func main() {
 		if err == nil {
 			fmt.Printf("QUERY OK: %s\n", string(raw))
 		}
+	case "pause":
+		res, err = exec.SendPauseCommand(true)
+	case "unpause":
+		res, err = exec.SendPauseCommand(false)
+	case "step":
+		res, err = exec.SendStepCommand(uint32(*qty))
 	default:
-		fmt.Fprintln(os.Stderr, "unknown -cmd (dig|build|order|query)")
+		fmt.Fprintln(os.Stderr, "unknown -cmd (dig|build|order|query|pause|unpause|step)")
 		os.Exit(2)
 	}
 	if err != nil {

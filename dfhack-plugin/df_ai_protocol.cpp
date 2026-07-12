@@ -10,6 +10,7 @@
 #include "modules/Maps.h"
 #include "modules/Units.h"
 #include "modules/Buildings.h"
+#include "modules/World.h"
 
 #include "df/map_block.h"
 #include "df/world.h"
@@ -101,6 +102,11 @@ static std::queue<QueuedQuery> g_query_queue;
 // full-state send on the main thread (extraction suspends DF anyway;
 // doing it from the socket thread stalls DF mid-frame).
 static std::atomic<bool> g_resync_requested{false};
+
+// Step-mode target frame for PAUSE commands. -1 = not stepping. External
+// linkage: queries.cpp reads it to answer sim_status.
+// Set on the main thread (executeCommand); checked each plugin_onupdate.
+std::atomic<int64_t> g_step_target_frame{-1};
 
 // Forward declarations
 bool connect_to_server(color_ostream &out);
@@ -574,6 +580,31 @@ void executeCommand(const std::vector<uint8_t> &payload)
             success = placeStockpile(x1, y1, z, x2, y2, mask, error);
             break;
         }
+        case COMMAND_TYPE_PAUSE: {
+            // Payload: [4 cmdID][1 cmdType][1 mode][4 ticks]
+            if (payload.size() < 10) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid pause payload size");
+                return;
+            }
+            uint8_t mode = payload[5];
+            uint32_t ticks = read_uint32_be(payload, 6);
+            if (mode == 0x01) {              // pause
+                World::SetPauseState(true);
+                g_step_target_frame = -1;
+                sendCommandAck(cmdID, ACK_STATUS_SUCCESS, "");
+            } else if (mode == 0x00) {       // unpause
+                World::SetPauseState(false);
+                g_step_target_frame = -1;
+                sendCommandAck(cmdID, ACK_STATUS_SUCCESS, "");
+            } else if (mode == 0x02) {       // step
+                g_step_target_frame = (int64_t)df::global::world->frame_counter + ticks;
+                World::SetPauseState(false);
+                sendCommandAck(cmdID, ACK_STATUS_SUCCESS, "step started");
+            } else {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Unknown pause mode");
+            }
+            return;
+        }
         default:
             sendCommandAck(cmdID, 0x02, "Unknown command type");
             return;
@@ -618,6 +649,17 @@ DFhackCExport command_result plugin_onupdate(color_ostream &out)
 
         // Execute command on main thread (SAFE to access DF data structures here)
         executeCommand(cmd.payload);
+    }
+
+    // Step-mode auto-repause: once the frame counter reaches the target,
+    // pause the simulation. plugin_onupdate keeps firing while DF is
+    // paused (DFHack Core::doUpdate calls per-frame handlers from the
+    // main event loop unconditionally), but this only matters while
+    // unpaused — frames advance, the target is reached, and we re-pause.
+    if (g_step_target_frame >= 0 &&
+        (int64_t)df::global::world->frame_counter >= g_step_target_frame) {
+        World::SetPauseState(true);
+        g_step_target_frame = -1;
     }
 
     // RESYNC requested by the socket thread — perform the full-state send

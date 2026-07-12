@@ -65,6 +65,12 @@ constexpr uint8_t COMMAND_TYPE_UNSUSPEND  = 0x08;
 constexpr uint8_t COMMAND_TYPE_WORK_ORDER = 0x09;
 constexpr uint8_t COMMAND_TYPE_STOCKPILE  = 0x0A;
 constexpr uint8_t COMMAND_TYPE_SMOOTH     = 0x0B;
+constexpr uint8_t COMMAND_TYPE_PAUSE      = 0x0C;
+
+// Pause modes (payload byte after cmdType): matches internal/protocol/message.go.
+constexpr uint8_t PAUSE_MODE_UNPAUSE = 0x00;
+constexpr uint8_t PAUSE_MODE_PAUSE   = 0x01;
+constexpr uint8_t PAUSE_MODE_STEP    = 0x02;
 
 // Smooth subtype: matches df::tile_designation::smooth bitfield (1=smooth, 2=engrave).
 constexpr uint8_t SMOOTH_TYPE_SMOOTH  = 0x01;
@@ -149,3 +155,6 @@ void write_uint16_be(std::vector<uint8_t> &buf, uint16_t value);
 void write_int16_be(std::vector<uint8_t> &buf, int16_t value);
 void write_uint32_be(std::vector<uint8_t> &buf, uint32_t value);
 void write_uint64_be(std::vector<uint8_t> &buf, uint64_t value);
+
+// Big-endian payload reader (implemented in designations.cpp).
+uint32_t read_uint32_be(const std::vector<uint8_t> &data, size_t offset);

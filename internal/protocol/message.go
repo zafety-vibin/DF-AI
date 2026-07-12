@@ -293,6 +293,7 @@ const (
 	CommandTypeWorkOrder uint8 = 0x09 // Add a manager work order
 	CommandTypeStockpile uint8 = 0x0A // Designate a stockpile zone with category flags
 	CommandTypeSmooth    uint8 = 0x0B // Designate stone tiles for smoothing or engraving
+	CommandTypePause     uint8 = 0x0C // pause/unpause/step simulation control
 )
 
 // SmoothType constants (matches df::tile_designation::smooth bitfield: 1=smooth, 2=engrave).
@@ -512,6 +513,19 @@ type SmoothDesignation struct {
 	SmoothType uint8 // SmoothTypeSmooth or SmoothTypeEngrave
 }
 
+// PauseControl is the payload for CommandTypePause.
+// Mode: 0x00 unpause, 0x01 pause, 0x02 step (unpause, auto-pause after Ticks).
+type PauseControl struct {
+	Mode  uint8
+	Ticks uint32 // only meaningful for Mode=0x02
+}
+
+const (
+	PauseModeUnpause uint8 = 0x00
+	PauseModePause   uint8 = 0x01
+	PauseModeStep    uint8 = 0x02
+)
+
 // CommandMessage represents a command from server to DFHack
 type CommandMessage struct {
 	CommandID   uint32                // Unique command identifier
@@ -524,6 +538,7 @@ type CommandMessage struct {
 	Order       WorkOrderDesignation  // For WORK_ORDER commands
 	Stockpile   StockpileDesignation  // For STOCKPILE commands
 	Smooth      SmoothDesignation     // For SMOOTH commands
+	Pause       PauseControl          // For PAUSE commands
 
 	// Feature 007: Blueprint command fields
 	BlueprintName string // For BLUEPRINT: blueprint filename (without .csv)
@@ -536,7 +551,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeSmooth {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypePause {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -560,6 +575,13 @@ func (m *CommandMessage) Validate() error {
 			!IsBuildTypeFurniture(m.Build.BuildType) &&
 			!IsBuildTypeDoor(m.Build.BuildType) {
 			return fmt.Errorf("invalid build type: 0x%02X", m.Build.BuildType)
+		}
+	case CommandTypePause:
+		if m.Pause.Mode > PauseModeStep {
+			return fmt.Errorf("invalid pause mode: 0x%02X", m.Pause.Mode)
+		}
+		if m.Pause.Mode == PauseModeStep && m.Pause.Ticks == 0 {
+			return errors.New("pause step requires Ticks > 0")
 		}
 	}
 

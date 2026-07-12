@@ -206,6 +206,35 @@ func (e *CommandExecutor) SendSmoothCommand(smoothType uint8, x1, y1, z, x2, y2 
 	return e.SendCommand(cmd)
 }
 
+// SendPauseCommand pauses (true) or unpauses (false) the DF simulation.
+func (e *CommandExecutor) SendPauseCommand(pause bool) (*CommandResult, error) {
+	mode := protocol.PauseModeUnpause
+	if pause {
+		mode = protocol.PauseModePause
+	}
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypePause,
+		Pause:       protocol.PauseControl{Mode: mode},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendStepCommand unpauses DF and asks the plugin to re-pause after N
+// ticks. The ACK arrives immediately ("step started"); poll the
+// sim_status query for completion.
+func (e *CommandExecutor) SendStepCommand(ticks uint32) (*CommandResult, error) {
+	if ticks == 0 {
+		return nil, fmt.Errorf("step ticks must be > 0")
+	}
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypePause,
+		Pause:       protocol.PauseControl{Mode: protocol.PauseModeStep, Ticks: ticks},
+	}
+	return e.SendCommand(cmd)
+}
+
 // SendCommand sends a command and waits for acknowledgment
 func (e *CommandExecutor) SendCommand(cmdMsg *protocol.CommandMessage) (*CommandResult, error) {
 	// Check if connected

@@ -859,6 +859,14 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 				return err
 			}
 		}
+	case CommandTypePause:
+		// [1: Mode] [4: Ticks]
+		if err := binary.Write(w, binary.BigEndian, msg.Pause.Mode); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Pause.Ticks); err != nil {
+			return err
+		}
 	case CommandTypeBlueprint:
 		// [2: NameLen] [N: Name] [2: OriginX] [2: OriginY] [2: OriginZ]
 		nameBytes := []byte(msg.BlueprintName)
@@ -985,6 +993,13 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
 				return nil, err
 			}
+		}
+	case CommandTypePause:
+		if err := binary.Read(buf, binary.BigEndian, &msg.Pause.Mode); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.Pause.Ticks); err != nil {
+			return nil, err
 		}
 	case CommandTypeBlueprint:
 		// Read blueprint name (2 bytes length + N bytes name)

@@ -27,6 +27,7 @@
 #include "modules/Job.h"
 #include "modules/Items.h"
 #include "modules/Materials.h"
+#include "modules/World.h"
 
 #include "df/world.h"
 #include "df/job.h"
@@ -44,6 +45,7 @@
 
 #include "protocol.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -54,6 +56,7 @@
 using namespace DFHack;
 
 extern void sendQueryResponse(uint32_t queryID, uint8_t status, const std::string &dataJSON);
+extern std::atomic<int64_t> g_step_target_frame;  // defined in df_ai_protocol.cpp
 
 // ---------------------------------------------------------------------------
 // JSON construction helpers — minimal, no external library.
@@ -386,6 +389,22 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
     return os.str();
 }
 
+static std::string handleSimStatus(const std::string &args, uint8_t &status) {
+    if (!df::global::world) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("world is null");
+    }
+    std::string out = "{";
+    out += "\"paused\":";
+    out += World::ReadPauseState() ? "true" : "false";
+    out += ",\"frame\":" + jsonInt((int64_t)df::global::world->frame_counter);
+    out += ",\"stepping\":";
+    out += (g_step_target_frame >= 0) ? "true" : "false";
+    out += "}";
+    status = QUERY_STATUS_SUCCESS;
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Public entry: executeQuery — dispatcher called from main thread.
 // ---------------------------------------------------------------------------
@@ -407,6 +426,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
         data = handleWorkshopJobs(args, status);
     } else if (name == "stockpile_inventory") {
         data = handleStockpileInventory(args, status);
+    } else if (name == "sim_status") {
+        data = handleSimStatus(args, status);
     } else {
         status = QUERY_STATUS_UNKNOWN;
         data = jsonError("unknown query name: " + name);
