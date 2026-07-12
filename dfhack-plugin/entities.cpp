@@ -39,7 +39,10 @@ std::vector<EntityInfo> extract_entities()
     std::vector<EntityInfo> entities;
     auto &console = Core::getInstance().getConsole();
 
-    // Access world units
+    // Units are read from a background thread; suspend DF for the scan.
+    // CoreSuspender is reentrant/no-op when already on the core thread.
+    CoreSuspender suspend;
+
     auto &units = df::global::world->units.active;
 
     // Debug counters

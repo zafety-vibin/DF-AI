@@ -31,6 +31,7 @@
 #include <fstream>
 #include <mutex>
 #include <queue>
+#include <atomic>
 
 using namespace DFHack;
 
@@ -95,6 +96,11 @@ struct QueuedQuery {
 };
 static std::mutex g_query_queue_mutex;
 static std::queue<QueuedQuery> g_query_queue;
+
+// RESYNC flag — socket thread sets it, plugin_onupdate performs the
+// full-state send on the main thread (extraction suspends DF anyway;
+// doing it from the socket thread stalls DF mid-frame).
+static std::atomic<bool> g_resync_requested{false};
 
 // Forward declarations
 bool connect_to_server(color_ostream &out);
@@ -614,6 +620,14 @@ DFhackCExport command_result plugin_onupdate(color_ostream &out)
         executeCommand(cmd.payload);
     }
 
+    // RESYNC requested by the socket thread — perform the full-state send
+    // here on the main thread.
+    if (g_resync_requested.exchange(false)) {
+        if (!send_full_state(out)) {
+            out.printerr("Failed to send full state\n");
+        }
+    }
+
     // Poll DF announcements every ~5 seconds (50 onupdate ticks at 10Hz).
     // Sends only NEW entries; safe to call frequently if you want lower
     // latency. Skipped when not connected — no point queuing.
@@ -737,8 +751,8 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             if (receive_message(payload, msg_type)) {
                 switch (msg_type) {
                     case MSG_TYPE_RESYNC_REQUEST:
-                        out.print("Received RESYNC_REQUEST - sending full state...\n");
-                        send_full_state(out);
+                        out.print("Received RESYNC_REQUEST — queued for main thread\n");
+                        g_resync_requested = true;
                         break;
                     case MSG_TYPE_HEARTBEAT:
                         out.print("Received HEARTBEAT\n");
@@ -1373,10 +1387,8 @@ void message_receive_loop(color_ostream &out)
         // Handle message based on type
         switch (msg_type) {
             case MSG_TYPE_RESYNC_REQUEST:
-                out.print("Received RESYNC_REQUEST\n");
-                if (!send_full_state(out)) {
-                    out.printerr("Failed to send full state\n");
-                }
+                out.print("Received RESYNC_REQUEST — queued for main thread\n");
+                g_resync_requested = true;
                 break;
 
             case MSG_TYPE_COMMAND:

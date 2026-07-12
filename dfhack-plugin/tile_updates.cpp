@@ -62,7 +62,7 @@ std::vector<uint8_t> detect_tile_changes()
                     write_int16_be(result, static_cast<int16_t>(x));
                     write_int16_be(result, static_cast<int16_t>(y));
                     write_int16_be(result, static_cast<int16_t>(z));
-                    write_int16_be(result, static_cast<uint16_t>(current_type));
+                    write_uint16_be(result, static_cast<uint16_t>(current_type));
                     result.push_back(flags);
 
                     // Update cache
