@@ -39,6 +39,7 @@ DFHACK_PLUGIN(df_ai_protocol
     tile_updates.cpp
     entities.cpp
     designations.cpp
+    plants.cpp
     buildings.cpp
     work_orders.cpp
     queries.cpp

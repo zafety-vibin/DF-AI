@@ -25,11 +25,15 @@ constexpr uint8_t QUERY_STATUS_SUCCESS = 0x00;
 constexpr uint8_t QUERY_STATUS_ERROR   = 0x01;
 constexpr uint8_t QUERY_STATUS_UNKNOWN = 0x02;
 
-// Tile flags
+// Tile flags — kept in sync with internal/protocol/message.go (Flag*).
 constexpr uint8_t FLAG_HIDDEN = 0x01;
 constexpr uint8_t FLAG_DISCOVERED = 0x02;
 constexpr uint8_t FLAG_DESIGNATED = 0x04;
 constexpr uint8_t FLAG_CONSTRUCT = 0x08;
+constexpr uint8_t FLAG_WALL = 0x10;        // Solid wall/rock (diggable)
+constexpr uint8_t FLAG_FLOOR = 0x20;       // Walkable floor/ramp/stair
+constexpr uint8_t FLAG_VOID = 0x40;        // Open air / missing floor (fall hazard)
+constexpr uint8_t FLAG_LIQUID_7_7 = 0x80;  // Water/magma at 7/7 depth
 
 // Error codes
 constexpr uint16_t ERR_UNKNOWN_TYPE = 0x0001;
@@ -66,6 +70,7 @@ constexpr uint8_t COMMAND_TYPE_WORK_ORDER = 0x09;
 constexpr uint8_t COMMAND_TYPE_STOCKPILE  = 0x0A;
 constexpr uint8_t COMMAND_TYPE_SMOOTH     = 0x0B;
 constexpr uint8_t COMMAND_TYPE_PAUSE      = 0x0C;
+constexpr uint8_t COMMAND_TYPE_REMOVE_BUILDING = 0x0D;
 
 // Pause modes (payload byte after cmdType): matches internal/protocol/message.go.
 constexpr uint8_t PAUSE_MODE_UNPAUSE = 0x00;

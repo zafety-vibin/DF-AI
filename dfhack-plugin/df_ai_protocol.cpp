@@ -49,9 +49,14 @@ bool applySmoothDesignation(const std::vector<uint8_t> &payload, std::string &er
 // Forward declaration for function from work_orders.cpp
 bool applyWorkOrder(uint8_t orderType, uint16_t quantity, std::string &error);
 
+// Forward declarations for functions from plants.cpp
+bool applyChopDesignation(int16_t x1, int16_t y1, int16_t z1, int16_t x2, int16_t y2, int16_t z2, std::string &error);
+bool applyGatherDesignation(int16_t x1, int16_t y1, int16_t z1, int16_t x2, int16_t y2, int16_t z2, std::string &error);
+
 // Forward declarations for functions in this file
 bool applyZoneDesignation(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
 bool applyUnsuspend(int16_t x, int16_t y, int16_t z, std::string &error);
+bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error);
 
 // Forward declaration for function in buildings.cpp
 bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint32_t groupMask, std::string &error);
@@ -111,6 +116,19 @@ static std::atomic<bool> g_resync_requested{false};
 // Set on the main thread (executeCommand); checked each plugin_onupdate.
 std::atomic<int64_t> g_step_target_frame{-1};
 
+// Step tripwire — a critical (severity-2) announcement observed mid-step
+// ends the step immediately instead of letting the simulation run to the
+// frame target (an ambush at tick 50 of a 1200-tick step must not go
+// unanswered for the rest of a game-day). Set by trip_step_tripwire
+// (called from the announcement poll in announcements.cpp), cleared when
+// the next step starts; queries.cpp reads both to answer sim_status.
+// Flag is atomic, reason string is mutex-guarded: writers run on the main
+// thread (plugin_onupdate poll) or the socket thread under CoreSuspender
+// (drain-driven polls); readers run in either drain context.
+std::atomic<bool> g_step_tripwire{false};
+static std::mutex g_tripwire_mutex;
+static std::string g_tripwire_reason;
+
 // Forward declarations
 bool connect_to_server(color_ostream &out);
 bool connect_with_retry(color_ostream &out, int max_attempts);
@@ -164,38 +182,10 @@ const uint8_t ENTITY_TYPE_ANIMAL = 0x03;
 const uint8_t ENTITY_TYPE_OTHER = 0x04;
 
 // Forward declarations - implementations in entities.cpp
+// serialize_entity_update also appends the FortInfo calendar block
+// (cur_year / cur_year_tick) — the single source of truth for fort info.
 std::vector<EntityInfo> extract_entities();
 std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &entities);
-
-// FortInfo structure for fort-level statistics
-struct FortInfo {
-    uint32_t days_elapsed;
-    uint64_t created_wealth;
-    uint8_t season;
-    uint32_t year;
-};
-
-// Extract fort-level information
-// TODO: Find correct API for DF 53.02 - cur_year/cur_year_tick don't exist in this version
-FortInfo extract_fort_info()
-{
-    FortInfo info = {0};
-
-    if (!df::global::world) {
-        return info;
-    }
-
-    // Use frame_counter as approximation for now (10 ticks/second at normal speed)
-    // Roughly 1200 ticks/day at normal speed -> frame_counter / 1200 ≈ days
-    info.days_elapsed = df::global::world->frame_counter / 1200;
-
-    // TODO: Find correct API for wealth, season, year in DF 53.02
-    info.created_wealth = 0;  // Placeholder
-    info.season = 0;           // Placeholder
-    info.year = 0;             // Placeholder
-
-    return info;
-}
 
 // Designation command handling (inline implementation)
 
@@ -356,6 +346,41 @@ bool applyUnsuspend(int16_t x, int16_t y, int16_t z, std::string &error)
     return true;
 }
 
+// Remove the building (or unbuilt building plan) at the given coordinate.
+// Buildings::deconstruct returns true when the building was destroyed
+// instantly (an unbuilt plan with no construction progress, or an abstract
+// building like a stockpile/civzone); false means a deconstruction job was
+// queued and dwarves will dismantle it over time.
+// Both outcomes are success — the ACK text distinguishes them so the model
+// knows whether to expect a delay. Rationale from live play: a dead
+// building plan (e.g. a wall plan on a stair tile) blocks the tile forever
+// with no way to clear it.
+bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error)
+{
+    using namespace DFHack;
+
+    if (!Maps::isValidTilePos(x, y, z)) {
+        error = "Coordinates out of map bounds";
+        return false;
+    }
+
+    df::coord pos(x, y, z);
+    df::building* bld = Buildings::findAtTile(pos);
+    if (!bld) {
+        std::ostringstream os;
+        os << "no building at (" << x << "," << y << "," << z << ")";
+        error = os.str();
+        return false;
+    }
+
+    if (Buildings::deconstruct(bld)) {
+        error = "removed instantly (no deconstruction labor needed)";
+    } else {
+        error = "deconstruction queued (dwarves will dismantle)";
+    }
+    return true;
+}
+
 // Apply cancel designation to region
 bool applyCancelDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, int16_t z2, std::string &error)
 {
@@ -378,52 +403,10 @@ bool applyCancelDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16
     return true;
 }
 
-// Apply chop designation to region (mark trees for chopping)
-bool applyChopDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, int16_t z2, std::string &error)
-{
-    if (!Maps::isValidTilePos(x1, y1, z) || !Maps::isValidTilePos(x2, y2, z2)) {
-        error = "Invalid coordinates";
-        return false;
-    }
-
-    // Use DFHack chop-trees or similar command
-    // For now, run tiletypes command to mark trees
-    Core &core = Core::getInstance();
-    color_ostream_proxy out(core.getConsole());
-
-    // Alternative: Use TreeCutter plugin or manual tree designation
-    // For simplicity, designate trees in region
-    std::ostringstream cmd;
-    cmd << "chop-designate " << x1 << " " << y1 << " " << z << " " << x2 << " " << y2;
-
-    command_result result = core.runCommand(out, cmd.str());
-    if (result != CR_OK && result != CR_NOT_FOUND) {
-        // Command might not exist, fall back to manual
-        error = "chop-designate command not available";
-        return false;
-    }
-
-    return true;
-}
-
-// Apply gather designation using DFHack getplants command
-bool applyGatherDesignation(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, int16_t z2, std::string &error)
-{
-    // Use DFHack's getplants command which is smarter about plant targeting
-    // Since we can't easily target by region, run getplants all and let dwarves gather plants in area
-    Core &core = Core::getInstance();
-    color_ostream_proxy out(core.getConsole());
-
-    std::string cmd = "getplants all";
-    command_result result = core.runCommand(out, cmd);
-
-    if (result != CR_OK) {
-        error = "getplants command failed";
-        return false;
-    }
-
-    return true;
-}
+// CHOP / GATHER live in plants.cpp: direct plant designations via
+// DFHack::Designations::markPlant (the old console shell-outs here were
+// broken — "chop-designate" never existed, "getplants all" ignored the
+// region).
 
 // Apply blueprint using DFHack's quickfort command
 // IMPORTANT: This uses DFHack's native quickfort plugin instead of custom CSV parsing
@@ -472,6 +455,68 @@ static void push_state_refresh()
 
     // Announcements since the last poll.
     poll_and_send_announcements();
+}
+
+// get_step_tripwire_reason returns a copy of the last tripwire trigger
+// text under the guard mutex. queries.cpp calls this for sim_status.
+std::string get_step_tripwire_reason()
+{
+    std::lock_guard<std::mutex> lock(g_tripwire_mutex);
+    return g_tripwire_reason;
+}
+
+// clear_step_tripwire resets the tripwire record. Called when a new step
+// starts — the flag deliberately persists across the intervening pause so
+// the Go step tool's sim_status completion poll cannot miss it.
+static void clear_step_tripwire()
+{
+    std::lock_guard<std::mutex> lock(g_tripwire_mutex);
+    g_step_tripwire = false;
+    g_tripwire_reason.clear();
+}
+
+// trip_step_tripwire ends an in-progress step because a critical
+// announcement arrived. The exchange on g_step_target_frame atomically
+// claims the step: if no step is running (or another poll site already
+// tripped), this is a no-op — the ~5s onupdate poll and drain-driven
+// polls can never double-trip. External linkage: called from
+// poll_and_send_announcements (announcements.cpp).
+//
+// THREAD SAFETY: runs wherever the announcement poll runs — the main
+// thread (plugin_onupdate) or the socket thread under
+// drain_from_socket_thread's suspension; both are safe for SetPauseState
+// and the state push. The announcement cursor has already advanced past
+// the triggering report when this is called, so the nested
+// poll_and_send_announcements inside push_state_refresh finds nothing new
+// (no recursion risk).
+void trip_step_tripwire(const std::string &reason)
+{
+    if (g_step_target_frame.exchange(-1) < 0) {
+        return;  // no step in progress
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_tripwire_mutex);
+        g_step_tripwire = true;
+        g_tripwire_reason = reason;
+    }
+    // Exception barrier: the throttled plugin_onupdate poll reaches here
+    // OUTSIDE drain_pending_work's guard, and push_state_refresh's state
+    // extraction can hit DFHack CHECK macros (which THROW). An escaping
+    // throw would unwind into Core::Update and terminate DF — mirror the
+    // drain_pending_work barrier so every trip site, current and future,
+    // is guarded regardless of caller.
+    try {
+        World::SetPauseState(true);
+        // A tripped step is a turn boundary like any other step end:
+        // re-ground the model with a fresh entity/tile/announcement bundle.
+        push_state_refresh();
+    } catch (std::exception &e) {
+        color_ostream_proxy out(Core::getInstance().getConsole());
+        out.printerr("df_ai_protocol: exception in trip_step_tripwire: %s\n", e.what());
+    } catch (...) {
+        color_ostream_proxy out(Core::getInstance().getConsole());
+        out.printerr("df_ai_protocol: unknown exception in trip_step_tripwire\n");
+    }
 }
 
 // Execute COMMAND on main thread - called from plugin_onupdate()
@@ -662,6 +707,9 @@ void executeCommand(const std::vector<uint8_t> &payload)
                 g_step_target_frame = -1;
                 sendCommandAck(cmdID, ACK_STATUS_SUCCESS, "");
             } else if (mode == 0x02) {       // step
+                // A new step clears the previous tripwire record — the
+                // model has had its chance to read it via sim_status.
+                clear_step_tripwire();
                 g_step_target_frame = (int64_t)df::global::world->frame_counter + ticks;
                 World::SetPauseState(false);
                 sendCommandAck(cmdID, ACK_STATUS_SUCCESS, "step started");
@@ -669,6 +717,18 @@ void executeCommand(const std::vector<uint8_t> &payload)
                 sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Unknown pause mode");
             }
             return;
+        }
+        case COMMAND_TYPE_REMOVE_BUILDING: {
+            // Payload: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z]
+            if (payload.size() < 11) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid REMOVE_BUILDING payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            success = applyRemoveBuilding(x, y, z, error);
+            break;
         }
         default:
             sendCommandAck(cmdID, 0x02, "Unknown command type");
@@ -833,7 +893,16 @@ DFhackCExport command_result plugin_onupdate(color_ostream &out)
         g_announcement_throttle++;
         if (g_announcement_throttle >= 50) {
             g_announcement_throttle = 0;
-            poll_and_send_announcements();
+            // Exception barrier: this call sits directly in plugin_onupdate
+            // (no drain_pending_work guard above it) — DFHack calls us with
+            // no try/catch of its own, so a throw here would terminate DF.
+            try {
+                poll_and_send_announcements();
+            } catch (std::exception &e) {
+                out.printerr("df_ai_protocol: exception in announcement poll: %s\n", e.what());
+            } catch (...) {
+                out.printerr("df_ai_protocol: unknown exception in announcement poll\n");
+            }
         }
     }
 

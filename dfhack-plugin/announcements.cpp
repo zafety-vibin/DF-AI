@@ -37,6 +37,7 @@ using namespace DFHack;
 
 // Externs from df_ai_protocol.cpp
 extern std::unique_ptr<CActiveSocket> g_socket;
+extern void trip_step_tripwire(const std::string &reason);
 
 // Helpers from tile_extractor.cpp
 extern void write_uint16_be(std::vector<uint8_t> &buf, uint16_t value);
@@ -201,12 +202,22 @@ size_t poll_and_send_announcements()
     news.reserve(32);
     int32_t newHighest = g_last_sent_report_id;
 
+    // Step tripwire: remember the first NEW critical (severity-2) report
+    // this poll observes. The trip itself runs after the send + cursor
+    // update below so the nested announcement poll inside the tripwire's
+    // state push finds nothing new.
+    std::string criticalText;
+
     for (size_t i = 0; i < arr.size(); i++) {
         df::report* r = arr[i];
         if (!r) continue;
         if (r->id <= g_last_sent_report_id) continue;
         news.push_back(r);
         if (r->id > newHighest) newHighest = r->id;
+        if (criticalText.empty() &&
+            classify_severity(static_cast<int16_t>(r->type)) == 2) {
+            criticalText = r->text;
+        }
     }
 
     if (news.empty()) return 0;
@@ -227,12 +238,25 @@ size_t poll_and_send_announcements()
             g_last_sent_report_id = partial;
         }
     }
+
+    // A critical announcement mid-step ends the step immediately (pause +
+    // state push). No-op unless a step is actually in progress — see
+    // trip_step_tripwire in df_ai_protocol.cpp.
+    if (!criticalText.empty()) {
+        trip_step_tripwire(criticalText);
+    }
     return sent;
 }
 
 // reset_announcement_cursor zeroes the last-sent ID so a reconnect re-sends
 // the whole visible buffer. Call this from disconnect_from_server() or
 // on plugin reload.
+//
+// Known edge case (accepted): the re-sent backlog counts as "new", so if a
+// step is somehow still in progress across a reconnect, the first poll can
+// trip the step tripwire on a stale critical report. That trip is a
+// conservative pause and the re-sent reports ARE new to the reconnected
+// peer, so we deliberately don't suppress it.
 void reset_announcement_cursor()
 {
     g_last_sent_report_id = -1;

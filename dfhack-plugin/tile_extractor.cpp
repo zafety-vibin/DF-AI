@@ -10,6 +10,8 @@
 #include "df/tiletype.h"
 #include "df/tiletype_material.h"
 
+#include "protocol.h"
+
 #include <vector>
 #include <cstdint>
 #include <cstdio>
@@ -47,6 +49,127 @@ void write_uint64_be(std::vector<uint8_t> &buf, uint64_t value) {
     buf.push_back((value >> 16) & 0xFF);
     buf.push_back((value >> 8) & 0xFF);
     buf.push_back(value & 0xFF);
+}
+
+// Compute the full protocol flag byte for one tile. This is the SINGLE
+// source of truth for tile flags — called by both the full-state path
+// (extract_full_map_state below) and the delta path (detect_tile_changes
+// in tile_updates.cpp) so the two can never drift.
+uint8_t compute_tile_flags(MapExtras::MapCache &map_cache, const df::coord &pos, df::tiletype tile_type)
+{
+    uint8_t flags = 0;
+
+    // If the block isn't loaded OR DF returned no tiletype, mark the tile
+    // as HIDDEN so the Go side's topology overlay treats it as "unknown /
+    // unexplored" rather than implicitly "wall." DF lazily allocates
+    // blocks; on a fresh embark only a small fraction of the 192×192×129
+    // volume has populated tile data. Without this flag the Go side sees
+    // ~99% of tiles with no FLAG_FLOOR/WALL/VOID and defaults them to
+    // closed — the source of the "agent thinks the world is sealed in
+    // walls" symptom.
+    if (static_cast<uint16_t>(tile_type) == 0) {
+        return FLAG_HIDDEN;
+    }
+
+    MapExtras::Block *block = map_cache.BlockAt(pos);
+    if (!block) {
+        return flags;
+    }
+
+    // Get raw block for designation access
+    df::map_block *raw_block = block->getRaw();
+    if (!raw_block) {
+        return flags;
+    }
+
+    // Calculate position within block
+    int block_x = pos.x & 15;
+    int block_y = pos.y & 15;
+
+    // Check designation flags
+    df::tile_designation des = raw_block->designation[block_x][block_y];
+
+    if (des.bits.hidden) {
+        flags |= FLAG_HIDDEN;
+    }
+    // Note: discovered status not directly available in all DF versions
+    // For now, assume discovered if not hidden
+    if (!des.bits.hidden) {
+        flags |= FLAG_DISCOVERED;
+    }
+
+    // Check if designated for digging
+    if (des.bits.dig != df::tile_dig_designation::No) {
+        flags |= FLAG_DESIGNATED;
+    }
+
+    // Classify tile using DFHack API
+    // Bit 4: Wall (solid rock/constructed wall)
+    // Bit 5: Floor (walkable surface including ramps/stairs)
+    // Bit 6: Void (open air, missing floor, fall hazard)
+    // Bit 7: Liquid (water/magma at 7/7 depth)
+
+    // Classify by tile_shape directly. The DFHack helpers
+    // isWalkable / isWallTerrain go through the
+    // tiletype_shape `walkable` and `basic_shape` attribute
+    // table, which has produced unexpected results across
+    // versions. Switching on the shape enum is unambiguous
+    // and stable: each value here is a documented DF tile
+    // shape, so the mapping is checkable against the
+    // df/tiletype_shape.h enum at any version.
+    df::tiletype_shape shape = tileShape(tile_type);
+
+    switch (shape) {
+        // Walkable surfaces — dwarves can stand here.
+        case df::tiletype_shape::FLOOR:
+        case df::tiletype_shape::BOULDER:
+        case df::tiletype_shape::PEBBLES:
+        case df::tiletype_shape::FORTIFICATION:
+        case df::tiletype_shape::STAIR_UP:
+        case df::tiletype_shape::STAIR_DOWN:
+        case df::tiletype_shape::STAIR_UPDOWN:
+        case df::tiletype_shape::RAMP:
+        case df::tiletype_shape::RAMP_TOP:
+        case df::tiletype_shape::BROOK_TOP:
+        case df::tiletype_shape::SAPLING:
+        case df::tiletype_shape::SHRUB:
+        case df::tiletype_shape::TWIG:
+        case df::tiletype_shape::BRANCH:
+            flags |= FLAG_FLOOR;
+            break;
+
+        // Solid walls — diggable.
+        case df::tiletype_shape::WALL:
+        case df::tiletype_shape::TRUNK_BRANCH:
+        case df::tiletype_shape::BROOK_BED:
+            flags |= FLAG_WALL;
+            break;
+
+        // Open / void — fall hazard, not diggable.
+        case df::tiletype_shape::EMPTY:
+        case df::tiletype_shape::ENDLESS_PIT:
+            flags |= FLAG_VOID;
+            break;
+
+        // Default: unclassified — leave flags untouched.
+        // NONE / unknown shapes shouldn't be common at
+        // runtime; if they show up, the orchestrator
+        // will treat them as closed.
+        default:
+            break;
+    }
+
+    // Check for dangerous liquids (7/7 depth only) —
+    // independent of shape classification.
+    if (des.bits.flow_size == 7) {
+        df::tiletype_material mat = tileMaterial(tile_type);
+        if (mat == df::tiletype_material::POOL ||   // Water
+            mat == df::tiletype_material::MAGMA) {  // Magma
+            flags |= FLAG_LIQUID_7_7;
+        }
+    }
+
+    return flags;
 }
 
 // Extract full map state as binary tile array
@@ -94,144 +217,28 @@ std::vector<uint8_t> extract_full_map_state()
                 // Get tile type
                 df::tiletype tile_type = map_cache.tiletypeAt(pos);
 
-                // Determine flags
-                uint8_t flags = 0;
+                // Full flag byte — shared with the delta path
+                // (see compute_tile_flags above).
+                uint8_t flags = compute_tile_flags(map_cache, pos, tile_type);
 
-                // If the block isn't loaded OR DF returned no tiletype,
-                // mark the tile as HIDDEN so the orchestrator's topology
-                // overlay treats it as "unknown / unexplored" rather than
-                // implicitly "wall." DF lazily allocates blocks; on a fresh
-                // embark only a small fraction of the 192×192×129 volume
-                // has populated tile data. Without this flag the Go side
-                // sees ~99% of tiles with no FLAG_FLOOR/WALL/VOID and
-                // defaults them to closed — the source of the "agent
-                // thinks the world is sealed in walls" symptom.
-                if (static_cast<uint16_t>(tile_type) == 0) {
-                    flags |= 0x01; // FLAG_HIDDEN
-                    write_int16_be(result, static_cast<int16_t>(x));
-                    write_int16_be(result, static_cast<int16_t>(y));
-                    write_int16_be(result, static_cast<int16_t>(z));
-                    write_uint16_be(result, static_cast<uint16_t>(tile_type));
-                    result.push_back(flags);
-                    continue;
-                }
-
-                // Check if tile is hidden (not yet discovered)
-                MapExtras::Block *block = map_cache.BlockAt(pos);
-                if (block) {
-                    // Calculate position within block
-                    int block_x = x & 15;
-                    int block_y = y & 15;
-
-                    // Get raw block for designation access
-                    df::map_block *raw_block = block->getRaw();
-                    if (!raw_block) {
-                        // Skip this tile if raw block unavailable
-                        write_int16_be(result, static_cast<int16_t>(x));
-                        write_int16_be(result, static_cast<int16_t>(y));
-                        write_int16_be(result, static_cast<int16_t>(z));
-                        write_uint16_be(result, static_cast<uint16_t>(tile_type));
-                        result.push_back(flags);
-                        continue;
+                // Histogram + classification counts for diagnostics,
+                // derived from the computed flags. Shape values are -1..18
+                // for the standard enum; offset by +1 so index 0 = NONE.
+                if (static_cast<uint16_t>(tile_type) > 0) {
+                    df::tiletype_shape shape = tileShape(tile_type);
+                    int shape_idx = (int)shape + 1;
+                    if (shape_idx >= 0 && shape_idx < 32) {
+                        shape_hist[shape_idx]++;
                     }
 
-                    // Check designation flags
-                    df::tile_designation des = raw_block->designation[block_x][block_y];
-
-                    if (des.bits.hidden) {
-                        flags |= 0x01;  // FLAG_HIDDEN
-                    }
-                    // Note: discovered status not directly available in all DF versions
-                    // For now, assume discovered if not hidden
-                    if (!des.bits.hidden) {
-                        flags |= 0x02;  // FLAG_DISCOVERED
-                    }
-
-                    // Check if designated for digging
-                    if (des.bits.dig != df::tile_dig_designation::No) {
-                        flags |= 0x04;  // FLAG_DESIGNATED
-                    }
-
-                    // Classify tile using DFHack API
-                    // Bit 4: Wall (solid rock/constructed wall)
-                    // Bit 5: Floor (walkable surface including ramps/stairs)
-                    // Bit 6: Void (open air, missing floor, fall hazard)
-                    // Bit 7: Liquid (water/magma at 7/7 depth)
-
-                    // Classify by tile_shape directly. The DFHack helpers
-                    // isWalkable / isWallTerrain go through the
-                    // tiletype_shape `walkable` and `basic_shape` attribute
-                    // table, which has produced unexpected results across
-                    // versions. Switching on the shape enum is unambiguous
-                    // and stable: each value here is a documented DF tile
-                    // shape, so the mapping is checkable against the
-                    // df/tiletype_shape.h enum at any version.
-                    if (static_cast<uint16_t>(tile_type) > 0) {
-                        df::tiletype_shape shape = tileShape(tile_type);
-
-                        // Histogram for diagnostics. Shape values are -1..18
-                        // for the standard enum; offset by +1 so index 0 = NONE.
-                        int shape_idx = (int)shape + 1;
-                        if (shape_idx >= 0 && shape_idx < 32) {
-                            shape_hist[shape_idx]++;
-                        }
-
-                        switch (shape) {
-                            // Walkable surfaces — dwarves can stand here.
-                            case df::tiletype_shape::FLOOR:
-                            case df::tiletype_shape::BOULDER:
-                            case df::tiletype_shape::PEBBLES:
-                            case df::tiletype_shape::FORTIFICATION:
-                            case df::tiletype_shape::STAIR_UP:
-                            case df::tiletype_shape::STAIR_DOWN:
-                            case df::tiletype_shape::STAIR_UPDOWN:
-                            case df::tiletype_shape::RAMP:
-                            case df::tiletype_shape::RAMP_TOP:
-                            case df::tiletype_shape::BROOK_TOP:
-                            case df::tiletype_shape::SAPLING:
-                            case df::tiletype_shape::SHRUB:
-                            case df::tiletype_shape::TWIG:
-                            case df::tiletype_shape::BRANCH:
-                                flags |= 0x20;  // FLAG_FLOOR
-                                classified_floor++;
-                                break;
-
-                            // Solid walls — diggable.
-                            case df::tiletype_shape::WALL:
-                            case df::tiletype_shape::TRUNK_BRANCH:
-                            case df::tiletype_shape::BROOK_BED:
-                                flags |= 0x10;  // FLAG_WALL
-                                classified_wall++;
-                                break;
-
-                            // Open / void — fall hazard, not diggable.
-                            case df::tiletype_shape::EMPTY:
-                            case df::tiletype_shape::ENDLESS_PIT:
-                                flags |= 0x40;  // FLAG_VOID
-                                classified_void++;
-                                break;
-
-                            // Default: unclassified — leave flags untouched.
-                            // NONE / unknown shapes shouldn't be common at
-                            // runtime; if they show up, the orchestrator
-                            // will treat them as closed.
-                            default:
-                                classified_none++;
-                                break;
-                        }
-
-                    }
-
-                    // Check for dangerous liquids (7/7 depth only) —
-                    // independent of shape classification.
-                    if (static_cast<uint16_t>(tile_type) > 0) {
-                        if (des.bits.flow_size == 7) {
-                            df::tiletype_material mat = tileMaterial(tile_type);
-                            if (mat == df::tiletype_material::POOL ||   // Water
-                                mat == df::tiletype_material::MAGMA) {  // Magma
-                                flags |= 0x80;  // FLAG_LIQUID_7_7
-                            }
-                        }
+                    if (flags & FLAG_FLOOR) {
+                        classified_floor++;
+                    } else if (flags & FLAG_WALL) {
+                        classified_wall++;
+                    } else if (flags & FLAG_VOID) {
+                        classified_void++;
+                    } else {
+                        classified_none++;
                     }
                 }
 

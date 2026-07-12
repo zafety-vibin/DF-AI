@@ -3,11 +3,13 @@
 
 #include "Core.h"
 #include "Console.h"
+#include "TileTypes.h"
 #include "modules/Maps.h"
 #include "modules/MapCache.h"
 
 #include "df/map_block.h"
 #include "df/tile_dig_designation.h"
+#include "df/tiletype_shape.h"
 #include "df/world.h"
 
 #include "protocol.h"
@@ -41,6 +43,75 @@ int16_t read_int16_be(const std::vector<uint8_t> &data, size_t offset)
     uint16_t value = (static_cast<uint16_t>(data[offset]) << 8) |
                      static_cast<uint16_t>(data[offset + 1]);
     return static_cast<int16_t>(value);
+}
+
+// True when the shape is any carved stair (up, down, or up/down).
+// Shapes come from DFHack's tileShape() attribute lookup (TileTypes.h) — a
+// cheap enum-attr read, safe inside the per-tile loops below. Never use
+// raw tiletype ranges for this.
+static bool isStairShape(df::tiletype_shape shape)
+{
+    return shape == df::tiletype_shape::STAIR_UP ||
+           shape == df::tiletype_shape::STAIR_DOWN ||
+           shape == df::tiletype_shape::STAIR_UPDOWN;
+}
+
+// Does the tile directly ABOVE (x, y, zTop) already provide a downward
+// stair connection — carved into the terrain or queued as a dig
+// designation? If so, the top of a new stair range must be UpDownStair,
+// not DownStair: z-movement needs an up component on the lower tile AND a
+// down component on the upper tile, so a bare DownStair under an existing
+// shaft leaves the whole new section permanently unreachable (live
+// failure, 2026-07).
+//
+// Deliberately does NOT count a carved STAIR_UP above: that shape has no
+// down component, so by itself it provides no connection. It IS joinable —
+// but only by designating UpDownStair ON it (carvedUpStairAbove + the
+// top-of-range promotion in the loop below handle that case).
+static bool stairContinuesAbove(MapExtras::MapCache &cache, int16_t x, int16_t y, int16_t zTop)
+{
+    if (!Maps::isValidTilePos(x, y, zTop + 1))
+        return false;  // top of the map — nothing to join
+    df::coord above(x, y, zTop + 1);
+    df::tiletype_shape shape = tileShape(cache.tiletypeAt(above));
+    if (shape == df::tiletype_shape::STAIR_DOWN ||
+        shape == df::tiletype_shape::STAIR_UPDOWN)
+        return true;
+    df::tile_dig_designation dig = cache.designationAt(above).bits.dig;
+    return dig == df::tile_dig_designation::DownStair ||
+           dig == df::tile_dig_designation::UpDownStair;
+}
+
+// Is the tile directly above (x, y, zTop) a carved up-stair — an old
+// shaft's bottom abutting a new range from above? Such a tile lacks a
+// down component, so joining requires designating UpDownStair ON it; DF
+// accepts exactly that (dfhack-build/plugins/dig-now.cpp:283-288,
+// can_dig_up_down_stair allows STAIR_UP) and carves the missing half.
+static bool carvedUpStairAbove(MapExtras::MapCache &cache, int16_t x, int16_t y, int16_t zTop)
+{
+    if (!Maps::isValidTilePos(x, y, zTop + 1))
+        return false;
+    df::coord above(x, y, zTop + 1);
+    return tileShape(cache.tiletypeAt(above)) == df::tiletype_shape::STAIR_UP;
+}
+
+// Symmetric check below (x, y, zBottom): an upward stair connection means
+// the bottom of a new stair range must be UpDownStair, not UpStair.
+// A carved STAIR_DOWN below is correctly NOT counted, and unlike the
+// carved-STAIR_UP-above case it cannot be promoted either: dig-now.cpp's
+// job predicates reject every stair designation on a carved STAIR_DOWN.
+static bool stairContinuesBelow(MapExtras::MapCache &cache, int16_t x, int16_t y, int16_t zBottom)
+{
+    if (!Maps::isValidTilePos(x, y, zBottom - 1))
+        return false;  // bottom of the map — nothing to join
+    df::coord below(x, y, zBottom - 1);
+    df::tiletype_shape shape = tileShape(cache.tiletypeAt(below));
+    if (shape == df::tiletype_shape::STAIR_UP ||
+        shape == df::tiletype_shape::STAIR_UPDOWN)
+        return true;
+    df::tile_dig_designation dig = cache.designationAt(below).bits.dig;
+    return dig == df::tile_dig_designation::UpStair ||
+           dig == df::tile_dig_designation::UpDownStair;
 }
 
 // Apply dig designation to a region
@@ -94,6 +165,11 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
 
     int designated = 0;
     int blocked = 0;
+    int skippedCarved = 0;     // carved stair tiles nothing can be added to
+    int promotedCarved = 0;    // carved up-stairs designated UpDownStair to
+                               // gain their missing down component (join)
+    bool joinedAbove = false;  // top kind promoted to UpDownStair (see loop)
+    bool joinedBelow = false;  // bottom kind promoted to UpDownStair
 
     // Handle multi-Z stair shafts and single-Z digs in one unified pass.
     //
@@ -111,6 +187,9 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
     //   - Otherwise: every tile in the rectangle gets the requested
     //     digType. For multi-Z non-stair digs (e.g. excavating a full
     //     underground complex), we still respect the per-tile dig type.
+    //   - Already-carved stair tiles in a stair dig are skipped, EXCEPT a
+    //     carved STAIR_UP whose position needs a down component — that one
+    //     is designated UpDownStair (details at the check in the loop).
     //
     // Hidden tiles: ALL dig paths designate through hidden terrain, exactly
     // like DF's own designation UI. Every undug underground tile is hidden
@@ -119,21 +198,93 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
     // handles the rest. Bounds are already screened by isValidTilePos above.
     if (z1 > z2) std::swap(z1, z2);
 
-    bool isStairShaft = (z1 != z2) &&
-        (digType == 0x02 || digType == 0x05 || digType == 0x06);
+    bool isStairDig = (digType == 0x02 || digType == 0x05 || digType == 0x06);
     // 0x02=UpDownStair, 0x05=DownStair, 0x06=UpStair from the protocol.
+    bool isStairShaft = (z1 != z2) && isStairDig;
 
     for (int16_t z = z1; z <= z2; z++) {
         for (int16_t x = x1; x <= x2; x++) {
             for (int16_t y = y1; y <= y2; y++) {
                 df::coord pos(x, y, z);
+
+                // Already-carved stair tiles: what a dig designation may
+                // legally add is defined by dig-now.cpp's job-accurate
+                // predicates (dfhack-build/plugins/dig-now.cpp, can_dig_*),
+                // not digcircle's ancient validator. Carved STAIR_DOWN and
+                // STAIR_UPDOWN accept no stair designation at all —
+                // re-designating them only produces "Inappropriate dig
+                // square" job-cancel spam, so they are skipped. Carved
+                // STAIR_UP accepts UpDownStair (can_dig_up_down_stair):
+                // when the tile's position needs a down component, we
+                // designate it — that carves the missing half and is how a
+                // shaft is extended downward past its old bottom. Skipping
+                // it there would strand every new level below (the z9<->z10
+                // gap from the 2026-07 live failure, mirrored).
+                if (isStairDig) {
+                    df::tiletype_shape shape = tileShape(cache.tiletypeAt(pos));
+                    if (isStairShape(shape)) {
+                        bool needsDown;
+                        if (isStairShaft) {
+                            // Every shaft tile above the bottom connects to
+                            // an in-range tile below it; the bottom needs a
+                            // down component only to join a shaft below.
+                            needsDown = (z > z1) || stairContinuesBelow(cache, x, y, z1);
+                        } else {
+                            // Single-Z: the request itself asks for a down
+                            // component (0x02 UpDownStair, 0x05 DownStair).
+                            needsDown = (digType == 0x02 || digType == 0x05);
+                        }
+                        if (shape == df::tiletype_shape::STAIR_UP && needsDown) {
+                            df::tile_designation des = cache.designationAt(pos);
+                            des.bits.dig = df::tile_dig_designation::UpDownStair;
+                            cache.setDesignationAt(pos, des);
+                            promotedCarved++;
+                        } else {
+                            skippedCarved++;
+                        }
+                        continue;
+                    }
+                }
+
                 df::tile_designation des = cache.designationAt(pos);
 
                 if (isStairShaft) {
                     if (z == z1) {
-                        des.bits.dig = df::tile_dig_designation::UpStair;
+                        // Bottom of the range: UpStair — unless the shaft
+                        // continues below (carved or designated), in which
+                        // case this tile also needs a down component to
+                        // join it.
+                        if (stairContinuesBelow(cache, x, y, z1)) {
+                            des.bits.dig = df::tile_dig_designation::UpDownStair;
+                            joinedBelow = true;
+                        } else {
+                            des.bits.dig = df::tile_dig_designation::UpStair;
+                        }
                     } else if (z == z2) {
-                        des.bits.dig = df::tile_dig_designation::DownStair;
+                        // Top of the range: DownStair — unless the shaft
+                        // continues above. A bare DownStair directly under
+                        // existing stairs has no up component and makes
+                        // every new level unreachable (live failure).
+                        if (stairContinuesAbove(cache, x, y, z2)) {
+                            des.bits.dig = df::tile_dig_designation::UpDownStair;
+                            joinedAbove = true;
+                        } else if (carvedUpStairAbove(cache, x, y, z2)) {
+                            // A carved up-stair (old shaft bottom) abuts the
+                            // range from directly above. It has no down
+                            // component, so joining takes both halves:
+                            // designate UpDownStair ON it (legal per
+                            // dig-now.cpp can_dig_up_down_stair) and give
+                            // this tile an up component.
+                            df::coord above(x, y, z2 + 1);
+                            df::tile_designation aboveDes = cache.designationAt(above);
+                            aboveDes.bits.dig = df::tile_dig_designation::UpDownStair;
+                            cache.setDesignationAt(above, aboveDes);
+                            promotedCarved++;
+                            joinedAbove = true;
+                            des.bits.dig = df::tile_dig_designation::UpDownStair;
+                        } else {
+                            des.bits.dig = df::tile_dig_designation::DownStair;
+                        }
                     } else {
                         des.bits.dig = df::tile_dig_designation::UpDownStair;
                     }
@@ -159,7 +310,43 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
         return false;
     }
 
-    if (designated == 0) {
+    // Truthful ACK for the stair paths: promotion/skip counts and
+    // shaft-join notes reach the model verbatim (rendered as PARTIAL text
+    // by the server). Silent when nothing noteworthy happened — plain digs
+    // stay SUCCESS. Note the designated count covers in-range fresh tiles;
+    // promoted carved up-stairs (in-range or the abutting tile above the
+    // top) are reported by their own count.
+    std::string stairText;
+    if (skippedCarved > 0 || promotedCarved > 0 || joinedAbove || joinedBelow) {
+        char buf[192];
+        snprintf(buf, sizeof(buf), "%d designated", designated);
+        stairText = buf;
+        if (promotedCarved > 0) {
+            snprintf(buf, sizeof(buf),
+                     " (%d joined: carved up-stair promoted to up/down)",
+                     promotedCarved);
+            stairText += buf;
+        }
+        if (skippedCarved > 0) {
+            snprintf(buf, sizeof(buf), " (%d skipped: already carved)",
+                     skippedCarved);
+            stairText += buf;
+        }
+        if (joinedAbove)
+            stairText += ", top joined to existing shaft above";
+        if (joinedBelow)
+            stairText += ", bottom joined to existing shaft below";
+    }
+
+    if (designated == 0 && promotedCarved == 0) {
+        if (skippedCarved > 0) {
+            // Every tile in the range is a carved stair with nothing
+            // addable — the shaft exists. That is a satisfied request,
+            // not a failure; report the truthful counts so the model
+            // doesn't re-issue.
+            error = stairText;
+            return true;
+        }
         error = "No tiles designated (all blocked or hidden)";
         return false;
     }
@@ -172,6 +359,13 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
         error = buf;
         // Still return true for partial success
     }
+
+    // Append the stair notes to any existing partial message rather than
+    // overwriting it — blocked is structurally 0 in the dig path today,
+    // but future per-tile rejection paths must not have their message
+    // clobbered.
+    if (!stairText.empty())
+        error = error.empty() ? stairText : error + "; " + stairText;
 
     return true;
 }

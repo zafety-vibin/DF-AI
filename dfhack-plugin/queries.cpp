@@ -3,7 +3,8 @@
 // Implements the QUERY/QUERY_RESPONSE protocol. The orchestrator's
 // deliberator can issue read-only queries (list_orders, manager_orders,
 // dwarf_detail, building_status, workshop_jobs, stockpile_inventory,
-// sim_status, map_slice, column_profile) and get structured JSON back.
+// sim_status, map_slice, column_profile, list_buildings) and get
+// structured JSON back.
 //
 // Threading: executeQuery runs on the main DF thread (called from
 // plugin_onupdate after queue dispatch). Safe to read df::global state
@@ -31,6 +32,7 @@
 #include "modules/Maps.h"
 #include "modules/MapCache.h"
 #include "TileTypes.h"
+#include "MiscUtils.h"
 
 #include "df/world.h"
 #include "df/job.h"
@@ -47,6 +49,7 @@
 #include "df/item_type.h"
 #include "df/tiletype.h"
 #include "df/tile_designation.h"
+#include "df/plotinfost.h"
 
 #include "protocol.h"
 
@@ -57,11 +60,14 @@
 #include <vector>
 #include <sstream>
 #include <map>
+#include <tuple>
 
 using namespace DFHack;
 
 extern void sendQueryResponse(uint32_t queryID, uint8_t status, const std::string &dataJSON);
-extern std::atomic<int64_t> g_step_target_frame;  // defined in df_ai_protocol.cpp
+extern std::atomic<int64_t> g_step_target_frame;   // defined in df_ai_protocol.cpp
+extern std::atomic<bool> g_step_tripwire;          // defined in df_ai_protocol.cpp
+extern std::string get_step_tripwire_reason();     // defined in df_ai_protocol.cpp
 
 // ---------------------------------------------------------------------------
 // JSON construction helpers — minimal, no external library.
@@ -358,6 +364,46 @@ static std::string handleWorkshopJobs(const std::string &args, uint8_t &status) 
     return os.str();
 }
 
+static std::string handleListBuildings(const std::string &args, uint8_t &status) {
+    if (!df::global::world) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("world is null");
+    }
+    // Optional {"z": int} arg — absent means all levels.
+    std::string zArg = jsonGetString(args, "z");
+    bool hasZ = !zArg.empty();
+    int64_t zFilter = hasZ ? jsonGetInt(args, "z", 0) : 0;
+
+    std::ostringstream os;
+    os << "{\"buildings\":[";
+    int count = 0;
+    bool truncated = false;
+    for (auto *b : df::global::world->buildings.all) {
+        if (!b) continue;
+        if (hasZ && (int64_t)b->z != zFilter) continue;
+        if (count >= 200) { truncated = true; break; }
+        // getBuildStage counts construction progress; a building is done
+        // when it reaches getMaxBuildStage (0/0 for instant buildings).
+        int32_t stage = b->getBuildStage();
+        int32_t maxStage = b->getMaxBuildStage();
+        if (count) os << ",";
+        os << "{\"type\":" << jsonStr(ENUM_KEY_STR(building_type, b->getType()))
+           << ",\"x\":" << jsonInt(b->centerx)
+           << ",\"y\":" << jsonInt(b->centery)
+           << ",\"z\":" << jsonInt(b->z)
+           << ",\"stage\":" << jsonInt(stage)
+           << ",\"max_stage\":" << jsonInt(maxStage)
+           << ",\"done\":" << (stage == maxStage ? "true" : "false")
+           << "}";
+        count++;
+    }
+    os << "]";
+    if (truncated) os << ",\"truncated\":true";
+    os << "}";
+    status = QUERY_STATUS_SUCCESS;
+    return os.str();
+}
+
 static std::string handleStockpileInventory(const std::string &args, uint8_t &status) {
     if (!df::global::world) {
         status = QUERY_STATUS_ERROR;
@@ -365,9 +411,12 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
     }
     std::string category = jsonGetString(args, "category");
 
-    // Aggregate by item_type. Walks world->items.all which can be
-    // expensive on a large fort; the LLM should use this sparingly.
-    std::map<int, int> counts; // item_type → count
+    // Aggregate by (item_type, actual material). Walks world->items.all
+    // which can be expensive on a large fort; the LLM should use this
+    // sparingly. The material key is the same (type, index) pair
+    // MaterialInfo::decode(item) reads, so Shale and Chalk boulders count
+    // as separate entries instead of one anonymous BOULDER pile.
+    std::map<std::tuple<int, int, int>, int> counts; // (item_type, mat_type, mat_index) → count
 
     // VERIFY: world->items.all field name (may be world->items.other.IN_PLAY).
     auto &items = df::global::world->items.all;
@@ -375,19 +424,40 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
         if (!it) continue;
         // VERIFY: filter for items in stockpiles only — in some versions
         // this requires checking item.flags.bits.in_inventory == 0 etc.
-        counts[(int)it->getType()]++;
+        counts[std::make_tuple((int)it->getType(),
+                               (int)it->getActualMaterial(),
+                               (int)it->getActualMaterialIndex())]++;
     }
 
     std::ostringstream os;
     os << "{\"items\":[";
     bool first = true;
     for (auto &kv : counts) {
-        std::string typeName = ENUM_KEY_STR(item_type, (df::item_type)kv.first);
+        df::item_type itype = (df::item_type)std::get<0>(kv.first);
+        std::string typeName = ENUM_KEY_STR(item_type, itype);
         if (!category.empty() && typeName.find(category) == std::string::npos) continue;
+        // Human-readable material name via MaterialInfo (state_name at room
+        // temperature, e.g. "shale"). Empty string when the pair doesn't
+        // decode (e.g. materialless items).
+        MaterialInfo mi((int16_t)std::get<1>(kv.first), (int32_t)std::get<2>(kv.first));
+        std::string matName = mi.isValid() ? mi.toString() : "";
         if (!first) os << ",";
         first = false;
         os << "{\"item_type\":" << jsonStr(typeName)
-           << ",\"count\":" << jsonInt(kv.second) << "}";
+           << ",\"material\":" << jsonStr(matName)
+           << ",\"count\":" << jsonInt(kv.second);
+        if (itype == df::item_type::BOULDER) {
+            // Economic stones (flux, ore-adjacent, etc.) are reserved by the
+            // stone-use screen and masons won't take them by default — the
+            // model needs to know a 40-boulder pile might be all off-limits.
+            // economic_stone is indexed by inorganic raw index.
+            bool economic = false;
+            if (df::global::plotinfo && mi.isInorganic() && mi.index >= 0)
+                economic = vector_get(df::global::plotinfo->economic_stone,
+                                      (unsigned)mi.index, (char)0) != 0;
+            os << ",\"economic\":" << (economic ? "true" : "false");
+        }
+        os << "}";
     }
     os << "]}";
     status = QUERY_STATUS_SUCCESS;
@@ -405,6 +475,15 @@ static std::string handleSimStatus(const std::string &args, uint8_t &status) {
     out += ",\"frame\":" + jsonInt((int64_t)df::global::world->frame_counter);
     out += ",\"stepping\":";
     out += (g_step_target_frame >= 0) ? "true" : "false";
+    // Tripwire: a critical announcement ended the last step early. The
+    // record persists until the next step starts, so the Go step tool's
+    // completion poll cannot miss it. Reason only present when tripped.
+    if (g_step_tripwire.load()) {
+        out += ",\"tripwire\":true";
+        out += ",\"tripwire_reason\":" + jsonStr(get_step_tripwire_reason());
+    } else {
+        out += ",\"tripwire\":false";
+    }
     out += "}";
     status = QUERY_STATUS_SUCCESS;
     return out;
@@ -466,6 +545,30 @@ static char classifyTile(df::tiletype tt, const df::tile_designation &des) {
     return classifyTileRevealed(tt, des);
 }
 
+// wetAt: designation-level wetness test for the damp computation. Wet =
+// standing/flowing water (flow_size>=1, Water) or the aquifer bit — the
+// same inputs dig.cpp's is_wet/is_aquifer use for DF's own damp-dig
+// warnings. Returns false off-map (getTileDesignation is NULL past edges).
+static bool wetAt(int32_t x, int32_t y, int32_t z) {
+    df::tile_designation *des = Maps::getTileDesignation(x, y, z);
+    if (!des) return false;
+    if (des->bits.flow_size >= 1 && des->bits.liquid_type == df::tile_liquid::Water)
+        return true;
+    return des->bits.water_table;
+}
+
+// dampAt: mirrors dig.cpp's is_damp — a tile is damp when any of its 8
+// horizontal neighbors or the tile directly above is wet. This is what DF
+// itself checks when it cancels a dig with "damp stone located".
+static bool dampAt(int32_t x, int32_t y, int32_t z) {
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            if (wetAt(x + dx, y + dy, z)) return true;
+        }
+    return wetAt(x, y, z + 1);
+}
+
 static std::string queryMapSlice(const std::string &args, uint8_t &status) {
     int64_t x1 = jsonGetInt(args, "x1", -1), y1 = jsonGetInt(args, "y1", -1);
     int64_t x2 = jsonGetInt(args, "x2", -1), y2 = jsonGetInt(args, "y2", -1);
@@ -482,7 +585,9 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
     MapExtras::MapCache cache;
     std::string rows = "[";
     std::string designated = "[";
-    int desCount = 0;
+    std::string water = "[";
+    std::string aquifer = "[";
+    int desCount = 0, waterCount = 0, aquiferCount = 0;
     for (int16_t y = (int16_t)y1; y <= (int16_t)y2; y++) {
         std::string row;
         for (int16_t x = (int16_t)x1; x <= (int16_t)x2; x++) {
@@ -495,14 +600,32 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
                 designated += "[" + jsonInt(x) + "," + jsonInt(y) + "]";
                 desCount++;
             }
+            // Visible water only — hidden pockets stay under fog, matching
+            // the '?' the grid shows for the same tile.
+            if (!des.bits.hidden && des.bits.flow_size > 0 &&
+                des.bits.liquid_type == df::tile_liquid::Water) {
+                if (waterCount) water += ",";
+                water += "[" + jsonInt(x) + "," + jsonInt(y) + "," +
+                         jsonInt(des.bits.flow_size) + "]";
+                waterCount++;
+            }
+            // Aquifer bit INCLUDING hidden tiles — approved fog-honesty
+            // exception: DF's own damp-stone dig cancellations make aquifers
+            // player-knowable, so hiding them only manufactures surprises.
+            if (des.bits.water_table) {
+                if (aquiferCount) aquifer += ",";
+                aquifer += "[" + jsonInt(x) + "," + jsonInt(y) + "]";
+                aquiferCount++;
+            }
         }
         if (y != (int16_t)y1) rows += ",";
         rows += jsonStr(row);
     }
-    rows += "]"; designated += "]";
+    rows += "]"; designated += "]"; water += "]"; aquifer += "]";
     status = QUERY_STATUS_SUCCESS;
     return "{\"z\":" + jsonInt(z) + ",\"x1\":" + jsonInt(x1) + ",\"y1\":" + jsonInt(y1) +
-           ",\"rows\":" + rows + ",\"designated\":" + designated + "}";
+           ",\"rows\":" + rows + ",\"designated\":" + designated +
+           ",\"water\":" + water + ",\"aquifer\":" + aquifer + "}";
 }
 
 static std::string queryColumnProfile(const std::string &args, uint8_t &status) {
@@ -543,11 +666,22 @@ static std::string queryColumnProfile(const std::string &args, uint8_t &status) 
             case 'T': case 't': shape = "plant"; mat = "wood"; break;
             case 'F': shape = "fortification"; mat = "stone"; break;
         }
+        // Water/aquifer/damp report the truth under fog, same as
+        // shape/material above — this is the survey path, and dampness is
+        // exactly what a cautious digger must see before breaching a wet
+        // layer. All three fields are omitted when falsy (additive JSON).
+        std::string wetness;
+        if (des.bits.flow_size > 0 && des.bits.liquid_type == df::tile_liquid::Water)
+            wetness += ",\"water\":" + jsonInt(des.bits.flow_size);
+        if (des.bits.water_table)
+            wetness += ",\"aquifer\":true";
+        if (dampAt((int32_t)x, (int32_t)y, z))
+            wetness += ",\"damp\":true";
         if (!first) levels += ",";
         first = false;
         levels += "{\"z\":" + jsonInt(z) + ",\"glyph\":" + jsonStr(std::string(1, g)) +
                   ",\"shape\":" + jsonStr(shape) + ",\"material\":" + jsonStr(mat) +
-                  ",\"hidden\":" + (des.bits.hidden ? "true" : "false") + "}";
+                  ",\"hidden\":" + (des.bits.hidden ? "true" : "false") + wetness + "}";
     }
     levels += "]";
     status = QUERY_STATUS_SUCCESS;
@@ -583,6 +717,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = handleBuildingStatus(args, status);
         } else if (name == "workshop_jobs") {
             data = handleWorkshopJobs(args, status);
+        } else if (name == "list_buildings") {
+            data = handleListBuildings(args, status);
         } else if (name == "stockpile_inventory") {
             data = handleStockpileInventory(args, status);
         } else if (name == "sim_status") {

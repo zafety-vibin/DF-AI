@@ -9,7 +9,9 @@
 #include "df/world.h"
 #include "df/unit.h"
 #include "df/historical_entity.h"
+#include "df/global_objects.h"
 
+#include <algorithm>
 #include <vector>
 #include <cstring>
 
@@ -101,6 +103,7 @@ std::vector<EntityInfo> extract_entities()
 // Serialize entities to binary format
 // Message structure:
 // [4: Length] [1: Version] [1: Type=0x08] [4: Count] [N: Entities]
+// [1: HasFortInfo] [17: FortInfo if present]
 std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &entities)
 {
     std::vector<uint8_t> buffer;
@@ -147,6 +150,47 @@ std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &enti
         // Subtype (uint16, big-endian)
         buffer.push_back((entity.subtype >> 8) & 0xFF);
         buffer.push_back(entity.subtype & 0xFF);
+    }
+
+    // Optional FortInfo block — the calendar date. Field order/widths MUST
+    // match deserializeEntityUpdate in internal/protocol/codec.go:
+    // [1: HasFortInfo] [4: DaysElapsed] [8: CreatedWealth] [1: Season] [4: Year]
+    {
+        // Calendar globals are read under suspension (CoreSuspender is
+        // reentrant/no-op when the caller already holds one).
+        CoreSuspender suspend;
+
+        if (df::global::cur_year && df::global::cur_year_tick) {
+            // Clamp like World::ReadCurrentTick — avoids calendar math on a
+            // transiently negative tick.
+            int32_t tick = std::max(0, *df::global::cur_year_tick);
+            uint32_t days_elapsed = tick / 1200;   // day-of-year (0-335)
+            uint8_t season = static_cast<uint8_t>(
+                std::min<int32_t>(tick / 100800, 3));  // 0=spring .. 3=winter
+            uint64_t created_wealth = 0;           // Not extracted yet.
+            uint32_t year = static_cast<uint32_t>(*df::global::cur_year);
+
+            buffer.push_back(1);  // HasFortInfo
+            buffer.push_back((days_elapsed >> 24) & 0xFF);
+            buffer.push_back((days_elapsed >> 16) & 0xFF);
+            buffer.push_back((days_elapsed >> 8) & 0xFF);
+            buffer.push_back(days_elapsed & 0xFF);
+            buffer.push_back((created_wealth >> 56) & 0xFF);
+            buffer.push_back((created_wealth >> 48) & 0xFF);
+            buffer.push_back((created_wealth >> 40) & 0xFF);
+            buffer.push_back((created_wealth >> 32) & 0xFF);
+            buffer.push_back((created_wealth >> 24) & 0xFF);
+            buffer.push_back((created_wealth >> 16) & 0xFF);
+            buffer.push_back((created_wealth >> 8) & 0xFF);
+            buffer.push_back(created_wealth & 0xFF);
+            buffer.push_back(season);
+            buffer.push_back((year >> 24) & 0xFF);
+            buffer.push_back((year >> 16) & 0xFF);
+            buffer.push_back((year >> 8) & 0xFF);
+            buffer.push_back(year & 0xFF);
+        } else {
+            buffer.push_back(0);  // HasFortInfo=0 — calendar globals unavailable
+        }
     }
 
     // Fill in length header (total message size)
