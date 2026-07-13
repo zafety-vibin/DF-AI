@@ -7,7 +7,7 @@ import (
 
 func TestRenderCrop(t *testing.T) {
 	s := &Slice{Z: 110, X1: 70, Y1: 80, Rows: []string{"##..", "#?.,", ",,,_"}}
-	out := RenderCrop(s, map[[2]int16]rune{{72, 81}: '@'})
+	out := RenderCrop(s, []Overlay{{Marks: map[[2]int16]rune{{72, 81}: '@'}}}, "")
 	// Header names the Z and orientation; grid has x/y labels; mark applied.
 	if !strings.Contains(out, "z=110") || !strings.Contains(out, "north is up") {
 		t.Fatalf("missing header: %q", out)
@@ -38,7 +38,7 @@ func TestRenderCropXAxisAlignment(t *testing.T) {
 		strings.Repeat("#", width),
 		strings.Repeat(".", width),
 	}}
-	out := RenderCrop(s, nil)
+	out := RenderCrop(s, nil, "")
 	lines := strings.Split(out, "\n")
 	label, row := lines[1], lines[2]
 
@@ -61,7 +61,7 @@ func TestRenderCropXAxisAlignment(t *testing.T) {
 // A grid too narrow for two labels keeps just the first, still aligned.
 func TestRenderCropXAxisNarrow(t *testing.T) {
 	s := &Slice{Z: 5, X1: 70, Y1: 80, Rows: []string{"####"}}
-	out := RenderCrop(s, nil)
+	out := RenderCrop(s, nil, "")
 	label := strings.Split(out, "\n")[1]
 	if idx := strings.Index(label, "70"); idx != 5 {
 		t.Fatalf("first x label digits at index %d, want 5: %q", idx, label)
@@ -84,7 +84,7 @@ func TestRenderCropWater(t *testing.T) {
 			{99, 99, 5}, // out of crop bounds — ignored
 		},
 		Aquifer: [][2]int16{{10, 22}, {11, 22}}}
-	out := RenderCrop(s, map[[2]int16]rune{{13, 21}: '@'})
+	out := RenderCrop(s, []Overlay{{Marks: map[[2]int16]rune{{13, 21}: '@'}}}, "")
 	if !strings.Contains(out, "  20 37..") {
 		t.Fatalf("water depth digits wrong on y=20 row (want \"37..\"):\n%s", out)
 	}
@@ -107,7 +107,7 @@ func TestRenderCropWater(t *testing.T) {
 // before: no aquifer line, no overlay.
 func TestRenderCropNoWaterFields(t *testing.T) {
 	s := &Slice{Z: 5, X1: 0, Y1: 0, Rows: []string{"##"}}
-	out := RenderCrop(s, nil)
+	out := RenderCrop(s, nil, "")
 	if strings.Contains(out, "aquifer") {
 		t.Fatalf("no aquifer line expected without aquifer data:\n%s", out)
 	}
@@ -119,9 +119,59 @@ func TestRenderCropNoWaterFields(t *testing.T) {
 func TestRenderCropDesignated(t *testing.T) {
 	s := &Slice{Z: 5, X1: 0, Y1: 0, Rows: []string{"##", "##"},
 		Designated: [][2]int16{{0, 0}, {1, 1}}}
-	out := RenderCrop(s, nil)
+	out := RenderCrop(s, nil, "")
 	if !strings.Contains(out, "designated for digging: 2 tiles in view") {
 		t.Fatalf("designated summary missing: %q", out)
+	}
+}
+
+func TestRenderCrop_DesignationsAlwaysPainted(t *testing.T) {
+	s := &Slice{
+		Z: 100, X1: 0, Y1: 0,
+		Rows:       []string{"..", ".."},
+		Designated: [][2]int16{{1, 0}},
+	}
+	out := RenderCrop(s, nil, "")
+	if !strings.Contains(out, "d designated") {
+		t.Fatalf("legend must gain a 'd designated' entry:\n%s", out)
+	}
+	lines := strings.Split(out, "\n")
+	// Row 0 (y=0) is rendered on the line starting "   0 " (4-wide right-aligned + space).
+	found := false
+	for _, l := range lines {
+		if strings.HasPrefix(strings.TrimLeft(l, " "), "0 ") {
+			// glyph at x=1 should be 'd', not '.'
+			if strings.Contains(l, ".d") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("designated tile at (1,0) must render as 'd':\n%s", out)
+	}
+}
+
+func TestRenderCrop_OverlayPaintsLastAndAddsFootnoteOnDwarfCollision(t *testing.T) {
+	s := &Slice{Z: 100, X1: 0, Y1: 0, Rows: []string{".."}}
+	dwarfMarks := Overlay{Marks: map[[2]int16]rune{{0, 0}: '@'}}
+	lensOverlay := Overlay{
+		Marks:     map[[2]int16]rune{{0, 0}: 'B'},
+		Footnotes: []string{"dwarves in view: 1 (1 under overlay at (0,0))"},
+	}
+	out := RenderCrop(s, []Overlay{dwarfMarks, lensOverlay}, "lens=buildings: B furniture")
+	if !strings.Contains(out, "under overlay at (0,0)") {
+		t.Fatalf("expected the collision footnote:\n%s", out)
+	}
+	if !strings.Contains(out, "lens=buildings: B furniture") {
+		t.Fatalf("expected the lens legend addendum:\n%s", out)
+	}
+}
+
+func TestRenderCrop_NoLensNoAddendum(t *testing.T) {
+	s := &Slice{Z: 100, X1: 0, Y1: 0, Rows: []string{"."}}
+	out := RenderCrop(s, nil, "")
+	if strings.Contains(out, "lens=") {
+		t.Fatalf("no lens active must mean no lens addendum:\n%s", out)
 	}
 }
 

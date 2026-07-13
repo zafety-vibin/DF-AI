@@ -46,7 +46,7 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 				marks[[2]int16{d.X, d.Y}] = '@'
 			}
 		}
-		return withDash(b, ctx, mapview.RenderCrop(s, marks)), nil, nil
+		return withDash(b, ctx, mapview.RenderCrop(s, []mapview.Overlay{{Marks: marks}}, "")), nil, nil
 	})
 
 	type xsecIn struct {
