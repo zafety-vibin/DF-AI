@@ -10,7 +10,58 @@ import (
 	"github.com/df-ai/orchestrator/internal/commands"
 	"github.com/df-ai/orchestrator/internal/modifications"
 	"github.com/df-ai/orchestrator/internal/protocol"
+	"github.com/df-ai/orchestrator/internal/topology"
 )
+
+// connectorSuggestion checks whether the just-designated rectangle
+// touches any existing open (already-dug) region. Returns "" when it
+// does (or when nothing has been dug yet — no suggestion makes sense
+// for a fort's very first designation). Never returns error/warning
+// text: a fresh designation being disconnected from existing space is
+// normal DF workflow (room first, corridor second), not a mistake — see
+// design doc "Component 3".
+func connectorSuggestion(topo *topology.TopologyOverlay, x1, y1, z1, x2, y2, z2 int16) string {
+	rg := topology.BuildRegionGraph(topo)
+	if len(rg.Regions) == 0 {
+		return ""
+	}
+	if x1 > x2 {
+		x1, x2 = x2, x1
+	}
+	if y1 > y2 {
+		y1, y2 = y2, y1
+	}
+	if z1 > z2 {
+		z1, z2 = z2, z1
+	}
+	// Check every tile just outside the rectangle's boundary (one ring
+	// of padding on all sides, all swept Z levels) for an open neighbor.
+	for z := z1; z <= z2; z++ {
+		for x := x1 - 1; x <= x2+1; x++ {
+			for y := y1 - 1; y <= y2+1; y++ {
+				inside := x >= x1 && x <= x2 && y >= y1 && y <= y2
+				if inside {
+					continue
+				}
+				if topo.GetTileState(x, y, z) == topology.StateOpen {
+					return "" // touches existing open space — connected
+				}
+			}
+		}
+	}
+	centerX, centerY, centerZ := (x1+x2)/2, (y1+y2)/2, z1
+	region, _, ok := rg.NearestRegion(topology.Coord{X: centerX, Y: centerY, Z: centerZ})
+	if !ok {
+		return ""
+	}
+	// Suggest a 1-wide connector from the rectangle's center toward the
+	// nearest region's bounding-box center — a heuristic starting point,
+	// not a guaranteed-optimal path; the model refines it with look.
+	target := region.BBox[0] // min corner is a stable, deterministic anchor
+	return fmt.Sprintf(
+		"not yet connected to existing space — suggested connector: designate_dig default (%d,%d,%d)->(%d,%d,%d)",
+		centerX, centerY, centerZ, target.X, target.Y, target.Z)
+}
 
 // ackText renders a command result truthfully: the plugin's error text is
 // the model's primary feedback and is never swallowed or softened.
@@ -192,7 +243,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "designate_dig",
-		Description: "Designate digging over a 3D rectangle. Hidden fog tiles designate fine (that's how forts are dug). 'stairs' spans z1..z2 as one shaft (2x2 recommended, surface to deep stone in ONE call); a stairs range whose top adjoins existing carved stairs joins the shaft, and already-carved tiles are skipped — so extending a shaft deeper is safe. Dwarves with picks do the work over game time — step() to let it happen.",
+		Description: "Designate digging over a 3D rectangle. Hidden fog tiles designate fine (that's how forts are dug). 'stairs' spans z1..z2 as one shaft (2x2 recommended, surface to deep stone in ONE call); a stairs range whose top adjoins existing carved stairs joins the shaft, and already-carved tiles are skipped — so extending a shaft deeper is safe. Dwarves with picks do the work over game time — step() to let it happen. If the designated area isn't yet connected to existing dug space, the ACK suggests a connector — this is informational, not an error: designating a room before its corridor is normal.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in digIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -203,7 +254,17 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		}
 		res, err := b.Exec.SendDigRegion(dt, int16(in.X1), int16(in.Y1), int16(in.Z1), int16(in.X2), int16(in.Y2), int16(in.Z2))
 		what := fmt.Sprintf("dig %s (%d,%d,%d)->(%d,%d,%d)", in.Type, in.X1, in.Y1, in.Z1, in.X2, in.Y2, in.Z2)
-		return withDash(b, ctx, ackText(res, err, what)), nil, nil
+		ack := ackText(res, err, what)
+		// Reachability guidance: only meaningful after a successful dig
+		// designation, and only against a live topology overlay.
+		if err == nil && res != nil && res.Success {
+			if topo := b.Topo(); topo != nil {
+				if suggestion := connectorSuggestion(topo, int16(in.X1), int16(in.Y1), int16(in.Z1), int16(in.X2), int16(in.Y2), int16(in.Z2)); suggestion != "" {
+					ack = ack + "\n" + suggestion
+				}
+			}
+		}
+		return withDash(b, ctx, ack), nil, nil
 	})
 
 	// Chop, gather, and cancel share the plugin's single-Z rectangle

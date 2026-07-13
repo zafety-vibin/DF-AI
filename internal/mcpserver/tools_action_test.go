@@ -10,6 +10,7 @@ import (
 
 	"github.com/df-ai/orchestrator/internal/commands"
 	"github.com/df-ai/orchestrator/internal/protocol"
+	"github.com/df-ai/orchestrator/internal/topology"
 )
 
 func TestAckText(t *testing.T) {
@@ -92,6 +93,46 @@ func TestActionToolsNilBridge(t *testing.T) {
 		if !strings.Contains(tc.Text, "NOT CONNECTED") {
 			t.Errorf("%s: expected NOT CONNECTED message, got %q", call.name, tc.Text)
 		}
+	}
+}
+
+func TestConnectorSuggestion_TouchingRegionReturnsEmpty(t *testing.T) {
+	topo := topology.NewTopologyOverlay(20, 20, 5)
+	// existing open room at (0,0,0)-(2,2,0)
+	for x := int16(0); x <= 2; x++ {
+		for y := int16(0); y <= 2; y++ {
+			_ = topo.SetTileState(x, y, 0, topology.StateOpen)
+		}
+	}
+	// new designation directly adjacent (touches x=3, which borders x=2)
+	got := connectorSuggestion(topo, 3, 0, 0, 5, 2, 0)
+	if got != "" {
+		t.Fatalf("expected no suggestion for a touching designation, got %q", got)
+	}
+}
+
+func TestConnectorSuggestion_DisconnectedReturnsSuggestion(t *testing.T) {
+	topo := topology.NewTopologyOverlay(20, 20, 5)
+	for x := int16(0); x <= 2; x++ {
+		for y := int16(0); y <= 2; y++ {
+			_ = topo.SetTileState(x, y, 0, topology.StateOpen)
+		}
+	}
+	// new designation far away, no shared border
+	got := connectorSuggestion(topo, 10, 10, 0, 12, 12, 0)
+	if !strings.Contains(got, "not yet connected to existing space") {
+		t.Fatalf("expected a connector suggestion, got %q", got)
+	}
+	if !strings.Contains(got, "designate_dig default") {
+		t.Fatalf("expected the suggestion to name a designate_dig call, got %q", got)
+	}
+}
+
+func TestConnectorSuggestion_EmptyGraphReturnsEmpty(t *testing.T) {
+	topo := topology.NewTopologyOverlay(20, 20, 5) // nothing dug yet
+	got := connectorSuggestion(topo, 0, 0, 0, 2, 2, 0)
+	if got != "" {
+		t.Fatalf("expected no suggestion on a fresh embark with nothing dug, got %q", got)
 	}
 }
 
