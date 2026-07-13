@@ -200,3 +200,114 @@ bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, 
 
     return true;
 }
+
+#include "df/rental_roomst.h"
+
+// findTavernAt resolves the Tavern Location whose founding civzone sits
+// at (x,y,z). Returns null with error set if the tile isn't a
+// Location-linked civzone, or the linked Location isn't a Tavern.
+static df::abstract_building_inn_tavernst* findTavernAt(int16_t x, int16_t y, int16_t z, std::string &error) {
+    std::vector<df::building_civzonest*> zones;
+    Buildings::findCivzonesAt(&zones, df::coord(x, y, z));
+    if (zones.empty()) {
+        error = "no zone at (" + std::to_string(x) + "," + std::to_string(y) + "," + std::to_string(z) + ")";
+        return nullptr;
+    }
+    df::building_civzonest *zone = zones[0];
+    if (zone->location_id == -1) {
+        error = "this zone has no location -- use create_location first";
+        return nullptr;
+    }
+    df::world_site *site = df::world_site::find(zone->site_id);
+    if (!site) {
+        error = "could not resolve the zone's site";
+        return nullptr;
+    }
+    for (auto *bld : site->buildings) {
+        if (bld && bld->id == zone->location_id) {
+            if (bld->getType() != df::abstract_building_type::INN_TAVERN) {
+                error = "the location at that tile is " + std::string(ENUM_KEY_STR(abstract_building_type, bld->getType())) + ", not a Tavern -- only taverns take lodging";
+                return nullptr;
+            }
+            return strict_virtual_cast<df::abstract_building_inn_tavernst>(bld);
+        }
+    }
+    error = "could not resolve the zone's linked location";
+    return nullptr;
+}
+
+// findBedroomZoneAt resolves the Bedroom civzone at (x,y,z).
+static df::building_civzonest* findBedroomZoneAt(int16_t x, int16_t y, int16_t z, std::string &error) {
+    std::vector<df::building_civzonest*> zones;
+    Buildings::findCivzonesAt(&zones, df::coord(x, y, z));
+    if (zones.empty()) {
+        error = "no zone at (" + std::to_string(x) + "," + std::to_string(y) + "," + std::to_string(z) + ")";
+        return nullptr;
+    }
+    if (zones[0]->type != df::civzone_type::Bedroom) {
+        error = "zone at that tile is " + std::string(ENUM_KEY_STR(civzone_type, zones[0]->type)) + ", not Bedroom";
+        return nullptr;
+    }
+    return zones[0];
+}
+
+// applyAssignLodging is genuinely first-of-its-kind: no DFHack script or
+// plugin anywhere in the 53.15-r1 checkout reads or writes
+// rental_roomst/room_info. The struct layout is confirmed
+// (abstract_building_inn_tavernst.room_info, rental_roomst.civzone as a
+// building-id reference), but whether this write actually produces
+// observable in-game lodging behavior is UNVERIFIED until a live DF
+// session confirms it -- see the plan's final task.
+bool applyAssignLodging(int16_t tavernX, int16_t tavernY, int16_t tavernZ, int16_t bedroomX, int16_t bedroomY, int16_t bedroomZ, std::string &error)
+{
+    auto *tavern = findTavernAt(tavernX, tavernY, tavernZ, error);
+    if (!tavern) return false;
+    df::building_civzonest *bedroom = findBedroomZoneAt(bedroomX, bedroomY, bedroomZ, error);
+    if (!bedroom) return false;
+
+    for (auto *room : tavern->room_info) {
+        if (room->civzone == bedroom->id) {
+            error = "this bedroom is already lodging for this tavern";
+            return false;
+        }
+    }
+
+    auto *room = new df::rental_roomst();
+    room->id = tavern->next_room_info_id++;
+    room->civzone = bedroom->id;
+    room->world_x = bedroomX;
+    room->world_y = bedroomY;
+    room->world_z = bedroomZ;
+    tavern->room_info.push_back(room);
+    return true;
+}
+
+bool applyUnassignLodging(int16_t bedroomX, int16_t bedroomY, int16_t bedroomZ, std::string &error)
+{
+    df::building_civzonest *bedroom = findBedroomZoneAt(bedroomX, bedroomY, bedroomZ, error);
+    if (!bedroom) return false;
+
+    if (bedroom->location_id == -1) {
+        error = "this bedroom is not lodging for any tavern";
+        return false;
+    }
+    df::world_site *site = df::world_site::find(bedroom->site_id);
+    if (!site) {
+        error = "could not resolve the bedroom's site";
+        return false;
+    }
+    for (auto *bld : site->buildings) {
+        if (!bld || bld->getType() != df::abstract_building_type::INN_TAVERN) continue;
+        auto *tavern = strict_virtual_cast<df::abstract_building_inn_tavernst>(bld);
+        if (!tavern) continue;
+        for (size_t i = 0; i < tavern->room_info.size(); i++) {
+            if (tavern->room_info[i]->civzone == bedroom->id) {
+                delete tavern->room_info[i];
+                tavern->room_info.erase(tavern->room_info.begin() + i);
+                return true;
+            }
+        }
+    }
+    error = "this bedroom is not assigned as lodging for any tavern";
+    return false;
+}

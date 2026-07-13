@@ -70,6 +70,8 @@ bool applyUnassignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::str
 
 // Forward declaration from locations.cpp
 bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, const std::string &profession, std::string &error);
+bool applyAssignLodging(int16_t tavernX, int16_t tavernY, int16_t tavernZ, int16_t bedroomX, int16_t bedroomY, int16_t bedroomZ, std::string &error);
+bool applyUnassignLodging(int16_t bedroomX, int16_t bedroomY, int16_t bedroomZ, std::string &error);
 
 // Forward declaration for function from queries.cpp
 void executeQuery(uint32_t queryID, const std::string &name, const std::string &args);
@@ -864,6 +866,33 @@ void executeCommand(const std::vector<uint8_t> &payload)
                 }
             }
             success = applyCreateLocation(x, y, z, locationType, profession, error);
+            break;
+        }
+        case COMMAND_TYPE_ASSIGN_LODGING: {
+            // Payload: [4: cmdID] [1: cmdType] [2: TavernX] [2: TavernY] [2: TavernZ] [2: BedroomX] [2: BedroomY] [2: BedroomZ]
+            if (payload.size() < 17) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid ASSIGN_LODGING payload");
+                return;
+            }
+            int16_t tx = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t ty = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t tz = ((int16_t)payload[9] << 8) | payload[10];
+            int16_t bx = ((int16_t)payload[11] << 8) | payload[12];
+            int16_t by = ((int16_t)payload[13] << 8) | payload[14];
+            int16_t bz = ((int16_t)payload[15] << 8) | payload[16];
+            success = applyAssignLodging(tx, ty, tz, bx, by, bz, error);
+            break;
+        }
+        case COMMAND_TYPE_UNASSIGN_LODGING: {
+            // Payload: [4: cmdID] [1: cmdType] [2: BedroomX] [2: BedroomY] [2: BedroomZ]
+            if (payload.size() < 11) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid UNASSIGN_LODGING payload");
+                return;
+            }
+            int16_t bx = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t by = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t bz = ((int16_t)payload[9] << 8) | payload[10];
+            success = applyUnassignLodging(bx, by, bz, error);
             break;
         }
         default:
