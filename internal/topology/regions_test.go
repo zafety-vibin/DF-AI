@@ -57,7 +57,7 @@ func TestRegionGraph_NearestRegion(t *testing.T) {
 	topo := fixtureTopo(10, 10, 1, open)
 	rg := BuildRegionGraph(topo)
 
-	region, dist, ok := rg.NearestRegion(Coord{5, 0, 0})
+	region, nearestTile, dist, ok := rg.NearestRegion(Coord{5, 0, 0})
 	if !ok {
 		t.Fatal("expected a region to be found")
 	}
@@ -67,12 +67,16 @@ func TestRegionGraph_NearestRegion(t *testing.T) {
 	if region.ID != 0 {
 		t.Fatalf("expected region 0, got %d", region.ID)
 	}
+	wantTile := Coord{X: 1, Y: 0, Z: 0}
+	if nearestTile != wantTile {
+		t.Fatalf("expected nearest tile %+v, got %+v", wantTile, nearestTile)
+	}
 }
 
 func TestRegionGraph_NearestRegion_EmptyGraph(t *testing.T) {
 	topo := fixtureTopo(10, 10, 1, nil)
 	rg := BuildRegionGraph(topo)
-	_, _, ok := rg.NearestRegion(Coord{0, 0, 0})
+	_, _, _, ok := rg.NearestRegion(Coord{0, 0, 0})
 	if ok {
 		t.Fatal("empty graph must report ok=false, not fabricate a region")
 	}

@@ -151,16 +151,19 @@ func (rg RegionGraph) RegionAt(c Coord) (Region, bool) {
 }
 
 // NearestRegion returns the region whose closest tile to c has the
-// smallest Chebyshev distance, and that distance. ok is false when the
-// graph has no regions at all (e.g. nothing dug yet).
-func (rg RegionGraph) NearestRegion(c Coord) (region Region, dist int, ok bool) {
+// smallest Chebyshev distance, that actual nearest tile (a real member of
+// the region — never a synthesized point like a bounding-box corner,
+// which may not belong to a non-rectangular region at all), and that
+// distance. ok is false when the graph has no regions at all (e.g.
+// nothing dug yet).
+func (rg RegionGraph) NearestRegion(c Coord) (region Region, nearestTile Coord, dist int, ok bool) {
 	best := -1
 	for _, r := range rg.Regions {
 		for _, t := range r.Tiles {
 			dx, dy, dz := abs16(t.X-c.X), abs16(t.Y-c.Y), abs16(t.Z-c.Z)
 			d := max3(dx, dy, dz)
 			if best == -1 || d < best {
-				best, region, ok = d, r, true
+				best, region, nearestTile, ok = d, r, t, true
 			}
 		}
 	}

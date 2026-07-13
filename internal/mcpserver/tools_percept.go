@@ -58,6 +58,9 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 			if err != nil {
 				return withDash(b, ctx, "lens failed: "+err.Error()), nil, nil
 			}
+			if fn := dwarfCollisionFootnote(marks, lensOverlay.Marks); fn != nil {
+				lensOverlay.Footnotes = append(lensOverlay.Footnotes, fn...)
+			}
 			overlays = append(overlays, lensOverlay)
 			legendExtra = def.Legend
 		}

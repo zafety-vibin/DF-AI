@@ -50,14 +50,17 @@ func connectorSuggestion(topo *topology.TopologyOverlay, x1, y1, z1, x2, y2, z2 
 		}
 	}
 	centerX, centerY, centerZ := (x1+x2)/2, (y1+y2)/2, z1
-	region, _, ok := rg.NearestRegion(topology.Coord{X: centerX, Y: centerY, Z: centerZ})
+	_, target, _, ok := rg.NearestRegion(topology.Coord{X: centerX, Y: centerY, Z: centerZ})
 	if !ok {
 		return ""
 	}
 	// Suggest a 1-wide connector from the rectangle's center toward the
-	// nearest region's bounding-box center — a heuristic starting point,
-	// not a guaranteed-optimal path; the model refines it with look.
-	target := region.BBox[0] // min corner is a stable, deterministic anchor
+	// nearest actual tile in the nearest region — a heuristic starting
+	// point, not a guaranteed-optimal path; the model refines it with
+	// look. Must be a real tile the region's flood-fill actually visited:
+	// a non-rectangular region's bounding-box corner (e.g. an L-shaped
+	// corridor) is frequently NOT a member tile, which would suggest a
+	// connector terminating outside the region entirely.
 	return fmt.Sprintf(
 		"not yet connected to existing space — suggested connector: designate_dig default (%d,%d,%d)->(%d,%d,%d)",
 		centerX, centerY, centerZ, target.X, target.Y, target.Z)

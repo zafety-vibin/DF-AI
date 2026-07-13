@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/df-ai/orchestrator/internal/mapview"
 )
@@ -155,6 +156,41 @@ func gatherDesignationsLens(ctx context.Context, b *Bridge, s *mapview.Slice, z 
 		marks[[2]int16{dk[0], dk[1]}] = designationKindGlyph(dk[2])
 	}
 	return mapview.Overlay{Marks: marks}, nil
+}
+
+// dwarfCollisionFootnote reports which dwarves a lens overlay would
+// silently hide, per the design doc's "never silently hide a dwarf"
+// requirement (Component 2: "A lens overpainting a dwarf appends a
+// footnote rather than silently hiding it"). Returns nil when there's
+// nothing worth reporting — no dwarves in view at all, or dwarves in
+// view but none of them collide with the lens's marks.
+func dwarfCollisionFootnote(dwarfMarks map[[2]int16]rune, lensMarks map[[2]int16]rune) []string {
+	if len(dwarfMarks) == 0 {
+		return nil
+	}
+	var collided [][2]int16
+	for pos := range dwarfMarks {
+		if _, hit := lensMarks[pos]; hit {
+			collided = append(collided, pos)
+		}
+	}
+	if len(collided) == 0 {
+		return nil
+	}
+	// deterministic order for stable test assertions and readable output
+	sort.Slice(collided, func(i, j int) bool {
+		if collided[i][0] != collided[j][0] {
+			return collided[i][0] < collided[j][0]
+		}
+		return collided[i][1] < collided[j][1]
+	})
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "dwarves in view: %d (%d under overlay at", len(dwarfMarks), len(collided))
+	for _, pos := range collided {
+		fmt.Fprintf(&sb, " (%d,%d)", pos[0], pos[1])
+	}
+	sb.WriteString(")")
+	return []string{sb.String()}
 }
 
 // unknownLensError renders the truthful-error text for an unrecognized

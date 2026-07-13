@@ -75,3 +75,54 @@ func TestLensNamesErrorMessage(t *testing.T) {
 		t.Fatalf("lensNames must list both registered lenses, got %q", names)
 	}
 }
+
+// TestDwarfCollisionFootnote covers the design doc's "never silently hide
+// a dwarf" requirement (Component 2): a lens overpainting a dwarf's tile
+// must produce a footnote in the exact quoted format ("dwarves in view: 3
+// (2 under overlay at (46,50) (47,51))"), not silence.
+func TestDwarfCollisionFootnote(t *testing.T) {
+	cases := []struct {
+		name       string
+		dwarfMarks map[[2]int16]rune
+		lensMarks  map[[2]int16]rune
+		want       []string
+	}{
+		{
+			name:       "no dwarves in view",
+			dwarfMarks: map[[2]int16]rune{},
+			lensMarks:  map[[2]int16]rune{{10, 10}: 'W'},
+			want:       nil,
+		},
+		{
+			name:       "dwarves present but no collision",
+			dwarfMarks: map[[2]int16]rune{{5, 5}: '@'},
+			lensMarks:  map[[2]int16]rune{{10, 10}: 'W'},
+			want:       nil,
+		},
+		{
+			name:       "one collision",
+			dwarfMarks: map[[2]int16]rune{{46, 50}: '@'},
+			lensMarks:  map[[2]int16]rune{{46, 50}: 'W'},
+			want:       []string{"dwarves in view: 1 (1 under overlay at (46,50))"},
+		},
+		{
+			name:       "multiple collisions, sorted",
+			dwarfMarks: map[[2]int16]rune{{47, 51}: '@', {46, 50}: '@', {1, 1}: '@'},
+			lensMarks:  map[[2]int16]rune{{46, 50}: 'W', {47, 51}: 'W'},
+			want:       []string{"dwarves in view: 3 (2 under overlay at (46,50) (47,51))"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dwarfCollisionFootnote(tc.dwarfMarks, tc.lensMarks)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %#v, want %#v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %#v, want %#v", got, tc.want)
+				}
+			}
+		})
+	}
+}

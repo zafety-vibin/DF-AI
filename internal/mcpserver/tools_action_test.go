@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -133,6 +134,78 @@ func TestConnectorSuggestion_EmptyGraphReturnsEmpty(t *testing.T) {
 	got := connectorSuggestion(topo, 0, 0, 0, 2, 2, 0)
 	if got != "" {
 		t.Fatalf("expected no suggestion on a fresh embark with nothing dug, got %q", got)
+	}
+}
+
+// TestConnectorSuggestion_TargetIsARealRegionTile is the regression test
+// for the bug where connectorSuggestion used a region's bounding-box min
+// corner as the suggested connector target. For a non-rectangular region
+// (this fixture: three walls of a square — left bar x=0,y=3..10; bottom
+// bar y=10,x=0..10; right bar x=10,y=0..10, all one connected region
+// under 4-connectivity via the shared corners (0,10) and (10,10)) the
+// BBox min corner is (0,0,0) — a tile the flood-fill never visited and
+// that is not a member of the region at all. The suggested target must
+// instead be an actual tile of the nearest region.
+func TestConnectorSuggestion_TargetIsARealRegionTile(t *testing.T) {
+	topo := topology.NewTopologyOverlay(20, 20, 5)
+	// left bar: x=0, y=3..10
+	for y := int16(3); y <= 10; y++ {
+		_ = topo.SetTileState(0, y, 0, topology.StateOpen)
+	}
+	// bottom bar: y=10, x=0..10
+	for x := int16(0); x <= 10; x++ {
+		_ = topo.SetTileState(x, 10, 0, topology.StateOpen)
+	}
+	// right bar: x=10, y=0..10
+	for y := int16(0); y <= 10; y++ {
+		_ = topo.SetTileState(10, y, 0, topology.StateOpen)
+	}
+
+	// Sanity-check the fixture: BBox[0] must be (0,0,0), and that tile
+	// must NOT be a member of the region — otherwise this test doesn't
+	// exercise the bug at all.
+	rg := topology.BuildRegionGraph(topo)
+	region, ok := rg.RegionAt(topology.Coord{X: 0, Y: 10, Z: 0})
+	if !ok {
+		t.Fatal("fixture setup: expected the C-shaped region to exist")
+	}
+	if region.BBox[0] != (topology.Coord{X: 0, Y: 0, Z: 0}) {
+		t.Fatalf("fixture setup: expected BBox min corner (0,0,0), got %+v", region.BBox[0])
+	}
+	if _, ok := rg.RegionAt(topology.Coord{X: 0, Y: 0, Z: 0}); ok {
+		t.Fatal("fixture setup: (0,0,0) must NOT be a member of the region — it's the trap corner")
+	}
+
+	// A disconnected designation nearby (far enough that it doesn't touch
+	// the C shape's open tiles).
+	got := connectorSuggestion(topo, 15, 15, 0, 17, 17, 0)
+	if got == "" {
+		t.Fatal("expected a connector suggestion for a disconnected designation")
+	}
+
+	arrow := strings.Index(got, "->")
+	if arrow == -1 {
+		t.Fatalf("expected a suggestion with a -> connector, got %q", got)
+	}
+	rest := got[arrow+2:]
+	open, closeIdx := strings.Index(rest, "("), strings.Index(rest, ")")
+	if open == -1 || closeIdx == -1 || closeIdx < open {
+		t.Fatalf("could not find target coordinate tuple in %q", got)
+	}
+	parts := strings.Split(rest[open+1:closeIdx], ",")
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 coordinate parts, got %d in %q", len(parts), got)
+	}
+	tx, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+	ty, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+	tz, err3 := strconv.Atoi(strings.TrimSpace(parts[2]))
+	if err1 != nil || err2 != nil || err3 != nil {
+		t.Fatalf("failed to parse target coordinates from %q: %v %v %v", got, err1, err2, err3)
+	}
+
+	target := topology.Coord{X: int16(tx), Y: int16(ty), Z: int16(tz)}
+	if _, ok := topology.BuildRegionGraph(topo).RegionAt(target); !ok {
+		t.Fatalf("suggested connector target %+v is not a member of any real region — flood-fill never visited it (parsed from %q)", target, got)
 	}
 }
 
