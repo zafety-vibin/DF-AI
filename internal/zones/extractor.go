@@ -36,13 +36,13 @@ func (ze *ZoneExtractor) ExtractZones(zoneData []protocol.ZoneData) ([]*ZoneInfo
 	for _, zd := range zoneData {
 		// Convert protocol.ZoneData to zones.ZoneInfo
 		zoneInfo := &ZoneInfo{
-			ZoneID:     zd.ZoneID,
-			ZoneType:   ze.convertZoneType(zd.ZoneType),
+			ZoneID:   zd.ZoneID,
+			ZoneType: ze.convertZoneType(zd.ZoneType),
 			Region: protocol.Region{
 				X1: zd.X1, Y1: zd.Y1, Z1: zd.Z1,
 				X2: zd.X2, Y2: zd.Y2, Z2: zd.Z2,
 			},
-			AssignedTo: zd.AssignedTo,
+			AssignedTo: zd.OwnerUnitID,
 			SizeX:      uint16(zd.X2 - zd.X1 + 1),
 			SizeY:      uint16(zd.Y2 - zd.Y1 + 1),
 			CreatedAt:  time.Now(), // First time we see this zone
@@ -60,12 +60,20 @@ func (ze *ZoneExtractor) ExtractZones(zoneData []protocol.ZoneData) ([]*ZoneInfo
 	return zones, nil
 }
 
-// convertZoneType converts protocol zone type to internal zone type
+// convertZoneType converts protocol zone type to internal zone type.
+//
+// NOTE: protocol.ZoneType* was corrected wholesale (see internal/protocol/
+// message.go) to match DFHack's real civzone_type table. This package's
+// own ZoneType enum (types.go) is untouched legacy Feature-007 numbering
+// with no Workshop/Stockpile equivalent in the corrected wire table (those
+// were never real DF civzones) — protocol values that no longer map to one
+// of this package's categories fall through to the default below, same as
+// any other unrecognized value did before this change.
 func (ze *ZoneExtractor) convertZoneType(protoType uint8) ZoneType {
 	switch protoType {
 	case protocol.ZoneTypeBedroom:
 		return ZoneTypeBedroom
-	case protocol.ZoneTypeDining:
+	case protocol.ZoneTypeDiningHall:
 		return ZoneTypeDining
 	case protocol.ZoneTypeDormitory:
 		return ZoneTypeDormitory
@@ -73,10 +81,6 @@ func (ze *ZoneExtractor) convertZoneType(protoType uint8) ZoneType {
 		return ZoneTypeOffice
 	case protocol.ZoneTypeBarracks:
 		return ZoneTypeBarracks
-	case protocol.ZoneTypeWorkshop:
-		return ZoneTypeWorkshop
-	case protocol.ZoneTypeStockpile:
-		return ZoneTypeStockpile
 	default:
 		return ZoneTypeBedroom // Default fallback
 	}

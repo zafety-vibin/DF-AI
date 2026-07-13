@@ -26,18 +26,18 @@ type Message interface {
 
 // Message type constants
 const (
-	MessageTypeHandshake      uint8 = 0x01
-	MessageTypeFullState      uint8 = 0x02
-	MessageTypeTileUpdate     uint8 = 0x03
-	MessageTypeResyncRequest  uint8 = 0x04
-	MessageTypeHeartbeat      uint8 = 0x05
-	MessageTypeError          uint8 = 0x06
-	MessageTypeDisconnect     uint8 = 0x07
-	MessageTypeEntityUpdate   uint8 = 0x08
-	MessageTypeCommand        uint8 = 0x09
-	MessageTypeCommandAck     uint8 = 0x0A
-	MessageTypeQuery          uint8 = 0x0B
-	MessageTypeQueryResponse  uint8 = 0x0C
+	MessageTypeHandshake          uint8 = 0x01
+	MessageTypeFullState          uint8 = 0x02
+	MessageTypeTileUpdate         uint8 = 0x03
+	MessageTypeResyncRequest      uint8 = 0x04
+	MessageTypeHeartbeat          uint8 = 0x05
+	MessageTypeError              uint8 = 0x06
+	MessageTypeDisconnect         uint8 = 0x07
+	MessageTypeEntityUpdate       uint8 = 0x08
+	MessageTypeCommand            uint8 = 0x09
+	MessageTypeCommandAck         uint8 = 0x0A
+	MessageTypeQuery              uint8 = 0x0B
+	MessageTypeQueryResponse      uint8 = 0x0C
 	MessageTypeAnnouncementUpdate uint8 = 0x0D // plugin → server: new DF announcements
 )
 
@@ -199,10 +199,10 @@ func (m *DisconnectMessage) Validate() error {
 
 // Disconnect reason constants
 const (
-	ReasonNormalShutdown  uint8 = 0x00
-	ReasonPluginUnload    uint8 = 0x01
-	ReasonServerShutdown  uint8 = 0x02
-	ReasonRestart         uint8 = 0x03
+	ReasonNormalShutdown uint8 = 0x00
+	ReasonPluginUnload   uint8 = 0x01
+	ReasonServerShutdown uint8 = 0x02
+	ReasonRestart        uint8 = 0x03
 )
 
 // ErrorMessage signals protocol errors
@@ -253,21 +253,25 @@ type FortInfo struct {
 	Year          uint32 // Current year
 }
 
-// ZoneData represents a DF zone extracted from game state (Feature 007)
+// ZoneData represents a DF civzone extracted from game state. ZoneID is
+// DFHack's internal building id — informational only; assign_zone and
+// unassign_zone target zones by tile coordinate (matching
+// remove_building/unsuspend's existing convention), never by this ID.
 type ZoneData struct {
-	ZoneID     uint32 // Unique zone identifier from DF
-	ZoneType   uint8  // Zone category (ZoneTypeBedroom, ZoneTypeDining, etc.)
-	X1, Y1, Z1 int16  // Start coordinates
-	X2, Y2, Z2 int16  // End coordinates
-	AssignedTo int32  // Dwarf ID if assigned, -1 if unassigned
+	ZoneID        uint32  // DFHack building id (informational only)
+	ZoneType      uint8   // One of the ZoneType* constants above
+	X1, Y1, Z1    int16   // Start coordinates
+	X2, Y2, Z2    int16   // End coordinates
+	OwnerUnitID   int32   // -1 if unowned or not an owner-type zone
+	AssignedUnits []int32 // roster (empty for owner-type or unconfirmed-mechanism zones)
 }
 
 // EntityUpdateMessage contains entity position updates + optional fort info + zones
 type EntityUpdateMessage struct {
 	Count    uint32
 	Entities []EntityInfo
-	FortInfo *FortInfo   // Optional (nil if not included)
-	Zones    []ZoneData  // Feature 007: Zone data (empty if zone extraction disabled)
+	FortInfo *FortInfo  // Optional (nil if not included)
+	Zones    []ZoneData // Feature 007: Zone data (empty if zone extraction disabled)
 }
 
 func (m *EntityUpdateMessage) Type() uint8 { return MessageTypeEntityUpdate }
@@ -297,6 +301,8 @@ const (
 	CommandTypeRemoveBuilding uint8 = 0x0D // Mark the building at a tile for deconstruction
 	CommandTypeQueueJob       uint8 = 0x0E // Queue a job directly at an existing workshop (no manager/office needed)
 	CommandTypeSetLabor       uint8 = 0x0F // Enable/disable one labor on a unit
+	CommandTypeAssignZone     uint8 = 0x10 // Assign a unit to the zone at a tile (owner or roster, depending on zone type)
+	CommandTypeUnassignZone   uint8 = 0x11 // Remove a unit's zone assignment
 )
 
 // Labor constants for the SET_LABOR command. The value IS the real
@@ -379,32 +385,34 @@ const (
 	StockpileGroupAll uint32 = 0x1FFFF
 )
 
-// ZoneType constants for zone designations.
-//
-// Note: 0x06–0x08 (Office, Workshop, Stockpile) are legacy values from the
-// pre-BDI Feature 007 layout system and are NOT real DF civzone bits —
-// they are kept for backwards compatibility but should not be emitted by
-// new code. The 0x09–0x0E values match real DF civzone flags.
+// ZoneType constants for zone designations. These are DF-AI's OWN wire
+// values, matching dfhack-plugin/protocol.h's ZONE_TYPE_* constants —
+// NOT DFHack's own df::civzone_type values directly (those are scattered
+// 79-97, confirmed against the DFHack 53.15-r1 checkout). Assignment
+// support: Owner (setOwner) works for Bedroom/Office/Tomb/DiningHall;
+// Roster (assigned_units) works for Pen/Pond; Barracks uses a separate
+// squad-based mechanism (out of scope for assign_zone); the rest have no
+// confirmed DFHack assignment mechanism at all — assign_zone returns an
+// explicit "not implemented" error for them.
 const (
-	ZoneTypeBedroom     uint8 = 0x01 // Personal bedroom
-	ZoneTypeDining      uint8 = 0x02 // Dining hall
-	ZoneTypeMeetingHall uint8 = 0x03 // Meeting area
-	ZoneTypeBarracks    uint8 = 0x04 // Military training
-	ZoneTypeDormitory   uint8 = 0x05 // Shared sleeping
-	ZoneTypeOffice      uint8 = 0x06 // Legacy (from Feature 007); not a DF civzone
-	ZoneTypeWorkshop    uint8 = 0x07 // Legacy (from Feature 007); not a DF civzone
-	ZoneTypeStockpile   uint8 = 0x08 // Legacy (from Feature 007); not a DF civzone
-
-	// Real DF civzone categories (BDI-era; use these for new code).
-	ZoneTypeFarm        uint8 = 0x10
-	ZoneTypePen         uint8 = 0x11
-	ZoneTypeGarbageDump uint8 = 0x12
-	ZoneTypePitPond     uint8 = 0x13
-	ZoneTypeWaterSource uint8 = 0x14
-	ZoneTypeFishing     uint8 = 0x15
-	ZoneTypeHospital    uint8 = 0x16
-	ZoneTypeAnimalTrain uint8 = 0x17
-	ZoneTypeTomb        uint8 = 0x18
+	ZoneTypeBedroom        uint8 = 0x01 // Owner
+	ZoneTypeOffice         uint8 = 0x02 // Owner
+	ZoneTypeTomb           uint8 = 0x03 // Owner
+	ZoneTypeDiningHall     uint8 = 0x04 // Owner
+	ZoneTypeMeetingHall    uint8 = 0x05 // Unconfirmed
+	ZoneTypeDormitory      uint8 = 0x06 // Unconfirmed
+	ZoneTypeBarracks       uint8 = 0x07 // Squad (out of scope)
+	ZoneTypePen            uint8 = 0x08 // Roster
+	ZoneTypePond           uint8 = 0x09 // Roster
+	ZoneTypeArcheryRange   uint8 = 0x0A // Unconfirmed
+	ZoneTypePlantGathering uint8 = 0x0B // Unconfirmed
+	ZoneTypeWaterSource    uint8 = 0x0C // Unconfirmed
+	ZoneTypeDump           uint8 = 0x0D // Unconfirmed
+	ZoneTypeSandCollection uint8 = 0x0E // Unconfirmed
+	ZoneTypeFishingArea    uint8 = 0x0F // Unconfirmed
+	ZoneTypeClayCollection uint8 = 0x10 // Unconfirmed
+	ZoneTypeDungeon        uint8 = 0x11 // Unconfirmed
+	ZoneTypeAnimalTraining uint8 = 0x12 // Unconfirmed
 )
 
 // OrderType constants for manager work orders.
@@ -483,15 +491,15 @@ const (
 	BuildTypeWorkshopFishery     uint8 = 0x18
 
 	// Furniture (single-tile, requires an item from stockpile).
-	BuildTypeBed   uint8 = 0x30
-	BuildTypeTable uint8 = 0x31
-	BuildTypeChair uint8 = 0x32
+	BuildTypeBed     uint8 = 0x30
+	BuildTypeTable   uint8 = 0x31
+	BuildTypeChair   uint8 = 0x32
 	BuildTypeCabinet uint8 = 0x33
 	BuildTypeCoffer  uint8 = 0x34
 
 	// Doors / hatches.
-	BuildTypeDoor   uint8 = 0x50
-	BuildTypeHatch  uint8 = 0x51
+	BuildTypeDoor  uint8 = 0x50
+	BuildTypeHatch uint8 = 0x51
 )
 
 // IsBuildTypeWorkshop reports whether the given BuildType refers to a
@@ -528,6 +536,18 @@ type ZoneDesignation struct {
 	X1, Y1, Z int16 // Start coordinates
 	X2, Y2    int16 // End coordinates (same Z-level)
 	ZoneType  uint8 // Bedroom, dining, etc.
+}
+
+// AssignZoneDesignation targets the zone at (X,Y,Z) and assigns UnitID.
+type AssignZoneDesignation struct {
+	X, Y, Z int16
+	UnitID  int32
+}
+
+// UnassignZoneDesignation targets the zone at (X,Y,Z) and removes UnitID's assignment.
+type UnassignZoneDesignation struct {
+	X, Y, Z int16
+	UnitID  int32
 }
 
 // UnsuspendDesignation represents a single-tile unsuspend command, used to
@@ -611,8 +631,8 @@ type StockpileDesignation struct {
 // tiles that aren't valid targets. For dirt/soil aquifer layers, use a
 // constructed wall (BuildTypeWall) instead.
 type SmoothDesignation struct {
-	X1, Y1, Z int16
-	X2, Y2    int16
+	X1, Y1, Z  int16
+	X2, Y2     int16
 	SmoothType uint8 // SmoothTypeSmooth or SmoothTypeEngrave
 }
 
@@ -631,20 +651,22 @@ const (
 
 // CommandMessage represents a command from server to DFHack
 type CommandMessage struct {
-	CommandID   uint32                    // Unique command identifier
-	CommandType uint8                     // Type of command (dig/build/cancel/zone/blueprint/unsuspend/work_order)
-	DigType     uint8                     // For DIG: dig designation type (Default=1, UpDownStair=2, Channel=3, etc)
-	Region      Region                    // For DIG and CANCEL commands
-	Build       BuildDesignation          // For BUILD commands
-	Zone        ZoneDesignation           // For ZONE commands
-	Unsuspend   UnsuspendDesignation      // For UNSUSPEND commands
-	Order       WorkOrderDesignation      // For WORK_ORDER commands
-	Stockpile   StockpileDesignation      // For STOCKPILE commands
-	Smooth      SmoothDesignation         // For SMOOTH commands
-	Pause       PauseControl              // For PAUSE commands
-	Remove      RemoveBuildingDesignation // For REMOVE_BUILDING commands
-	QueueJob    QueueJobDesignation       // For QUEUE_JOB commands
-	SetLabor    SetLaborDesignation       // For SET_LABOR commands
+	CommandID    uint32                    // Unique command identifier
+	CommandType  uint8                     // Type of command (dig/build/cancel/zone/blueprint/unsuspend/work_order)
+	DigType      uint8                     // For DIG: dig designation type (Default=1, UpDownStair=2, Channel=3, etc)
+	Region       Region                    // For DIG and CANCEL commands
+	Build        BuildDesignation          // For BUILD commands
+	Zone         ZoneDesignation           // For ZONE commands
+	Unsuspend    UnsuspendDesignation      // For UNSUSPEND commands
+	Order        WorkOrderDesignation      // For WORK_ORDER commands
+	Stockpile    StockpileDesignation      // For STOCKPILE commands
+	Smooth       SmoothDesignation         // For SMOOTH commands
+	Pause        PauseControl              // For PAUSE commands
+	Remove       RemoveBuildingDesignation // For REMOVE_BUILDING commands
+	QueueJob     QueueJobDesignation       // For QUEUE_JOB commands
+	SetLabor     SetLaborDesignation       // For SET_LABOR commands
+	AssignZone   AssignZoneDesignation     // For ASSIGN_ZONE commands
+	UnassignZone UnassignZoneDesignation   // For UNASSIGN_ZONE commands
 
 	// Feature 007: Blueprint command fields
 	BlueprintName string // For BLUEPRINT: blueprint filename (without .csv)
@@ -657,7 +679,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeSetLabor {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeUnassignZone {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -727,14 +749,15 @@ func (m *CommandAckMessage) Validate() error {
 // wire format. Mirrors df::report's relevant fields.
 //
 // Wire layout (per entry, big-endian):
-//   [4: ID]
-//   [2: TypeID]
-//   [1: Severity]      // 0=info, 1=warn, 2=critical
-//   [2: X][2: Y][2: Z] // (-1,-1,-1) if non-positional
-//   [4: GameYear]
-//   [4: GameTick]
-//   [2: TextLen]
-//   [N: Text UTF-8]
+//
+//	[4: ID]
+//	[2: TypeID]
+//	[1: Severity]      // 0=info, 1=warn, 2=critical
+//	[2: X][2: Y][2: Z] // (-1,-1,-1) if non-positional
+//	[4: GameYear]
+//	[4: GameTick]
+//	[2: TextLen]
+//	[N: Text UTF-8]
 type AnnouncementInfo struct {
 	ID       uint32
 	TypeID   uint16

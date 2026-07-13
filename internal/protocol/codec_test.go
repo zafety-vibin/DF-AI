@@ -1,0 +1,109 @@
+package protocol
+
+import (
+	"bytes"
+	"testing"
+)
+
+func TestZoneTypeConstants_MatchThePlanTable(t *testing.T) {
+	cases := map[uint8]uint8{
+		ZoneTypeBedroom: 0x01, ZoneTypeOffice: 0x02, ZoneTypeTomb: 0x03,
+		ZoneTypeDiningHall: 0x04, ZoneTypeMeetingHall: 0x05, ZoneTypeDormitory: 0x06,
+		ZoneTypeBarracks: 0x07, ZoneTypePen: 0x08, ZoneTypePond: 0x09,
+		ZoneTypeArcheryRange: 0x0A, ZoneTypePlantGathering: 0x0B, ZoneTypeWaterSource: 0x0C,
+		ZoneTypeDump: 0x0D, ZoneTypeSandCollection: 0x0E, ZoneTypeFishingArea: 0x0F,
+		ZoneTypeClayCollection: 0x10, ZoneTypeDungeon: 0x11, ZoneTypeAnimalTraining: 0x12,
+	}
+	for got, want := range cases {
+		if got != want {
+			t.Errorf("constant value mismatch: got 0x%02X, want 0x%02X", got, want)
+		}
+	}
+}
+
+func TestEncodeDecodeAssignZoneCommand(t *testing.T) {
+	msg := &CommandMessage{
+		CommandID:   7,
+		CommandType: CommandTypeAssignZone,
+		AssignZone:  AssignZoneDesignation{X: 10, Y: 20, Z: 90, UnitID: 42},
+	}
+	encoded, err := EncodeCommand(msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DecodeCommand(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.AssignZone != msg.AssignZone {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", decoded.AssignZone, msg.AssignZone)
+	}
+}
+
+func TestEncodeDecodeUnassignZoneCommand(t *testing.T) {
+	msg := &CommandMessage{
+		CommandID:    8,
+		CommandType:  CommandTypeUnassignZone,
+		UnassignZone: UnassignZoneDesignation{X: 10, Y: 20, Z: 90, UnitID: 42},
+	}
+	encoded, err := EncodeCommand(msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DecodeCommand(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.UnassignZone != msg.UnassignZone {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", decoded.UnassignZone, msg.UnassignZone)
+	}
+}
+
+func TestEntityUpdateMessage_ZonesRoundTrip(t *testing.T) {
+	msg := &EntityUpdateMessage{
+		Count:    0,
+		Entities: nil,
+		Zones: []ZoneData{
+			{ZoneID: 99, ZoneType: ZoneTypeBedroom, X1: 1, Y1: 1, Z1: 90, X2: 2, Y2: 2, Z2: 90, OwnerUnitID: 42, AssignedUnits: nil},
+			{ZoneID: 100, ZoneType: ZoneTypePen, X1: 5, Y1: 5, Z1: 90, X2: 8, Y2: 8, Z2: 90, OwnerUnitID: -1, AssignedUnits: []int32{1, 2, 3}},
+		},
+	}
+	var buf bytes.Buffer
+	if err := serializeEntityUpdate(&buf, msg); err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	decoded, err := deserializeEntityUpdate(buf.Bytes())
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+	if len(decoded.Zones) != 2 {
+		t.Fatalf("expected 2 zones, got %d", len(decoded.Zones))
+	}
+	z0 := decoded.Zones[0]
+	if z0.ZoneID != 99 || z0.ZoneType != ZoneTypeBedroom || z0.X1 != 1 || z0.Y1 != 1 ||
+		z0.X2 != 2 || z0.Y2 != 2 || z0.Z1 != 90 || z0.Z2 != 90 || z0.OwnerUnitID != 42 {
+		t.Fatalf("zone 0 mismatch: got %+v", z0)
+	}
+	if len(z0.AssignedUnits) != 0 {
+		t.Fatalf("expected zone 0 to have no assigned units, got %v", z0.AssignedUnits)
+	}
+	z1 := decoded.Zones[1]
+	if len(z1.AssignedUnits) != 3 || z1.AssignedUnits[0] != 1 || z1.AssignedUnits[1] != 2 || z1.AssignedUnits[2] != 3 {
+		t.Fatalf("expected zone 1 assigned units [1,2,3], got %v", z1.AssignedUnits)
+	}
+}
+
+func TestEntityUpdateMessage_NoZonesDecodesEmpty(t *testing.T) {
+	msg := &EntityUpdateMessage{Count: 0, Entities: nil, Zones: nil}
+	var buf bytes.Buffer
+	if err := serializeEntityUpdate(&buf, msg); err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	decoded, err := deserializeEntityUpdate(buf.Bytes())
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+	if len(decoded.Zones) != 0 {
+		t.Fatalf("expected 0 zones, got %d", len(decoded.Zones))
+	}
+}

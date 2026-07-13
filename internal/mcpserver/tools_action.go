@@ -132,14 +132,20 @@ func digTypeFromName(s string) (uint8, error) {
 	return 0, fmt.Errorf("unknown dig type %q (default|stairs|channel|ramp|upstair|downstair)", s)
 }
 
+// zoneTypes is stale pending Task 6 (this entire "zone" tool block is a
+// non-functional stub superseded by tools_zone.go's designate_zone). Kept
+// here only as a minimal compiling fix against the corrected
+// protocol.ZoneType* table (internal/protocol/message.go) — "farm" and
+// "hospital" had no confirmed equivalent in that table and were dropped
+// rather than guessed.
 var zoneTypes = map[string]uint8{
-	"bedroom": protocol.ZoneTypeBedroom, "dining": protocol.ZoneTypeDining,
+	"bedroom": protocol.ZoneTypeBedroom, "dining": protocol.ZoneTypeDiningHall,
 	"meeting": protocol.ZoneTypeMeetingHall, "barracks": protocol.ZoneTypeBarracks,
-	"dormitory": protocol.ZoneTypeDormitory, "farm": protocol.ZoneTypeFarm,
-	"pen": protocol.ZoneTypePen, "garbage": protocol.ZoneTypeGarbageDump,
-	"pit": protocol.ZoneTypePitPond, "water": protocol.ZoneTypeWaterSource,
-	"fishing": protocol.ZoneTypeFishing, "hospital": protocol.ZoneTypeHospital,
-	"animal_train": protocol.ZoneTypeAnimalTrain, "tomb": protocol.ZoneTypeTomb,
+	"dormitory": protocol.ZoneTypeDormitory,
+	"pen":       protocol.ZoneTypePen, "garbage": protocol.ZoneTypeDump,
+	"pit": protocol.ZoneTypePond, "water": protocol.ZoneTypeWaterSource,
+	"fishing":      protocol.ZoneTypeFishingArea,
+	"animal_train": protocol.ZoneTypeAnimalTraining, "tomb": protocol.ZoneTypeTomb,
 }
 
 var buildTypes = map[string]uint8{

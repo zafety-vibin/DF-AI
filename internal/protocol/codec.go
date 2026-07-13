@@ -641,6 +641,43 @@ func serializeEntityUpdate(w io.Writer, msg *EntityUpdateMessage) error {
 		}
 	}
 
+	// Zones block -- additive, appended after FortInfo. Byte layout must
+	// exactly match dfhack-plugin/entities.cpp's serialize_entity_update.
+	hasZones := uint8(0)
+	if len(msg.Zones) > 0 {
+		hasZones = 1
+	}
+	if err := binary.Write(w, binary.BigEndian, hasZones); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, uint32(len(msg.Zones))); err != nil {
+		return err
+	}
+	for _, z := range msg.Zones {
+		if err := binary.Write(w, binary.BigEndian, z.ZoneID); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, z.ZoneType); err != nil {
+			return err
+		}
+		for _, v := range []int16{z.X1, z.Y1, z.X2, z.Y2, z.Z1} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		if err := binary.Write(w, binary.BigEndian, z.OwnerUnitID); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(z.AssignedUnits))); err != nil {
+			return err
+		}
+		for _, uid := range z.AssignedUnits {
+			if err := binary.Write(w, binary.BigEndian, uid); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -687,6 +724,48 @@ func deserializeEntityUpdate(data []byte) (*EntityUpdateMessage, error) {
 		msg.FortInfo = fortInfo
 	}
 	// If no hasFortInfo byte or hasFortInfo==0, FortInfo remains nil (backward compatible)
+
+	// Zones block (additive — absent on an old peer, decoded as empty).
+	var hasZones uint8
+	if err := binary.Read(buf, binary.BigEndian, &hasZones); err == nil && hasZones == 1 {
+		var zoneCount uint32
+		if err := binary.Read(buf, binary.BigEndian, &zoneCount); err != nil {
+			return nil, err
+		}
+		msg.Zones = make([]ZoneData, zoneCount)
+		for i := uint32(0); i < zoneCount; i++ {
+			z := &msg.Zones[i]
+			if err := binary.Read(buf, binary.BigEndian, &z.ZoneID); err != nil {
+				return nil, err
+			}
+			if err := binary.Read(buf, binary.BigEndian, &z.ZoneType); err != nil {
+				return nil, err
+			}
+			var x1, y1, x2, y2, zLevel int16
+			for _, p := range []*int16{&x1, &y1, &x2, &y2, &zLevel} {
+				if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+					return nil, err
+				}
+			}
+			z.X1, z.Y1, z.X2, z.Y2 = x1, y1, x2, y2
+			z.Z1, z.Z2 = zLevel, zLevel
+			if err := binary.Read(buf, binary.BigEndian, &z.OwnerUnitID); err != nil {
+				return nil, err
+			}
+			var assignedCount uint16
+			if err := binary.Read(buf, binary.BigEndian, &assignedCount); err != nil {
+				return nil, err
+			}
+			if assignedCount > 0 {
+				z.AssignedUnits = make([]int32, assignedCount)
+				for j := uint16(0); j < assignedCount; j++ {
+					if err := binary.Read(buf, binary.BigEndian, &z.AssignedUnits[j]); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+	}
 
 	return msg, nil
 }
@@ -828,6 +907,26 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 			if err := binary.Write(w, binary.BigEndian, v); err != nil {
 				return err
 			}
+		}
+	case CommandTypeAssignZone:
+		// [2: X] [2: Y] [2: Z] [4: UnitID]
+		for _, v := range []int16{msg.AssignZone.X, msg.AssignZone.Y, msg.AssignZone.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.AssignZone.UnitID); err != nil {
+			return err
+		}
+	case CommandTypeUnassignZone:
+		// [2: X] [2: Y] [2: Z] [4: UnitID]
+		for _, v := range []int16{msg.UnassignZone.X, msg.UnassignZone.Y, msg.UnassignZone.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.UnassignZone.UnitID); err != nil {
+			return err
 		}
 	case CommandTypeUnsuspend:
 		// [2: X] [2: Y] [2: Z]
@@ -1024,6 +1123,24 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 				return nil, err
 			}
 		}
+	case CommandTypeAssignZone:
+		for _, p := range []*int16{&msg.AssignZone.X, &msg.AssignZone.Y, &msg.AssignZone.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.AssignZone.UnitID); err != nil {
+			return nil, err
+		}
+	case CommandTypeUnassignZone:
+		for _, p := range []*int16{&msg.UnassignZone.X, &msg.UnassignZone.Y, &msg.UnassignZone.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.UnassignZone.UnitID); err != nil {
+			return nil, err
+		}
 	case CommandTypeUnsuspend:
 		for _, p := range []*int16{&msg.Unsuspend.X, &msg.Unsuspend.Y, &msg.Unsuspend.Z} {
 			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
@@ -1130,6 +1247,28 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 	}
 
 	return msg, nil
+}
+
+// EncodeCommand serializes a CommandMessage to wire bytes (header +
+// payload). Thin typed wrapper around SerializeMessage for callers (and
+// tests) that only ever deal in CommandMessage and don't want to juggle
+// the Message interface.
+func EncodeCommand(msg *CommandMessage) ([]byte, error) {
+	return SerializeMessage(msg)
+}
+
+// DecodeCommand deserializes wire bytes into a CommandMessage. Thin typed
+// wrapper around DeserializeMessage — see EncodeCommand.
+func DecodeCommand(data []byte) (*CommandMessage, error) {
+	msg, err := DeserializeMessage(data)
+	if err != nil {
+		return nil, err
+	}
+	cmd, ok := msg.(*CommandMessage)
+	if !ok {
+		return nil, fmt.Errorf("expected CommandMessage, got %T", msg)
+	}
+	return cmd, nil
 }
 
 func (m *CommandMessage) Serialize() ([]byte, error) {
@@ -1352,7 +1491,8 @@ func (m *QueryResponseMessage) Serialize() ([]byte, error) { return SerializeMes
 // [4: Count] [N × AnnouncementInfo]
 //
 // Per-entry layout: [4:ID][2:TypeID][1:Severity][2:X][2:Y][2:Z]
-//                   [4:GameYear][4:GameTick][2:TextLen][N:Text]
+//
+//	[4:GameYear][4:GameTick][2:TextLen][N:Text]
 func serializeAnnouncementUpdate(w io.Writer, msg *AnnouncementUpdateMessage) error {
 	if err := binary.Write(w, binary.BigEndian, msg.Count); err != nil {
 		return err
