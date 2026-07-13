@@ -27,6 +27,11 @@ type Slice struct {
 	// Both are optional: an older plugin simply omits them.
 	Water   [][3]int16 `json:"water"`
 	Aquifer [][2]int16 `json:"aquifer"`
+	// DesignationKinds is per-designated-tile kind detail: [x,y,kind]
+	// where kind is 0=dig(Default) 1=channel 2=ramp 3=stair 4=smooth.
+	// Optional: an older plugin omits it, leaving Designated (plain
+	// [x,y] pairs, no kind) as the only always-on signal.
+	DesignationKinds [][3]int16 `json:"designation_kinds"`
 }
 
 type ColumnLevel struct {

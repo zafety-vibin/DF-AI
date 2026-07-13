@@ -61,3 +61,25 @@ func TestDecodeColumnProfileFluids(t *testing.T) {
 		t.Fatalf("fluid fields not decoded: %+v", lv)
 	}
 }
+
+func TestDecodeSlice_DesignationKindsOptional(t *testing.T) {
+	raw := []byte(`{"z":100,"x1":0,"y1":0,"rows":["..","d."],"designated":[[0,1]],"designation_kinds":[[0,1,2]]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(s.DesignationKinds) != 1 || s.DesignationKinds[0] != [3]int16{0, 1, 2} {
+		t.Fatalf("expected DesignationKinds [[0,1,2]], got %v", s.DesignationKinds)
+	}
+}
+
+func TestDecodeSlice_DesignationKindsAbsentIsFine(t *testing.T) {
+	raw := []byte(`{"z":100,"x1":0,"y1":0,"rows":["..","d."],"designated":[[0,1]]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("an older-plugin payload without designation_kinds must still decode: %v", err)
+	}
+	if len(s.DesignationKinds) != 0 {
+		t.Fatalf("expected empty DesignationKinds, got %v", s.DesignationKinds)
+	}
+}

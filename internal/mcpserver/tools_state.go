@@ -33,6 +33,24 @@ func capRawJSON(raw string) string {
 	return raw[:cut] + "\n...truncated, refine your query"
 }
 
+// buildingListEntry is one entry from the plugin's list_buildings query.
+// Shared between the flat `buildings` tool (renderBuildings) and the
+// `buildings` look lens (internal/mcpserver/lenses.go) so both parse the
+// exact same wire shape once.
+type buildingListEntry struct {
+	Type     string `json:"type"`
+	X        int    `json:"x"`
+	Y        int    `json:"y"`
+	Z        int    `json:"z"`
+	X1       int    `json:"x1"`
+	Y1       int    `json:"y1"`
+	X2       int    `json:"x2"`
+	Y2       int    `json:"y2"`
+	Stage    int    `json:"stage"`
+	MaxStage int    `json:"max_stage"`
+	Done     bool   `json:"done"`
+}
+
 // renderBuildings renders the list_buildings query response, one line per
 // building. Unfinished buildings are the interesting case: a planned
 // building is invisible in every map view, so a plan that silently died
@@ -40,16 +58,8 @@ func capRawJSON(raw string) string {
 // stage is rendered loudly.
 func renderBuildings(raw []byte) string {
 	var resp struct {
-		Buildings []struct {
-			Type     string `json:"type"`
-			X        int    `json:"x"`
-			Y        int    `json:"y"`
-			Z        int    `json:"z"`
-			Stage    int    `json:"stage"`
-			MaxStage int    `json:"max_stage"`
-			Done     bool   `json:"done"`
-		} `json:"buildings"`
-		Truncated bool `json:"truncated"`
+		Buildings []buildingListEntry `json:"buildings"`
+		Truncated bool                `json:"truncated"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return fmt.Sprintf("unparseable list_buildings response: %v\nraw: %s", err, capRawJSON(string(raw)))
