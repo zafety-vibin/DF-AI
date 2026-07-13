@@ -12,14 +12,15 @@ import (
 
 func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 	type lookIn struct {
-		X      int `json:"x" jsonschema:"center x"`
-		Y      int `json:"y" jsonschema:"center y"`
-		Z      int `json:"z" jsonschema:"z-level to view"`
-		Radius int `json:"radius,omitempty" jsonschema:"half-width of the crop, default 12, max 15"`
+		X      int    `json:"x" jsonschema:"center x"`
+		Y      int    `json:"y" jsonschema:"center y"`
+		Z      int    `json:"z" jsonschema:"z-level to view"`
+		Radius int    `json:"radius,omitempty" jsonschema:"half-width of the crop, default 12, max 15"`
+		Lens   string `json:"lens,omitempty" jsonschema:"optional overlay: buildings|designations. Paints one annotation layer onto the terrain grid; omit for the plain terrain view (which still shows dig designations as 'd'). Exact building/zone types via buildings/building_status."`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "look",
-		Description: "Render a small annotated map crop of one z-level around (x,y). Glyph grid with legend; dwarves marked @. '?' tiles are hidden fog — solid undug ground you CAN designate digging into. Use for local layout checks; use find_dig_site for choosing dig locations.",
+		Description: "Render a small annotated map crop of one z-level around (x,y). Glyph grid with legend; dwarves marked @, dig designations marked d. Pass lens=buildings or lens=designations for detail overlays. '?' tiles are hidden fog — solid undug ground you CAN designate digging into. Use for local layout checks; use find_dig_site for choosing dig locations.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in lookIn) (*mcp.CallToolResult, any, error) {
 		r := in.Radius
 		if r <= 0 {
@@ -46,7 +47,21 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 				marks[[2]int16{d.X, d.Y}] = '@'
 			}
 		}
-		return withDash(b, ctx, mapview.RenderCrop(s, []mapview.Overlay{{Marks: marks}}, "")), nil, nil
+		overlays := []mapview.Overlay{{Marks: marks}}
+		legendExtra := ""
+		if in.Lens != "" {
+			def, ok := lenses[in.Lens]
+			if !ok {
+				return withDash(b, ctx, unknownLensError(in.Lens)), nil, nil
+			}
+			lensOverlay, err := def.Gather(ctx, b, s, int16(in.Z))
+			if err != nil {
+				return withDash(b, ctx, "lens failed: "+err.Error()), nil, nil
+			}
+			overlays = append(overlays, lensOverlay)
+			legendExtra = def.Legend
+		}
+		return withDash(b, ctx, mapview.RenderCrop(s, overlays, legendExtra)), nil, nil
 	})
 
 	type xsecIn struct {

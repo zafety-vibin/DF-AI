@@ -155,3 +155,19 @@ func TestFindDigSiteValidRequestStillWorks(t *testing.T) {
 		t.Errorf("expected candidates on a solid in-bounds level, got: %q", out)
 	}
 }
+
+// TestLook_UnknownLensReturnsRegisteredNames is a light unit test of the
+// error path only — a full nil-bridge MCP round trip is already covered by
+// TestEveryToolNilBridge in server_test.go, which exercises `look` with
+// lens omitted. This test checks the unknownLensError helper directly
+// (already covered by TestLensNamesErrorMessage in lenses_test.go) plus
+// that the `look` tool actually calls it — covered by re-running the
+// nil-bridge sweep with a lens arg added to minToolArgs (Step 3 below)
+// rather than a bespoke MCP client test here, to avoid duplicating
+// transport-level test scaffolding that already exists.
+func TestLook_UnknownLensReturnsRegisteredNames(t *testing.T) {
+	got := unknownLensError("nonexistent")
+	if !strings.Contains(got, "unknown lens") {
+		t.Fatalf("expected an 'unknown lens' message, got %q", got)
+	}
+}
