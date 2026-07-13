@@ -155,11 +155,30 @@ every other predicate-backing data source already uses.
 ## Component 5: MCP tools
 
 `designate_zone(type, x1,y1,z,x2,y2)`, `assign_zone(zone_id, unit_id)`, `unassign_zone(zone_id,
-unit_id)`, `list_zones()` — replacing the existing stub `zone` tool (`internal/mcpserver/tools_action.go`)
-entirely rather than layering on top of it, since the stub's tool name, param shape, and type list
-are all being superseded. Tool descriptions state plainly that a zone claims existing floor, is not
-a dig designation, and that assignment mechanism (owner vs roster) depends on zone type — mirroring
-how `designate_dig`'s own description was tightened during Perception round 2.
+unit_id)`, `list_zones(type?, z?)` — replacing the existing stub `zone` tool
+(`internal/mcpserver/tools_action.go`) entirely rather than layering on top of it, since the stub's
+tool name, param shape, and type list are all being superseded. Tool descriptions state plainly
+that a zone claims existing floor, is not a dig designation, and that assignment mechanism (owner
+vs roster) depends on zone type — mirroring how `designate_dig`'s own description was tightened
+during Perception round 2.
+
+**`list_zones` render — token-scaling correction.** The 2026-07-12 token/scaling research
+(`docs/archive/2026-07-12-token-scaling-research.md`) flags `list_buildings`'s flat
+one-line-per-entry render as the pattern to *stop* using at scale (recommendation #5: "the model
+needs the shape of the fort far more often than N coordinates... default: summary-by-type, roster
+on request"). An earlier draft of this component said `list_zones` should mirror `list_buildings`'
+existing shape verbatim — that would import the exact defect the research already identified rather
+than the pattern it recommends replacing it with. Corrected default render: grouped by type, one
+line per type — `"Zones: 5 Bedroom (3 owned, 2 unowned), 1 DiningHall, 2 Pen (7 animals total),
+1 Tomb (unowned)"` — with full per-zone detail (id, extents, owner/roster) returned only when the
+caller passes a `type` or `z` filter, the same progressive-disclosure shape `stocks`' own fix
+(recommendation #1) and `dwarves`' own fix (recommendation #6) both converge on. The plugin-side
+`list_zones` query still carries a cap + `truncated` flag from day one (the established "truthful
+truncation with a refine hint" pattern, `queries.cpp`'s existing 200-building cap), applied
+proactively here rather than reactively the way `buildings`/`stocks` had to be patched after the
+fact — zone counts scale roughly with fort population (bedrooms) plus a handful of resource zones,
+so the risk is lower than `stocks`' combinatorial item×material growth, but the pattern costs
+nothing to build in now.
 
 ## Component 6: `look` zones lens
 
@@ -207,8 +226,11 @@ Truthful-ACK discipline throughout, consistent with every other command this plu
 
 Go-side: unit tests for the wire-enum translation functions, `ZoneData` decode (including the
 absent-owner/absent-roster cases), both corrected predicates (each against a fixture `WorldModel`
-with the new type values), and the zones lens's glyph mapping + disjointness (extending Perception
-round 2's existing table-driven glyph test rather than duplicating its structure). Plugin side: a
+with the new type values), the zones lens's glyph mapping + disjointness (extending Perception
+round 2's existing table-driven glyph test rather than duplicating its structure), and
+`renderZones`' summary-by-type grouping (Component 5's token-scaling correction) — a fixture with
+several zones of the same type must collapse to one summary line, not one line per zone, and a
+`type`/`z` filter must return full per-zone detail. Plugin side: a
 compile-check rebuild (this project has no C++ unit harness, established precedent from Perception
 round 2 Task 4). Live verification: an actual play-session checkpoint — designate a bedroom zone
 over one of the fort's 7 existing unassigned beds, assign a specific dwarf to it via `assign_zone`,
