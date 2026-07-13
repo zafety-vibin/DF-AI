@@ -28,14 +28,26 @@ reason, don't paper over what you haven't confirmed), creation and listing stay 
 mechanism is genuinely type-agnostic and fully confirmed), but `assign_zone` is honest about which
 types it actually supports. See Component 3 for the exact breakdown.
 
+**Refined 2026-07-13 (see `docs/decisions.md`) — the "6 of 18" framing above was itself imprecise.**
+It conflated "what DFHack's own reference plugins happen to exercise" with "what the underlying API
+permits" — `Buildings::setOwner` and the roster write path carry no type restriction in DFHack's own
+code at all; the Pen/Pond-only gate is `plugins/zone.cpp`'s own external guard clause. Dormitory was
+added to the roster mechanism on that basis (7 types now have a working assignment mechanism), and
+four of the "remaining 11" (MeetingHall, ArcheryRange, Dungeon, AnimalTraining) turned out to have a
+real, understood non-assignment mechanism rather than being genuinely unconfirmed. Only 6 types
+remain truly unconfirmed. Component 3's table below reflects the current, corrected breakdown.
+
 In scope: full fortress-relevant `civzone_type` breadth for creation and listing — Bedroom, Office,
 Tomb, DiningHall, MeetingHall, Dormitory, Barracks, Pen, Pond, ArcheryRange, PlantGathering,
 WaterSource, Dump, SandCollection, FishingArea, ClayCollection, Dungeon, AnimalTraining. Unit
-assignment/unassignment for the 6 types with a confirmed DFHack mechanism (Bedroom, Office, Tomb,
-DiningHall via owner; Pen, Pond via roster); a clear "not yet implemented" error (not a guess) for
-the other 12. A `look` zones lens (the extensibility hook Perception round 2 explicitly pre-built
-for this), and correcting one piece of code this workstream's data directly breaks: the two zone
-predicates (`HasBedroomZones`, `HasDiningHall`) currently checking against wrong legacy values.
+assignment/unassignment for the 7 types with a confirmed DFHack mechanism (Bedroom, Office, Tomb,
+DiningHall via owner; Pen, Pond, Dormitory via roster — Dormitory added 2026-07-13, see Component
+3); a specific, accurate "why not" error for four more types whose real (non-assignment) mechanism
+is now understood (MeetingHall, ArcheryRange, Dungeon, AnimalTraining — also added 2026-07-13); a
+generic "not yet implemented" error (not a guess) for the remaining 6 genuinely-unconfirmed types.
+A `look` zones lens (the extensibility hook Perception round 2 explicitly pre-built for this), and
+correcting one piece of code this workstream's data directly breaks: the two zone predicates
+(`HasBedroomZones`, `HasDiningHall`) currently checking against wrong legacy values.
 
 Out of scope: any placement/suggestion logic (which room to make a bedroom, whether a zone is
 "good enough") — the brief explicitly assigns room-quality and housing-value predicates to a
@@ -185,27 +197,39 @@ for picking a tile to target.
 
 ## Component 3: Zone assignment (`applyAssignZone` / `applyUnassignZone`)
 
-**This component was substantially corrected during the writing-plans research phase.** The
-brainstormed design assumed every zone type would resolve cleanly into "owner" or "roster." Direct
-verification against the DFHack 53.15-r1 source (`library/modules/Buildings.cpp`, `plugins/
-preserve-rooms.cpp`, `plugins/zone.cpp`, `library/modules/Military.cpp`) found a third mechanism
-and, more importantly, found that DFHack's own modules only ever implement assignment for 6 of the
-18 types — the rest have no confirmed mechanism to copy, because the deciding logic lives in the
-closed-source game engine, not DFHack. One Go-facing tool (`assign_zone`, per the earlier tool-shape
-decision), four behaviors:
+**This component was substantially corrected during the writing-plans research phase, then refined
+again on 2026-07-13 (see `docs/decisions.md`).** The brainstormed design assumed every zone type
+would resolve cleanly into "owner" or "roster." Direct verification against the DFHack 53.15-r1
+source (`library/modules/Buildings.cpp`, `plugins/preserve-rooms.cpp`, `plugins/zone.cpp`,
+`library/modules/Military.cpp`) found a third mechanism and, more importantly, found that DFHack's
+own modules only ever *use* assignment for 6 of the 18 types. The original framing of this as "6
+confirmed types, 11 unconfirmed" conflated two different things: what DFHack's own reference
+plugins happen to exercise, versus what the underlying API actually permits. A 2026-07-13 follow-up
+re-read `Buildings::setOwner` and the roster write path (`general_ref_building_civzone_assignedst` +
+`assigned_units`) directly and found **zero type restriction anywhere in DFHack's own code** for
+either — the Pen/Pond-only gate lives entirely in `plugins/zone.cpp`'s `assignUnitToZone()`, that
+function's own external guard clause, not a DFHack API or struct-level limitation. That same pass
+also traced the *real* mechanism behind four of the remaining types (they're not "unconfirmed",
+they're actively something else). One Go-facing tool (`assign_zone`, per the earlier tool-shape
+decision), seven behaviors:
 
 | Mechanism | Types | Confirmed via | Behavior |
 |---|---|---|---|
 | **Owner** (`Buildings::setOwner`) | Bedroom, Office, Tomb, DiningHall | `plugins/preserve-rooms.cpp` tracks exactly these four via `last_known_assignments_bedroom/office/dining/tomb` and calls `setOwner` for each | Single `assigned_unit_id` (`Buildings::setOwner(civzone, unit)`). Unassign clears it (`setOwner(civzone, nullptr)` or equivalent — verify the clear-owner call signature against `Buildings.cpp:325-366` when implementing). |
-| **Roster** (`assigned_units` + general-ref) | Pen, Pond | `plugins/zone.cpp`'s `assignUnitToZone()` explicitly gates on `Buildings::isPenPasture(building) \|\| Buildings::isPitPond(building)` — no other type is accepted by that function | Push a `df::general_ref_building_civzone_assignedst` (fields: inherited `building_id int32_t`) onto the unit's `general_refs`, append the unit id to the zone's `assigned_units`; unassign removes both. `plugins/zone.cpp` itself is dead/commented-out in this checkout (superseded by Lua), so this workstream calls the underlying `Buildings::`/struct-level API directly — the same way `queue_job` already bypasses DFHack's Manager-order plugin layer. |
+| **Roster** (`assigned_units` + general-ref) | Pen, Pond, **Dormitory** (added 2026-07-13) | `plugins/zone.cpp`'s `assignUnitToZone()` explicitly gates on `Buildings::isPenPasture(building) \|\| Buildings::isPitPond(building)` — no other type is accepted by that function, but that gate is the calling plugin's own choice, not a restriction in `Buildings::setOwner`/the roster write path themselves (re-confirmed 2026-07-13; see the finding above) | Push a `df::general_ref_building_civzone_assignedst` (fields: inherited `building_id int32_t`) onto the unit's `general_refs`, append the unit id to the zone's `assigned_units`; unassign removes both. `plugins/zone.cpp` itself is dead/commented-out in this checkout (superseded by Lua), so this workstream calls the underlying `Buildings::`/struct-level API directly — the same way `queue_job` already bypasses DFHack's Manager-order plugin layer. **Dormitory caveat**: the *write* is proven-safe (identical code path already shipped and compiled for Pen/Pond), and it is a strong structural fit — a single `assigned_unit_id` (Owner) can't represent multiple simultaneous occupants, and `assigned_units` is a plain vector, same shape as Pen/Pond's — but whether DF's closed-source game-engine simulation actually *reads* `assigned_units` for Dormitory the way it does for Pen/Pond is **not confirmed**. Same confidence tier as `assign_lodging` (`specs/009-culture-and-learning/design-locations.md`'s Component C) — ships, but its in-game effect is an open question for a future live-verification checkpoint, not a settled fact. |
 | **Squad (out of scope)** | Barracks | `library/modules/Military.cpp`'s `Military::updateRoomAssignments(squad_id, civzone_id, flags)` links `df::squad::rooms` to the zone's `squad_room_info` — a fundamentally different tool shape (squad, not unit) | `assign_zone` on a Barracks zone returns a clear error naming the actual mechanism ("Barracks assignment uses squads, not units — not supported by this tool; see the future military/squad workstream"). Not a guess-and-hope; a named, deliberate gap. |
-| **Unconfirmed (not implemented)** | MeetingHall, Dormitory, ArcheryRange, PlantGathering, WaterSource, Dump, SandCollection, FishingArea, ClayCollection, Dungeon, AnimalTraining (11 types) | Searched but found nothing — no DFHack module, plugin, or Lua script implements assignment for any of these; the vtable slots that would settle it (`canMakeRoom`/`canUseSpouseRoom`/`canBeRoom`/`isAssigned` on `df::building`) have no override bodies in the open-source checkout | `assign_zone` returns "assignment mechanism for <type> is not confirmed against the DFHack API — creation and listing work, assignment does not yet" rather than guessing at a struct write that could silently corrupt save state. Creation and `list_zones` still work fully for these types (that mechanism is type-agnostic, per Component 2). |
+| **SquadRoom, i.e. squad-keyed like Barracks (out of scope, added 2026-07-13)** | ArcheryRange, Dungeon | Same `Military::updateRoomAssignments`/`squad_room_info` path as Barracks — `building_civzonest.squad_room_info` is not Barracks-specific in the struct layout, ArcheryRange and Dungeon carry the same field | `assign_zone` returns an ArcheryRange/Dungeon-specific squad error (names its own type, cites `squad_room_info`/`Military::updateRoomAssignments`), visibly distinct from the Barracks message but stating the same real reason. |
+| **Location (added 2026-07-13)** | MeetingHall | `specs/009-culture-and-learning/design-locations.md`'s research: a MeetingHall's real per-fort relationship is DF's Location system (`df::abstract_building`/`world_site`), a wholly separate subsystem from `building_civzonest` ownership/roster | `assign_zone` on a MeetingHall returns an error stating it isn't a civzone-ownership operation at all and pointing at the Locations feature instead of guessing at a `building_civzonest` write that isn't the real mechanism. |
+| **Labor (added 2026-07-13)** | AnimalTraining | No assignment struct anywhere — AnimalTraining zones are used automatically by any dwarf with the Animal Training labor when a training job comes up; there is nothing to assign | `assign_zone` on AnimalTraining returns an error explaining it's labor-driven, not assignment-driven. |
+| **Unconfirmed (not implemented)** | PlantGathering, WaterSource, Dump, SandCollection, FishingArea, ClayCollection (6 types) | Searched but found nothing — no DFHack module, plugin, or Lua script implements assignment for any of these; the vtable slots that would settle it (`canMakeRoom`/`canUseSpouseRoom`/`canBeRoom`/`isAssigned` on `df::building`) have no override bodies in the open-source checkout | `assign_zone` returns "assignment mechanism for <type> is not confirmed against the DFHack API — creation and listing work, assignment does not yet" rather than guessing at a struct write that could silently corrupt save state. Creation and `list_zones` still work fully for these types (that mechanism is type-agnostic, per Component 2). |
 
 This is a real, deliberate scope reduction from the original "full breadth" framing — worth
-restating plainly: `assign_zone` supports Bedroom, Office, Tomb, DiningHall (owner) and Pen, Pond
-(roster) at launch; every other type designates and lists fine but cannot be assigned yet. The
-brief's own success criterion ("assigned bedrooms and a dining hall in use") is fully satisfied by
-the 4 confirmed owner-type kinds, so nothing in Scope's stated goals is blocked by this narrowing.
+restating plainly: `assign_zone` supports Bedroom, Office, Tomb, DiningHall (owner) and Pen, Pond,
+Dormitory (roster) at launch; MeetingHall/ArcheryRange/Dungeon/AnimalTraining designate and list
+fine and get a specific, accurate "why not" on assignment; the remaining 6 types designate and list
+fine but assignment is genuinely unconfirmed. The brief's own success criterion ("assigned bedrooms
+and a dining hall in use") is fully satisfied by the 4 confirmed owner-type kinds, so nothing in
+Scope's stated goals is blocked by this narrowing.
 
 `list_zones` (new `queries.cpp` query) iterates civzone buildings, returning id/type/extents plus
 owner-or-roster, mirroring `list_buildings`' existing shape and reusing its footprint-extent fields
@@ -308,10 +332,16 @@ here blocks proceeding without the deletion.
 ## Error handling
 
 Truthful-ACK discipline throughout, consistent with every other command this plugin exposes:
-- `assign_zone` on Barracks — names the actual mechanism (squads, not units) and that it's out of
-  scope for this tool, per Component 3.
-- `assign_zone` on any of the 11 unconfirmed-mechanism types — explicit "not yet implemented,
-  mechanism unconfirmed against the DFHack API" error, never a guessed struct write.
+- `assign_zone` on Barracks, ArcheryRange, or Dungeon — names the actual mechanism (squads, not
+  units, via `squad_room_info`/`Military::updateRoomAssignments`) and that it's out of scope for
+  this tool, per Component 3. ArcheryRange/Dungeon get their own type-specific wording, visibly
+  distinct from Barracks's, added 2026-07-13.
+- `assign_zone` on MeetingHall — names the real mechanism (DF's Location system, not civzone
+  ownership/roster) and points at the Locations feature instead, added 2026-07-13.
+- `assign_zone` on AnimalTraining — states it's labor-driven (no assignment record to write),
+  added 2026-07-13.
+- `assign_zone` on any of the remaining 6 genuinely-unconfirmed types — explicit "not yet
+  implemented, mechanism unconfirmed against the DFHack API" error, never a guessed struct write.
 - `designate_zone` over non-floor tiles — names which tiles failed.
 - `unassign_zone` on a unit that isn't currently assigned to that zone — explicit "not assigned"
   ACK, not a silent success (a silent success here could mask the model acting on stale state).
@@ -328,10 +358,11 @@ with the new type values), the zones lens's glyph mapping + disjointness (extend
 round 2's existing table-driven glyph test rather than duplicating its structure), `renderZones`'
 summary-by-type grouping (Component 5's token-scaling correction) — a fixture with several zones of
 the same type must collapse to one summary line, not one line per zone, and a `type`/`z` filter must
-return full per-zone detail — and that `assign_zone` returns the correct distinct error text for
-each of Component 3's four buckets (owner/roster success paths are covered by the live-verification
-checkpoint below; the Barracks-squad and unconfirmed-mechanism error paths are pure Go logic and get
-unit tests directly). Plugin side: a
+return full per-zone detail — and that `assign_zone` returns the correct, visibly distinct error
+text for each of Component 3's error-only buckets (owner/roster success paths are covered by the
+live-verification checkpoint below; the Squad/SquadRoom/Location/Labor/Unconfirmed error paths — 5
+buckets as of the 2026-07-13 refinement, up from 2 — are pure Go/plugin-text logic and get unit
+tests directly). Plugin side: a
 compile-check rebuild (this project has no C++ unit harness, established precedent from Perception
 round 2 Task 4). Live verification: an actual play-session checkpoint — designate a bedroom zone
 over one of the fort's 7 existing unassigned beds, assign a specific dwarf to it via `assign_zone`,
@@ -354,8 +385,18 @@ literal, concrete blocker this workstream exists to clear.
 ## Open questions
 
 None blocking. The DFHack API research raised, and this document resolves, one real design change:
-`assign_zone` ships for 6 of 18 zone types (owner: Bedroom/Office/Tomb/DiningHall; roster: Pen/Pond)
-rather than all 18 — Component 3 explains why the other 12 have no confirmed DFHack mechanism to
-implement safely. Creation and listing remain full-breadth across all 18. Room-quality/value scoring
-stays explicitly assigned to the future Verification & predicates workstream, unchanged from the
-original design.
+`assign_zone` ships a working mechanism for 7 of 18 zone types (owner: Bedroom/Office/Tomb/
+DiningHall; roster: Pen/Pond/Dormitory) rather than all 18 — Component 3 explains why the other 11
+don't get a working mechanism (5 have a real, understood non-assignment reason and get a specific
+error naming it; the remaining 6 have no confirmed DFHack mechanism to implement safely and get a
+generic "not yet confirmed" error). Creation and listing remain full-breadth across all 18.
+Room-quality/value scoring stays explicitly assigned to the future Verification & predicates
+workstream, unchanged from the original design.
+
+**2026-07-13 refinement note**: the original "6 of 18" count in this document's earlier revisions
+conflated what DFHack's reference plugins happen to use with what the underlying API actually
+permits — see the Scope section's refinement note and Component 3 for the corrected breakdown and
+its evidence (`Buildings::setOwner`/the roster write path are type-agnostic; MeetingHall/
+ArcheryRange/Dungeon/AnimalTraining have real, now-understood non-assignment mechanisms). Dormitory's
+roster write is proven-safe but its in-game *effect* remains an open question pending live
+verification, same as `assign_lodging`'s stated caveat in `design-locations.md`.
