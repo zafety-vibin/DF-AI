@@ -26,5 +26,6 @@ func New(bridge *Bridge) *mcp.Server {
 	registerControlTools(srv, bridge)
 	registerPlaceTools(srv, bridge)
 	registerZoneTools(srv, bridge)
+	registerLocationTools(srv, bridge)
 	return srv
 }

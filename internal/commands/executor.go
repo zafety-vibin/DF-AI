@@ -187,6 +187,48 @@ func (e *CommandExecutor) SendUnassignZone(x, y, z int16, unitID int32) (*Comman
 	return e.SendCommand(cmd)
 }
 
+// SendCreateLocation converts the MeetingHall civzone at (x,y,z) into a
+// Location of locationType. profession is required only when locationType
+// is protocol.LocationTypeGuildhall.
+func (e *CommandExecutor) SendCreateLocation(x, y, z int16, locationType uint8, profession string) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeCreateLocation,
+		CreateLocation: protocol.CreateLocationDesignation{
+			X: x, Y: y, Z: z, LocationType: locationType, Profession: profession,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendAssignLodging links the Bedroom civzone at (bedroomX,bedroomY,bedroomZ)
+// as guest lodging inside the Tavern Location founded by the civzone at
+// (tavernX,tavernY,tavernZ).
+func (e *CommandExecutor) SendAssignLodging(tavernX, tavernY, tavernZ, bedroomX, bedroomY, bedroomZ int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeAssignLodging,
+		AssignLodging: protocol.AssignLodgingDesignation{
+			TavernX: tavernX, TavernY: tavernY, TavernZ: tavernZ,
+			BedroomX: bedroomX, BedroomY: bedroomY, BedroomZ: bedroomZ,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendUnassignLodging removes the Bedroom civzone at
+// (bedroomX,bedroomY,bedroomZ) from whichever tavern it's lodging for.
+func (e *CommandExecutor) SendUnassignLodging(bedroomX, bedroomY, bedroomZ int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeUnassignLodging,
+		UnassignLodging: protocol.UnassignLodgingDesignation{
+			BedroomX: bedroomX, BedroomY: bedroomY, BedroomZ: bedroomZ,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
 // SendUnsuspendCommand clears the suspend flag on jobs at the given tile.
 // Used to resume an auto-suspended construction once the underlying
 // blocker has been cleared.

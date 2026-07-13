@@ -55,6 +55,10 @@ var minToolArgs = map[string]map[string]any{
 	"assign_zone":    {"x": 1, "y": 1, "z": 1, "unit_id": 1},
 	"unassign_zone":  {"x": 1, "y": 1, "z": 1, "unit_id": 1},
 	// list_zones has no required fields — {} default is fine, no entry needed.
+	"create_location":  {"x": 1, "y": 1, "z": 1, "type": "tavern"},
+	"assign_lodging":   {"tavern_x": 1, "tavern_y": 1, "tavern_z": 1, "bedroom_x": 2, "bedroom_y": 2, "bedroom_z": 2},
+	"unassign_lodging": {"bedroom_x": 2, "bedroom_y": 2, "bedroom_z": 2},
+	// list_locations has no required fields — {} default is fine, no entry needed.
 	"stockpile":          {"category": "all", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
 	"order":              {"item": "bed", "count": 1},
 	"queue_job":          {"x": 1, "y": 1, "z": 1, "item": "bed", "count": 1},
