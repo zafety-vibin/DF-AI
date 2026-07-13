@@ -199,7 +199,8 @@ bool applyDesignateZone(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int
 }
 
 // ---------------------------------------------------------------------
-// Zone assignment / unassignment (Task 2).
+// Zone assignment / unassignment (Task 2; refined 2026-07-13 -- see
+// docs/decisions.md).
 //
 // DFHack's own source confirms exactly two assignment mechanisms:
 //   - Owner (Bedroom/Office/Tomb/DiningHall): Buildings::setOwner, which
@@ -211,15 +212,45 @@ bool applyDesignateZone(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int
 //     owned_buildings entry is pushed since unit is null. Verified
 //     directly against Buildings.cpp in the checkout; no deviation from
 //     the plan needed.
-//   - Roster (Pen/Pond): a general_ref_building_civzone_assignedst on
-//     the unit plus a matching entry in the zone's own assigned_units
+//   - Roster (Pen/Pond/Dormitory): a general_ref_building_civzone_assignedst
+//     on the unit plus a matching entry in the zone's own assigned_units
 //     vector (building_civzonest.h:21) -- the pattern DFHack's
-//     pen-assignment UI code uses for roster-style zones.
-// Barracks is squad-based (explicitly out of scope) and the remaining
-// 11 zone types have no mechanism DFHack's source confirms -- see
-// design-zones.md Component 3. assign_zone/unassign_zone return a
-// specific named error for those rather than guessing at an unverified
-// struct write.
+//     pen-assignment UI code uses for roster-style zones. Neither
+//     Buildings::setOwner nor this roster write path carries any type
+//     restriction anywhere in DFHack's own code (re-confirmed
+//     2026-07-13) -- the Pen/Pond-only gate in plugins/zone.cpp's
+//     assignUnitToZone is that function's OWN external guard clause, not
+//     a DFHack API or struct-level limitation. Dormitory is wired to
+//     this same mechanism because a single assigned_unit_id (Owner)
+//     can't represent multiple simultaneous occupants, and
+//     assigned_units is a plain vector field, the same shape as
+//     Pen/Pond's. The WRITE is proven-safe (identical code path already
+//     shipped and compiled for Pen/Pond); whether DF's closed-source
+//     game-engine simulation actually reads assigned_units for Dormitory
+//     the way it does for Pen/Pond is NOT confirmed -- same confidence
+//     tier as assign_lodging
+//     (specs/009-culture-and-learning/design-locations.md).
+//
+// Four more types have a real, now-understood reason they're not a
+// unit-ownership/roster operation at all -- actively something else,
+// not merely "unconfirmed":
+//   - MeetingHall: not civzone ownership/roster -- its real per-fort
+//     relationship goes through DF's Location system
+//     (df::abstract_building / world_site), a separate subsystem from
+//     building_civzonest assignment entirely.
+//   - ArcheryRange/Dungeon: squad-keyed, same as Barracks --
+//     building_civzonest.squad_room_info via
+//     Military::updateRoomAssignments(squad_id, ...) takes a squad_id,
+//     not a unit_id.
+//   - AnimalTraining: labor-driven -- any dwarf with the Animal Training
+//     labor uses the zone automatically when a training job comes up;
+//     there is no zone-ownership/roster record for this tool to write.
+// Barracks itself stays squad-based (explicitly out of scope). The
+// remaining 6 zone types (WaterSource, Dump, SandCollection,
+// FishingArea, ClayCollection, PlantGathering) genuinely have no
+// mechanism DFHack's source confirms -- see design-zones.md Component 3.
+// assign_zone/unassign_zone return a specific named error for all of the
+// above rather than guessing at an unverified struct write.
 // ---------------------------------------------------------------------
 
 #include "df/unit.h"
@@ -230,8 +261,12 @@ bool applyDesignateZone(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int
 // zoneMechanism classifies a civzone_type into how (if at all) a unit
 // can be assigned to it -- see the plan's wire-table comment and
 // design-zones.md Component 3 for the DFHack-source evidence behind
-// each bucket.
-enum class ZoneMechanism { Owner, Roster, Squad, Unconfirmed };
+// each bucket. SquadRoom/Location/Labor are split out from Unconfirmed
+// (2026-07-13) because those four types have a real, now-understood
+// reason they're not ownership/roster operations, distinct from the
+// remaining 6 types that are genuinely unconfirmed -- see the comment
+// block above.
+enum class ZoneMechanism { Owner, Roster, Squad, SquadRoom, Location, Labor, Unconfirmed };
 
 static ZoneMechanism mechanismFor(df::civzone_type t) {
     switch (t) {
@@ -242,9 +277,17 @@ static ZoneMechanism mechanismFor(df::civzone_type t) {
             return ZoneMechanism::Owner;
         case df::civzone_type::Pen:
         case df::civzone_type::Pond:
+        case df::civzone_type::Dormitory:
             return ZoneMechanism::Roster;
         case df::civzone_type::Barracks:
             return ZoneMechanism::Squad;
+        case df::civzone_type::ArcheryRange:
+        case df::civzone_type::Dungeon:
+            return ZoneMechanism::SquadRoom;
+        case df::civzone_type::MeetingHall:
+            return ZoneMechanism::Location;
+        case df::civzone_type::AnimalTraining:
+            return ZoneMechanism::Labor;
         default:
             return ZoneMechanism::Unconfirmed;
     }
@@ -308,6 +351,17 @@ bool applyAssignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::strin
         case ZoneMechanism::Squad:
             error = "Barracks assignment uses squads, not units -- not supported by this tool; see the future military/squad workstream";
             return false;
+        case ZoneMechanism::SquadRoom: {
+            const char *name = (zone->type == df::civzone_type::ArcheryRange) ? "ArcheryRange" : "Dungeon";
+            error = std::string(name) + " assignment uses squads, not units, same as Barracks (building_civzonest.squad_room_info via Military::updateRoomAssignments) -- not supported by this tool; see the future military/squad workstream";
+            return false;
+        }
+        case ZoneMechanism::Location:
+            error = "MeetingHall assignment isn't civzone ownership or roster at all -- its real per-fort relationship goes through DF's Location system (abstract_building), a separate subsystem; use the Locations feature to manage it instead";
+            return false;
+        case ZoneMechanism::Labor:
+            error = "AnimalTraining has no zone-ownership or roster record to assign -- it is labor-driven: any dwarf with the Animal Training labor uses the zone automatically when a training job comes up";
+            return false;
         case ZoneMechanism::Unconfirmed:
         default:
             error = "assignment mechanism for this zone type is not confirmed against the DFHack API -- creation and listing work, assignment does not yet";
@@ -358,6 +412,17 @@ bool applyUnassignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::str
         }
         case ZoneMechanism::Squad:
             error = "Barracks assignment uses squads, not units -- not supported by this tool";
+            return false;
+        case ZoneMechanism::SquadRoom: {
+            const char *name = (zone->type == df::civzone_type::ArcheryRange) ? "ArcheryRange" : "Dungeon";
+            error = std::string(name) + " assignment uses squads, not units, same as Barracks (building_civzonest.squad_room_info via Military::updateRoomAssignments) -- not supported by this tool";
+            return false;
+        }
+        case ZoneMechanism::Location:
+            error = "MeetingHall assignment isn't civzone ownership or roster at all -- its real per-fort relationship goes through DF's Location system (abstract_building), a separate subsystem; use the Locations feature to manage it instead";
+            return false;
+        case ZoneMechanism::Labor:
+            error = "AnimalTraining has no zone-ownership or roster record to unassign -- it is labor-driven: any dwarf with the Animal Training labor uses the zone automatically when a training job comes up";
             return false;
         case ZoneMechanism::Unconfirmed:
         default:
