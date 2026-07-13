@@ -84,3 +84,42 @@ func TestHasShelter_DividesByCitizenCountOnly(t *testing.T) {
 		t.Fatalf("HasShelter evidence missing %q (dwarf-only requirement); got %v", wantRequired, r.Evidence)
 	}
 }
+
+// TestHasBedroomZones_UsesCorrectedWireValue guards against HasBedroomZones
+// drifting from protocol.ZoneTypeBedroom via a coincidental local magic
+// number: a Pen zone (also Roster-assigned, unconfirmed-adjacent) must never
+// count toward the bedroom threshold.
+func TestHasBedroomZones_UsesCorrectedWireValue(t *testing.T) {
+	wm := worldmodel.New(nil, nil, nil, nil)
+	wm.Observed.Zones = worldmodel.ZoneSnapshot{
+		All: []protocol.ZoneData{
+			{ZoneType: protocol.ZoneTypeBedroom, OwnerUnitID: 1},
+			{ZoneType: protocol.ZoneTypeBedroom, OwnerUnitID: -1},
+			{ZoneType: protocol.ZoneTypePen, OwnerUnitID: -1}, // must NOT count
+		},
+		UpdatedAt: time.Now(),
+	}
+	p := HasBedroomZones{Min: 2, H: HorizonSoon}
+	r := p.Check(wm)
+	if !r.Satisfied {
+		t.Fatalf("expected satisfied with 2 bedroom zones, got %+v", r)
+	}
+}
+
+// TestHasDiningHall_UsesCorrectedWireValue guards against HasDiningHall
+// drifting from protocol.ZoneTypeDiningHall via a coincidental local magic
+// number.
+func TestHasDiningHall_UsesCorrectedWireValue(t *testing.T) {
+	wm := worldmodel.New(nil, nil, nil, nil)
+	wm.Observed.Zones = worldmodel.ZoneSnapshot{
+		All: []protocol.ZoneData{
+			{ZoneType: protocol.ZoneTypeDiningHall},
+		},
+		UpdatedAt: time.Now(),
+	}
+	p := HasDiningHall{H: HorizonSoon}
+	r := p.Check(wm)
+	if !r.Satisfied {
+		t.Fatalf("expected satisfied with 1 dining hall, got %+v", r)
+	}
+}

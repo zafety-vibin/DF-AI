@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/df-ai/orchestrator/internal/protocol"
 	"github.com/df-ai/orchestrator/internal/worldmodel"
 )
 
@@ -195,7 +196,7 @@ func (p HasBedroomZones) Horizon() Horizon { return p.H }
 func (p HasBedroomZones) Check(wm *worldmodel.WorldModel) Result {
 	now := time.Now()
 	snap := wm.Snapshot()
-	const zoneTypeBedroom = uint8(0x01)
+	const zoneTypeBedroom = protocol.ZoneTypeBedroom
 	count := 0
 	for _, z := range snap.Zones.All {
 		if z.ZoneType == zoneTypeBedroom {
@@ -227,7 +228,7 @@ func (p HasDiningHall) Horizon() Horizon    { return p.H }
 func (p HasDiningHall) Check(wm *worldmodel.WorldModel) Result {
 	now := time.Now()
 	snap := wm.Snapshot()
-	const zoneTypeDining = uint8(0x02)
+	const zoneTypeDining = protocol.ZoneTypeDiningHall
 	count := 0
 	for _, z := range snap.Zones.All {
 		if z.ZoneType == zoneTypeDining {
