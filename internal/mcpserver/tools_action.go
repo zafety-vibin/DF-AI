@@ -132,22 +132,6 @@ func digTypeFromName(s string) (uint8, error) {
 	return 0, fmt.Errorf("unknown dig type %q (default|stairs|channel|ramp|upstair|downstair)", s)
 }
 
-// zoneTypes is stale pending Task 6 (this entire "zone" tool block is a
-// non-functional stub superseded by tools_zone.go's designate_zone). Kept
-// here only as a minimal compiling fix against the corrected
-// protocol.ZoneType* table (internal/protocol/message.go) — "farm" and
-// "hospital" had no confirmed equivalent in that table and were dropped
-// rather than guessed.
-var zoneTypes = map[string]uint8{
-	"bedroom": protocol.ZoneTypeBedroom, "dining": protocol.ZoneTypeDiningHall,
-	"meeting": protocol.ZoneTypeMeetingHall, "barracks": protocol.ZoneTypeBarracks,
-	"dormitory": protocol.ZoneTypeDormitory,
-	"pen":       protocol.ZoneTypePen, "garbage": protocol.ZoneTypeDump,
-	"pit": protocol.ZoneTypePond, "water": protocol.ZoneTypeWaterSource,
-	"fishing":      protocol.ZoneTypeFishingArea,
-	"animal_train": protocol.ZoneTypeAnimalTraining, "tomb": protocol.ZoneTypeTomb,
-}
-
 var buildTypes = map[string]uint8{
 	"wall": protocol.BuildTypeWall, "floor": protocol.BuildTypeFloor,
 	"upstair": protocol.BuildTypeUpStair, "downstair": protocol.BuildTypeDownStair,
@@ -340,29 +324,6 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 			what += " [" + strings.ToLower(in.Material) + "]"
 		}
 		return withDash(b, ctx, ackText(res, err, what)), nil, nil
-	})
-
-	type zoneIn struct {
-		Type string `json:"type" jsonschema:"bedroom|dining|meeting|barracks|dormitory|farm|pen|garbage|pit|water|fishing|hospital|animal_train|tomb"`
-		X1   int    `json:"x1"`
-		Y1   int    `json:"y1"`
-		Z    int    `json:"z"`
-		X2   int    `json:"x2"`
-		Y2   int    `json:"y2"`
-	}
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "zone",
-		Description: "Designate an activity zone rectangle on one z-level (bedroom/dining/farm/...). NOT YET FUNCTIONAL: the plugin's zone support is a stub in this build, so this command WILL return an error. Plan with dig + build + stockpile instead; zone assignment lands in a later phase.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in zoneIn) (*mcp.CallToolResult, any, error) {
-		if r := noExec(b); r != nil {
-			return r, nil, nil
-		}
-		zt, ok := zoneTypes[strings.ToLower(in.Type)]
-		if !ok {
-			return withDash(b, ctx, fmt.Sprintf("unknown zone type %q", in.Type)), nil, nil
-		}
-		res, err := b.Exec.SendZoneCommand(zt, int16(in.X1), int16(in.Y1), int16(in.Z), int16(in.X2), int16(in.Y2))
-		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("zone %s (%d,%d)-(%d,%d) z=%d", in.Type, in.X1, in.Y1, in.X2, in.Y2, in.Z))), nil, nil
 	})
 
 	type stockIn struct {

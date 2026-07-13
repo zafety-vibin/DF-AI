@@ -78,7 +78,6 @@ func TestActionToolsNilBridge(t *testing.T) {
 		{"chop", map[string]any{"x1": 10, "y1": 10, "z": 110, "x2": 30, "y2": 30}},
 		{"gather", map[string]any{"x1": 10, "y1": 10, "z": 110, "x2": 30, "y2": 30}},
 		{"cancel_designation", map[string]any{"x1": 10, "y1": 10, "z": 110, "x2": 30, "y2": 30}},
-		{"zone", map[string]any{"type": "bedroom", "x1": 10, "y1": 10, "z": 90, "x2": 12, "y2": 12}},
 	}
 	for _, call := range calls {
 		res, err := clientSession.CallTool(ctx, &mcp.CallToolParams{

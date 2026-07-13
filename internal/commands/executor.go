@@ -162,6 +162,31 @@ func (e *CommandExecutor) SendZoneCommand(zoneType uint8, x1, y1, z, x2, y2 int1
 	return e.SendCommand(cmd)
 }
 
+// SendAssignZone assigns unitID to the zone at (x,y,z) -- owner or
+// roster mechanism, selected by the plugin based on the zone's type.
+func (e *CommandExecutor) SendAssignZone(x, y, z int16, unitID int32) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeAssignZone,
+		AssignZone: protocol.AssignZoneDesignation{
+			X: x, Y: y, Z: z, UnitID: unitID,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendUnassignZone removes unitID's assignment from the zone at (x,y,z).
+func (e *CommandExecutor) SendUnassignZone(x, y, z int16, unitID int32) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeUnassignZone,
+		UnassignZone: protocol.UnassignZoneDesignation{
+			X: x, Y: y, Z: z, UnitID: unitID,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
 // SendUnsuspendCommand clears the suspend flag on jobs at the given tile.
 // Used to resume an auto-suspended construction once the underlying
 // blocker has been cleared.

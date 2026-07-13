@@ -43,15 +43,18 @@ func TestNilBridgeIsSafe(t *testing.T) {
 // ADDING A TOOL? If it has required inputs, add an entry — the sweep
 // fails loudly otherwise, which is the point.
 var minToolArgs = map[string]map[string]any{
-	"dwarf_detail":       {"id": 1},
-	"jobs":               {"x": 1, "y": 1, "z": 1},
-	"look":               {"x": 10, "y": 10, "z": 100},
-	"cross_section":      {"x": 10, "y": 10},
-	"elevation_view":     {"axis": "x", "x1": 0, "x2": 2, "y": 1, "z_top": 5, "z_bottom": 0},
-	"find_dig_site":      {"width": 3, "height": 3, "z": 90, "near_x": 10, "near_y": 10},
-	"designate_dig":      {"type": "default", "x1": 1, "y1": 1, "z1": 1, "x2": 2, "y2": 2, "z2": 1},
-	"build":              {"type": "bed", "x": 1, "y": 1, "z": 1},
-	"zone":               {"type": "bedroom", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
+	"dwarf_detail":   {"id": 1},
+	"jobs":           {"x": 1, "y": 1, "z": 1},
+	"look":           {"x": 10, "y": 10, "z": 100},
+	"cross_section":  {"x": 10, "y": 10},
+	"elevation_view": {"axis": "x", "x1": 0, "x2": 2, "y": 1, "z_top": 5, "z_bottom": 0},
+	"find_dig_site":  {"width": 3, "height": 3, "z": 90, "near_x": 10, "near_y": 10},
+	"designate_dig":  {"type": "default", "x1": 1, "y1": 1, "z1": 1, "x2": 2, "y2": 2, "z2": 1},
+	"build":          {"type": "bed", "x": 1, "y": 1, "z": 1},
+	"designate_zone": {"type": "bedroom", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
+	"assign_zone":    {"x": 1, "y": 1, "z": 1, "unit_id": 1},
+	"unassign_zone":  {"x": 1, "y": 1, "z": 1, "unit_id": 1},
+	// list_zones has no required fields — {} default is fine, no entry needed.
 	"stockpile":          {"category": "all", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
 	"order":              {"item": "bed", "count": 1},
 	"queue_job":          {"x": 1, "y": 1, "z": 1, "item": "bed", "count": 1},
