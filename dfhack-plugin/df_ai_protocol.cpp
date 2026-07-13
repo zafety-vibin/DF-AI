@@ -63,8 +63,10 @@ bool applySetLabor(int32_t unitID, uint8_t laborID, bool enable, std::string &er
 // Forward declaration for function in buildings.cpp
 bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint32_t groupMask, std::string &error);
 
-// Forward declaration for function from zones.cpp
+// Forward declarations for functions from zones.cpp
 bool applyDesignateZone(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
+bool applyAssignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::string &error);
+bool applyUnassignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::string &error);
 
 // Forward declaration for function from queries.cpp
 void executeQuery(uint32_t queryID, const std::string &name, const std::string &args);
@@ -812,6 +814,32 @@ void executeCommand(const std::vector<uint8_t> &payload)
             uint8_t laborID = payload[9];
             bool enable = payload[10] != 0;
             success = applySetLabor(unitID, laborID, enable, error);
+            break;
+        }
+        case COMMAND_TYPE_ASSIGN_ZONE: {
+            // Payload: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z] [4: UnitID]
+            if (payload.size() < 15) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid ASSIGN_ZONE payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            int32_t unitID = (int32_t)read_uint32_be(payload, 11);
+            success = applyAssignZone(x, y, z, unitID, error);
+            break;
+        }
+        case COMMAND_TYPE_UNASSIGN_ZONE: {
+            // Payload: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z] [4: UnitID]
+            if (payload.size() < 15) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid UNASSIGN_ZONE payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            int32_t unitID = (int32_t)read_uint32_be(payload, 11);
+            success = applyUnassignZone(x, y, z, unitID, error);
             break;
         }
         default:

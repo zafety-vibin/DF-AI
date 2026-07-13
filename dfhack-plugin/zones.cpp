@@ -197,3 +197,171 @@ bool applyDesignateZone(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int
     }
     return true;
 }
+
+// ---------------------------------------------------------------------
+// Zone assignment / unassignment (Task 2).
+//
+// DFHack's own source confirms exactly two assignment mechanisms:
+//   - Owner (Bedroom/Office/Tomb/DiningHall): Buildings::setOwner, which
+//     writes building_civzonest::assigned_unit_id and maintains the
+//     unit's owned_buildings back-reference (Buildings.cpp:325-366).
+//     Buildings::setOwner(zone, nullptr) is that same function's own
+//     path for clearing an owner -- unit_id becomes -1, the previous
+//     owner (if any) is pulled out of owned_buildings, and no new
+//     owned_buildings entry is pushed since unit is null. Verified
+//     directly against Buildings.cpp in the checkout; no deviation from
+//     the plan needed.
+//   - Roster (Pen/Pond): a general_ref_building_civzone_assignedst on
+//     the unit plus a matching entry in the zone's own assigned_units
+//     vector (building_civzonest.h:21) -- the pattern DFHack's
+//     pen-assignment UI code uses for roster-style zones.
+// Barracks is squad-based (explicitly out of scope) and the remaining
+// 11 zone types have no mechanism DFHack's source confirms -- see
+// design-zones.md Component 3. assign_zone/unassign_zone return a
+// specific named error for those rather than guessing at an unverified
+// struct write.
+// ---------------------------------------------------------------------
+
+#include "df/unit.h"
+#include "df/general_ref_building_civzone_assignedst.h"
+#include <algorithm>
+#include <vector>
+
+// zoneMechanism classifies a civzone_type into how (if at all) a unit
+// can be assigned to it -- see the plan's wire-table comment and
+// design-zones.md Component 3 for the DFHack-source evidence behind
+// each bucket.
+enum class ZoneMechanism { Owner, Roster, Squad, Unconfirmed };
+
+static ZoneMechanism mechanismFor(df::civzone_type t) {
+    switch (t) {
+        case df::civzone_type::Bedroom:
+        case df::civzone_type::Office:
+        case df::civzone_type::Tomb:
+        case df::civzone_type::DiningHall:
+            return ZoneMechanism::Owner;
+        case df::civzone_type::Pen:
+        case df::civzone_type::Pond:
+            return ZoneMechanism::Roster;
+        case df::civzone_type::Barracks:
+            return ZoneMechanism::Squad;
+        default:
+            return ZoneMechanism::Unconfirmed;
+    }
+}
+
+// findZoneAt resolves the civzone at (x,y,z), or returns null with error
+// set. Zones are targeted by tile coordinate (matching this plugin's
+// existing remove_building/unsuspend convention), not a synthetic ID.
+static df::building_civzonest* findZoneAt(int16_t x, int16_t y, int16_t z, std::string &error) {
+    if (!Maps::isValidTilePos(x, y, z)) {
+        error = "coordinates out of map bounds";
+        return nullptr;
+    }
+    std::vector<df::building_civzonest*> results;
+    Buildings::findCivzonesAt(&results, df::coord(x, y, z));
+    if (results.empty()) {
+        error = "no zone at (" + std::to_string(x) + "," + std::to_string(y) + "," + std::to_string(z) + ")";
+        return nullptr;
+    }
+    return results[0];
+}
+
+bool applyAssignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::string &error)
+{
+    df::building_civzonest *zone = findZoneAt(x, y, z, error);
+    if (!zone) return false;
+
+    df::unit *unit = df::unit::find(unitID);
+    if (!unit) {
+        error = "no unit with id " + std::to_string(unitID);
+        return false;
+    }
+
+    switch (mechanismFor(zone->type)) {
+        case ZoneMechanism::Owner: {
+            if (!Buildings::setOwner(zone, unit)) {
+                error = "Buildings::setOwner failed";
+                return false;
+            }
+            return true;
+        }
+        case ZoneMechanism::Roster: {
+            // general_ref_building_civzone_assignedst's constructor is
+            // protected (generated-class convention) -- `new` cannot call
+            // it directly. DFHack's own plugins/zone.cpp (createCivzoneRef,
+            // dead code in this checkout but the documented pattern) uses
+            // virtual_identity::instantiate() instead, which is a friend
+            // of the generated allocator and is the supported way to
+            // construct these ref types dynamically.
+            auto *ref = (df::general_ref_building_civzone_assignedst*)
+                df::general_ref_building_civzone_assignedst::_identity.instantiate();
+            if (!ref) {
+                error = "failed to instantiate general_ref_building_civzone_assignedst";
+                return false;
+            }
+            ref->building_id = zone->id;
+            unit->general_refs.push_back(ref);
+            zone->assigned_units.push_back(unitID);
+            return true;
+        }
+        case ZoneMechanism::Squad:
+            error = "Barracks assignment uses squads, not units -- not supported by this tool; see the future military/squad workstream";
+            return false;
+        case ZoneMechanism::Unconfirmed:
+        default:
+            error = "assignment mechanism for this zone type is not confirmed against the DFHack API -- creation and listing work, assignment does not yet";
+            return false;
+    }
+}
+
+bool applyUnassignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::string &error)
+{
+    df::building_civzonest *zone = findZoneAt(x, y, z, error);
+    if (!zone) return false;
+
+    df::unit *unit = df::unit::find(unitID);
+    if (!unit) {
+        error = "no unit with id " + std::to_string(unitID);
+        return false;
+    }
+
+    switch (mechanismFor(zone->type)) {
+        case ZoneMechanism::Owner: {
+            if (Buildings::getOwner(zone) != unit) {
+                error = "unit " + std::to_string(unitID) + " is not the owner of this zone -- not assigned";
+                return false;
+            }
+            if (!Buildings::setOwner(zone, nullptr)) {
+                error = "Buildings::setOwner(null) failed to clear owner";
+                return false;
+            }
+            return true;
+        }
+        case ZoneMechanism::Roster: {
+            auto &roster = zone->assigned_units;
+            auto it = std::find(roster.begin(), roster.end(), unitID);
+            if (it == roster.end()) {
+                error = "unit " + std::to_string(unitID) + " is not assigned to this zone -- not assigned";
+                return false;
+            }
+            roster.erase(it);
+            for (size_t i = 0; i < unit->general_refs.size(); i++) {
+                auto *ref = virtual_cast<df::general_ref_building_civzone_assignedst>(unit->general_refs[i]);
+                if (ref && ref->building_id == zone->id) {
+                    delete unit->general_refs[i];
+                    unit->general_refs.erase(unit->general_refs.begin() + i);
+                    break;
+                }
+            }
+            return true;
+        }
+        case ZoneMechanism::Squad:
+            error = "Barracks assignment uses squads, not units -- not supported by this tool";
+            return false;
+        case ZoneMechanism::Unconfirmed:
+        default:
+            error = "assignment mechanism for this zone type is not confirmed against the DFHack API";
+            return false;
+    }
+}
