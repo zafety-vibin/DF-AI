@@ -56,13 +56,15 @@ bool applyChopDesignation(int16_t x1, int16_t y1, int16_t z1, int16_t x2, int16_
 bool applyGatherDesignation(int16_t x1, int16_t y1, int16_t z1, int16_t x2, int16_t y2, int16_t z2, std::string &error);
 
 // Forward declarations for functions in this file
-bool applyZoneDesignation(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
 bool applyUnsuspend(int16_t x, int16_t y, int16_t z, std::string &error);
 bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error);
 bool applySetLabor(int32_t unitID, uint8_t laborID, bool enable, std::string &error);
 
 // Forward declaration for function in buildings.cpp
 bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint32_t groupMask, std::string &error);
+
+// Forward declaration for function from zones.cpp
+bool applyDesignateZone(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
 
 // Forward declaration for function from queries.cpp
 void executeQuery(uint32_t queryID, const std::string &name, const std::string &args);
@@ -276,34 +278,6 @@ bool applyDigDesignation(uint8_t digType, int16_t x1, int16_t y1, int16_t z, int
     return false;
 }
 */
-
-// Apply zone designation (bedroom, dining, meeting, barracks, etc.).
-//
-// STATUS (2026-05-03): The civzone API in DFHack 53.12 differs significantly
-// from 53.02. The old `zone_flags::bits::bedroom/dining_hall/etc` field is
-// gone; civzones now carry a `df::civzone_type type` enum that has
-// completely different semantics (Home / MeadHall / ThroneRoom / Temple /
-// Kitchen / Treasury — but NO direct "Bedroom" / "Dining" / "Barracks"
-// values). In DF 53.x, "bedroom" appears to be modeled as a room
-// assignment on a bed rather than a civzone designation.
-//
-// This function returns a clean error until the new zone API is figured
-// out. Plugin compiles; agent gets a structured rejection it can route
-// around. The proper implementation needs:
-//   - Investigation of how DF 53.x marks rooms (probably via
-//     building.is_room flag + room.dim_x/y on a furniture building)
-//   - Possibly using df::building::set_role or similar
-//   - Reading existing DFHack scripts (zone.lua) for the canonical pattern
-bool applyZoneDesignation(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error)
-{
-    (void)zoneType; (void)x1; (void)y1; (void)z; (void)x2; (void)y2;
-    // Keep this message actionable for the playing model, not a code
-    // pointer: it should route around the gap, not retry.
-    error = "zones are not implemented in this plugin build - do not retry ZONE commands; "
-            "place beds/furniture and workshops instead (dwarves will use unzoned beds); "
-            "zone support is planned";
-    return false;
-}
 
 // Unsuspend any building or job at the given coordinate. Used to resume
 // auto-suspended constructions when the agent has cleared the underlying
@@ -666,8 +640,8 @@ void executeCommand(const std::vector<uint8_t> &payload)
             success = applyGatherDesignation(x1, y1, z1, x2, y2, z2, error);
             break;
         }
-        case 0x06: {  // ZONE
-            if (payload.size() < 12) {
+        case 0x06: {  // ZONE (designate)
+            if (payload.size() < 16) {
                 sendCommandAck(cmdID, 0x02, "Invalid ZONE payload");
                 return;
             }
@@ -677,7 +651,7 @@ void executeCommand(const std::vector<uint8_t> &payload)
             int16_t z = ((int16_t)payload[10] << 8) | payload[11];
             int16_t x2 = ((int16_t)payload[12] << 8) | payload[13];
             int16_t y2 = ((int16_t)payload[14] << 8) | payload[15];
-            success = applyZoneDesignation(zoneType, x1, y1, z, x2, y2, error);
+            success = applyDesignateZone(zoneType, x1, y1, z, x2, y2, error);
             break;
         }
         case 0x07: {  // BLUEPRINT

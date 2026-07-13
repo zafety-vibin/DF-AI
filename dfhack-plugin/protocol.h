@@ -73,6 +73,8 @@ constexpr uint8_t COMMAND_TYPE_PAUSE      = 0x0C;
 constexpr uint8_t COMMAND_TYPE_REMOVE_BUILDING = 0x0D;
 constexpr uint8_t COMMAND_TYPE_QUEUE_JOB  = 0x0E;
 constexpr uint8_t COMMAND_TYPE_SET_LABOR  = 0x0F;
+constexpr uint8_t COMMAND_TYPE_ASSIGN_ZONE   = 0x10;
+constexpr uint8_t COMMAND_TYPE_UNASSIGN_ZONE = 0x11;
 
 // Pause modes (payload byte after cmdType): matches internal/protocol/message.go.
 constexpr uint8_t PAUSE_MODE_UNPAUSE = 0x00;
@@ -83,25 +85,38 @@ constexpr uint8_t PAUSE_MODE_STEP    = 0x02;
 constexpr uint8_t SMOOTH_TYPE_SMOOTH  = 0x01;
 constexpr uint8_t SMOOTH_TYPE_ENGRAVE = 0x02;
 
-// Zone types — kept in sync with internal/protocol/message.go.
-// 0x06–0x08 are LEGACY values (Office, Workshop, Stockpile) from the
-// Feature 007 layout system; do not emit them from new code. Real DF
-// civzone categories live at 0x10+.
-constexpr uint8_t ZONE_TYPE_BEDROOM        = 0x01;
-constexpr uint8_t ZONE_TYPE_DINING         = 0x02;
-constexpr uint8_t ZONE_TYPE_MEETING        = 0x03;
-constexpr uint8_t ZONE_TYPE_BARRACKS       = 0x04;
-constexpr uint8_t ZONE_TYPE_DORMITORY      = 0x05;
-
-constexpr uint8_t ZONE_TYPE_FARM           = 0x10;
-constexpr uint8_t ZONE_TYPE_PEN            = 0x11;
-constexpr uint8_t ZONE_TYPE_GARBAGE_DUMP   = 0x12;
-constexpr uint8_t ZONE_TYPE_PIT_POND       = 0x13;
-constexpr uint8_t ZONE_TYPE_WATER_SOURCE   = 0x14;
-constexpr uint8_t ZONE_TYPE_FISHING        = 0x15;
-constexpr uint8_t ZONE_TYPE_HOSPITAL       = 0x16;
-constexpr uint8_t ZONE_TYPE_ANIMAL_TRAIN   = 0x17;
-constexpr uint8_t ZONE_TYPE_TOMB           = 0x18;
+// Zone types — kept in sync with internal/protocol/message.go. These are
+// DF-AI's OWN wire values, not DFHack's df::civzone_type values directly
+// (those are scattered 79-97, not a small sequential range — see
+// zones.cpp's civzoneTypeFromWire/wireFromCivzoneType for the real
+// translation table, confirmed against library/include/df/civzone_type.h
+// in the DFHack 53.15-r1 checkout). This insulates the wire format from
+// DFHack renumbering and keeps command payloads compact.
+//
+// Assignment support (see zones.cpp::applyAssignZone): Owner-type
+// (Bedroom/Office/Tomb/DiningHall) and Roster-type (Pen/Pond) are the
+// only 6 with a confirmed DFHack assignment mechanism. Barracks uses a
+// separate squad-based mechanism, out of scope for assign_zone. The rest
+// have no confirmed mechanism in the DFHack source at all — assign_zone
+// returns an explicit "not implemented" error for them, never a guess.
+constexpr uint8_t ZONE_TYPE_BEDROOM         = 0x01; // Owner
+constexpr uint8_t ZONE_TYPE_OFFICE          = 0x02; // Owner
+constexpr uint8_t ZONE_TYPE_TOMB            = 0x03; // Owner
+constexpr uint8_t ZONE_TYPE_DINING_HALL     = 0x04; // Owner
+constexpr uint8_t ZONE_TYPE_MEETING_HALL    = 0x05; // Unconfirmed
+constexpr uint8_t ZONE_TYPE_DORMITORY       = 0x06; // Unconfirmed
+constexpr uint8_t ZONE_TYPE_BARRACKS        = 0x07; // Squad (out of scope)
+constexpr uint8_t ZONE_TYPE_PEN             = 0x08; // Roster
+constexpr uint8_t ZONE_TYPE_POND            = 0x09; // Roster
+constexpr uint8_t ZONE_TYPE_ARCHERY_RANGE   = 0x0A; // Unconfirmed
+constexpr uint8_t ZONE_TYPE_PLANT_GATHERING = 0x0B; // Unconfirmed
+constexpr uint8_t ZONE_TYPE_WATER_SOURCE    = 0x0C; // Unconfirmed
+constexpr uint8_t ZONE_TYPE_DUMP            = 0x0D; // Unconfirmed
+constexpr uint8_t ZONE_TYPE_SAND_COLLECTION = 0x0E; // Unconfirmed
+constexpr uint8_t ZONE_TYPE_FISHING_AREA    = 0x0F; // Unconfirmed
+constexpr uint8_t ZONE_TYPE_CLAY_COLLECTION = 0x10; // Unconfirmed
+constexpr uint8_t ZONE_TYPE_DUNGEON         = 0x11; // Unconfirmed
+constexpr uint8_t ZONE_TYPE_ANIMAL_TRAINING = 0x12; // Unconfirmed
 
 // Labor IDs for the SET_LABOR command. The value IS the real
 // df::unit_labor enum index (library/include/df/unit_labor.h in the

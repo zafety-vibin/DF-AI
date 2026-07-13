@@ -1,0 +1,199 @@
+// dfhack-plugin/zones.cpp
+//
+// Civzone (DF "zone") creation and the wire<->DFHack type translation.
+// Assignment (applyAssignZone/applyUnassignZone) is a separate task --
+// see the plan's Task 2 -- added to this same file.
+//
+// Wire-value table confirmed against library/include/df/civzone_type.h
+// in the DFHack 53.15-r1 checkout (C:\Users\zmanl\Projects\dfhack-build).
+// The previous stub's comment claimed DFHack 53.12's civzone_type had
+// "NO direct Bedroom/Dining/Barracks values" -- that claim does not hold
+// for 53.15-r1 (all three exist, at civzone_type values 92/80/95
+// respectively); this file's table was independently re-verified against
+// the actual checkout, not carried forward from that comment.
+//
+// Civzone-subtype wiring confirmed against
+// scripts/internal/quickfort/zone.lua (create_zone, ~line 366) in the
+// same checkout: DFHack's own canonical zone creator passes the
+// civzone_type value as `subtype` to dfhack.buildings.constructBuilding,
+// which is Lua's wrapper around the same allocInstance(pos, type,
+// subtype) this file calls directly -- subtype IS how DF's real (game
+// binary) virtual setSubtype() sets building_civzonest::type; DFHack's
+// generated headers only declare the vtable slot (building.h:109-110),
+// the actual field write happens on the other side of that virtual call.
+//
+// Floor/walkability check deliberately does NOT use a hypothetical
+// Maps::isTileVoid/Maps::isWalkable helper (neither exists in this
+// checkout's modules/Maps.h). It instead follows this codebase's own
+// established pattern for tile-shape classification -- MapCache +
+// tileShape() switched against the same walkable-shape set
+// tile_extractor.cpp's compute_tile_flags uses for FLAG_FLOOR -- because
+// that file's own comment documents that the alternative DFHack helpers
+// (isWalkable/isWallTerrain) "have produced unexpected results across
+// versions" and the shape-enum switch is the stable, checkable choice.
+
+#include "Core.h"
+#include "Console.h"
+#include "TileTypes.h"
+#include "modules/Buildings.h"
+#include "modules/Maps.h"
+#include "modules/MapCache.h"
+
+#include "df/building.h"
+#include "df/building_civzonest.h"
+#include "df/civzone_type.h"
+#include "df/coord.h"
+#include "df/tiletype_shape.h"
+
+#include "protocol.h"
+
+#include <string>
+
+using namespace DFHack;
+
+// destroyUnlinked is declared static in buildings.cpp and not exported;
+// zones.cpp needs its own copy of the same failed-allocation cleanup
+// (room.extents may have been allocated during tile validation and the
+// destructor does not free it -- see buildings.cpp:167-180 for the
+// original, identical reasoning).
+static void destroyUnlinkedZone(df::building *bld) {
+    if (bld->room.extents) {
+        delete[] bld->room.extents;
+        bld->room.extents = NULL;
+    }
+    delete bld;
+}
+
+// isWalkableFloorShape mirrors tile_extractor.cpp's compute_tile_flags
+// FLAG_FLOOR classification exactly, so "is this carved floor" agrees
+// everywhere in the plugin.
+static bool isWalkableFloorShape(df::tiletype_shape shape) {
+    switch (shape) {
+        case df::tiletype_shape::FLOOR:
+        case df::tiletype_shape::BOULDER:
+        case df::tiletype_shape::PEBBLES:
+        case df::tiletype_shape::FORTIFICATION:
+        case df::tiletype_shape::STAIR_UP:
+        case df::tiletype_shape::STAIR_DOWN:
+        case df::tiletype_shape::STAIR_UPDOWN:
+        case df::tiletype_shape::RAMP:
+        case df::tiletype_shape::RAMP_TOP:
+        case df::tiletype_shape::BROOK_TOP:
+        case df::tiletype_shape::SAPLING:
+        case df::tiletype_shape::SHRUB:
+        case df::tiletype_shape::TWIG:
+        case df::tiletype_shape::BRANCH:
+            return true;
+        default:
+            return false;
+    }
+}
+
+df::civzone_type civzoneTypeFromWire(uint8_t wire) {
+    switch (wire) {
+        case ZONE_TYPE_BEDROOM:         return df::civzone_type::Bedroom;
+        case ZONE_TYPE_OFFICE:          return df::civzone_type::Office;
+        case ZONE_TYPE_TOMB:            return df::civzone_type::Tomb;
+        case ZONE_TYPE_DINING_HALL:     return df::civzone_type::DiningHall;
+        case ZONE_TYPE_MEETING_HALL:    return df::civzone_type::MeetingHall;
+        case ZONE_TYPE_DORMITORY:       return df::civzone_type::Dormitory;
+        case ZONE_TYPE_BARRACKS:        return df::civzone_type::Barracks;
+        case ZONE_TYPE_PEN:             return df::civzone_type::Pen;
+        case ZONE_TYPE_POND:            return df::civzone_type::Pond;
+        case ZONE_TYPE_ARCHERY_RANGE:   return df::civzone_type::ArcheryRange;
+        case ZONE_TYPE_PLANT_GATHERING: return df::civzone_type::PlantGathering;
+        case ZONE_TYPE_WATER_SOURCE:    return df::civzone_type::WaterSource;
+        case ZONE_TYPE_DUMP:            return df::civzone_type::Dump;
+        case ZONE_TYPE_SAND_COLLECTION: return df::civzone_type::SandCollection;
+        case ZONE_TYPE_FISHING_AREA:    return df::civzone_type::FishingArea;
+        case ZONE_TYPE_CLAY_COLLECTION: return df::civzone_type::ClayCollection;
+        case ZONE_TYPE_DUNGEON:         return df::civzone_type::Dungeon;
+        case ZONE_TYPE_ANIMAL_TRAINING: return df::civzone_type::AnimalTraining;
+        default:                        return df::civzone_type::NONE;
+    }
+}
+
+uint8_t wireFromCivzoneType(df::civzone_type t) {
+    switch (t) {
+        case df::civzone_type::Bedroom:         return ZONE_TYPE_BEDROOM;
+        case df::civzone_type::Office:          return ZONE_TYPE_OFFICE;
+        case df::civzone_type::Tomb:             return ZONE_TYPE_TOMB;
+        case df::civzone_type::DiningHall:       return ZONE_TYPE_DINING_HALL;
+        case df::civzone_type::MeetingHall:      return ZONE_TYPE_MEETING_HALL;
+        case df::civzone_type::Dormitory:        return ZONE_TYPE_DORMITORY;
+        case df::civzone_type::Barracks:         return ZONE_TYPE_BARRACKS;
+        case df::civzone_type::Pen:              return ZONE_TYPE_PEN;
+        case df::civzone_type::Pond:             return ZONE_TYPE_POND;
+        case df::civzone_type::ArcheryRange:     return ZONE_TYPE_ARCHERY_RANGE;
+        case df::civzone_type::PlantGathering:   return ZONE_TYPE_PLANT_GATHERING;
+        case df::civzone_type::WaterSource:      return ZONE_TYPE_WATER_SOURCE;
+        case df::civzone_type::Dump:             return ZONE_TYPE_DUMP;
+        case df::civzone_type::SandCollection:   return ZONE_TYPE_SAND_COLLECTION;
+        case df::civzone_type::FishingArea:      return ZONE_TYPE_FISHING_AREA;
+        case df::civzone_type::ClayCollection:   return ZONE_TYPE_CLAY_COLLECTION;
+        case df::civzone_type::Dungeon:          return ZONE_TYPE_DUNGEON;
+        case df::civzone_type::AnimalTraining:   return ZONE_TYPE_ANIMAL_TRAINING;
+        default:                                  return 0; // unmapped -- caller must treat 0 as "not representable on the wire"
+    }
+}
+
+// applyDesignateZone creates a new civzone over [x1,y1]-[x2,y2] at z,
+// mirroring buildings.cpp's placeStockpile exactly -- civzones and
+// stockpiles are both ABSTRACT buildings and use the identical
+// allocInstance -> setSize -> constructAbstract sequence (see
+// buildings.cpp's file-header comment, section 3b).
+bool applyDesignateZone(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error)
+{
+    df::civzone_type czType = civzoneTypeFromWire(zoneType);
+    if (czType == df::civzone_type::NONE) {
+        error = "unknown zone type byte " + std::to_string((int)zoneType);
+        return false;
+    }
+    if (!Maps::isValidTilePos(x1, y1, z) || !Maps::isValidTilePos(x2, y2, z)) {
+        error = "coordinates out of map bounds";
+        return false;
+    }
+    if (x2 < x1 || y2 < y1) {
+        error = "invalid region (x2<x1 or y2<y1)";
+        return false;
+    }
+
+    // A civzone claims existing floor space -- it doesn't dig. Reject any
+    // tile that isn't walkable floor, naming the first failing tile
+    // rather than a generic construction failure.
+    MapExtras::MapCache cache;
+    for (int16_t yy = y1; yy <= y2; yy++) {
+        for (int16_t xx = x1; xx <= x2; xx++) {
+            df::coord pos(xx, yy, z);
+            df::tiletype tt = cache.tiletypeAt(pos);
+            if (!isWalkableFloorShape(tileShape(tt))) {
+                error = "tile (" + std::to_string(xx) + "," + std::to_string(yy) +
+                        "," + std::to_string(z) + ") is not carved floor -- zones claim existing space, they don't dig";
+                return false;
+            }
+        }
+    }
+
+    df::coord pos(x1, y1, z);
+    df::building* bld = Buildings::allocInstance(pos, df::building_type::Civzone, (int)czType);
+    if (!bld) {
+        error = "Buildings::allocInstance returned null for zone";
+        return false;
+    }
+
+    int width  = (x2 - x1) + 1;
+    int height = (y2 - y1) + 1;
+    df::coord2d size((int16_t)width, (int16_t)height);
+    if (!Buildings::setSize(bld, size)) {
+        error = "Buildings::setSize failed for zone (no usable tiles)";
+        destroyUnlinkedZone(bld);
+        return false;
+    }
+
+    if (!Buildings::constructAbstract(bld)) {
+        error = "Buildings::constructAbstract failed for zone";
+        destroyUnlinkedZone(bld);
+        return false;
+    }
+    return true;
+}
