@@ -51,6 +51,7 @@
 #include "df/tiletype.h"
 #include "df/tile_designation.h"
 #include "df/plotinfost.h"
+#include "df/building_civzonest.h"
 
 #include "protocol.h"
 
@@ -444,6 +445,59 @@ static std::string handleListBuildings(const std::string &args, uint8_t &status)
     return os.str();
 }
 
+// Forward declaration -- implemented in zones.cpp.
+uint8_t wireFromCivzoneType(df::civzone_type t);
+
+static std::string handleListZones(const std::string &args, uint8_t &status) {
+    if (!df::global::world) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("world is null");
+    }
+    // Optional {"type": int} and {"z": int} filters -- absent means all.
+    std::string typeArg = jsonGetString(args, "type");
+    bool hasType = !typeArg.empty();
+    int64_t typeFilter = hasType ? jsonGetInt(args, "type", 0) : 0;
+    std::string zArg = jsonGetString(args, "z");
+    bool hasZ = !zArg.empty();
+    int64_t zFilter = hasZ ? jsonGetInt(args, "z", 0) : 0;
+
+    std::ostringstream os;
+    os << "{\"zones\":[";
+    int count = 0;
+    bool truncated = false;
+    for (auto *b : df::global::world->buildings.all) {
+        if (!b || b->getType() != df::building_type::Civzone) continue;
+        auto *cz = strict_virtual_cast<df::building_civzonest>(b);
+        if (!cz) continue;
+        uint8_t wireKind = wireFromCivzoneType(cz->type);
+        if (wireKind == 0) continue; // not one of the 18 fortress-relevant types
+        if (hasType && (int64_t)wireKind != typeFilter) continue;
+        if (hasZ && (int64_t)b->z != zFilter) continue;
+        if (count >= 200) { truncated = true; break; }
+        if (count) os << ",";
+        os << "{\"kind\":" << jsonInt(wireKind)
+           << ",\"type_name\":" << jsonStr(ENUM_KEY_STR(civzone_type, cz->type))
+           << ",\"x1\":" << jsonInt(b->x1)
+           << ",\"y1\":" << jsonInt(b->y1)
+           << ",\"x2\":" << jsonInt(b->x2)
+           << ",\"y2\":" << jsonInt(b->y2)
+           << ",\"z\":" << jsonInt(b->z)
+           << ",\"owner_unit_id\":" << jsonInt(cz->assigned_unit_id)
+           << ",\"assigned_units\":[";
+        for (size_t i = 0; i < cz->assigned_units.size(); i++) {
+            if (i) os << ",";
+            os << jsonInt(cz->assigned_units[i]);
+        }
+        os << "]}";
+        count++;
+    }
+    os << "]";
+    if (truncated) os << ",\"truncated\":true";
+    os << "}";
+    status = QUERY_STATUS_SUCCESS;
+    return os.str();
+}
+
 static std::string handleStockpileInventory(const std::string &args, uint8_t &status) {
     if (!df::global::world) {
         status = QUERY_STATUS_ERROR;
@@ -791,6 +845,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = handleWorkshopJobs(args, status);
         } else if (name == "list_buildings") {
             data = handleListBuildings(args, status);
+        } else if (name == "list_zones") {
+            data = handleListZones(args, status);
         } else if (name == "stockpile_inventory") {
             data = handleStockpileInventory(args, status);
         } else if (name == "sim_status") {
