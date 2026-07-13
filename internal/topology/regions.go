@@ -26,7 +26,10 @@ type RegionGraph struct {
 // otherwise).
 //
 // Adjacency: horizontal 4-connectivity within a Z-level, plus vertical
-// connectivity through stair tiles (added in Step 6 below).
+// connectivity between vertically stacked open tiles — see neighbors()
+// below for why this is permissive rather than stair-only, and the
+// design doc's "documented deviation" note in Component 1 for the
+// false-positive risk that trade-off accepts.
 func BuildRegionGraph(topo *TopologyOverlay) RegionGraph {
 	w, h, d := topo.GetDimensions()
 	visited := make(map[Coord]bool)
@@ -75,12 +78,24 @@ func floodFill(topo *TopologyOverlay, start Coord, visited map[Coord]bool) Regio
 }
 
 // Adjacency: horizontal 4-connectivity within a Z-level, plus vertical
-// connectivity straight up/down. This is deliberately permissive (any
-// open tile directly above/below counts, not just stair-shaped tiles) —
-// StateOpen already means "walkable" per ClassifyState's FLAG_FLOOR
-// check, which the plugin only sets for tiles a dwarf can stand on
-// (including stair tiles), so an open tile stacked on an open tile is by
-// construction a real vertical path.
+// connectivity straight up/down.
+//
+// This is a DOCUMENTED DEVIATION from the design of record
+// (specs/009-culture-and-learning/design-perception-round2.md, Component
+// 1), which specifies vertical connectivity only "through matching stair
+// tiles". The permissive rule here (any open tile directly above/below
+// counts, not just stair-shaped ones) is used instead because
+// TopologyOverlay.GetTileState only exposes the coarse three-state
+// open/closed/unknown classification (state.go's ClassifyState) — the
+// wire protocol's FLAG_FLOOR bit is set for floor/ramp/stair alike, with
+// no sub-type carried over the wire and no spare bits in TileState.Flags
+// to add one without a plugin protocol change. See the design doc for
+// the accepted false-positive risk (ordinary floor-over-floor stacks
+// report as one region) and why it's an acceptable trade-off for now
+// (false positives only, never false negatives — see TestRegionGraph_
+// VerticalAdjacencyIsPermissive in regions_test.go, which pins this
+// behavior explicitly rather than leaving it as an undocumented
+// incidental effect).
 func neighbors(topo *TopologyOverlay, c Coord) []Coord {
 	return []Coord{
 		{c.X - 1, c.Y, c.Z}, {c.X + 1, c.Y, c.Z},

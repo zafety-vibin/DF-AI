@@ -65,6 +65,38 @@ horizontal 4-connectivity within a z-level, vertical connectivity through matchi
 (an `UpStair` connects to a `DownStair`/`UpDownStair` directly above it, reusing the adjacency
 logic the session-2 stair-continuation fix already established).
 
+**Documented deviation — vertical adjacency is implemented permissively, not via matching stair
+tiles.** `topology.StateOpen` is a coarse three-state classification (`ClassifyState`,
+`internal/topology/state.go`): the wire protocol's `FLAG_FLOOR` bit is set for *any* walkable
+tile shape (`FLOOR`, `STAIR_UP`, `STAIR_DOWN`, `STAIR_UPDOWN`, `RAMP`, ... — see
+`dfhack-plugin/tile_extractor.cpp`'s `tile_shape` switch) with no sub-type carried over the wire.
+All 8 bits of `TileState.Flags` are already spoken for (`internal/protocol/message.go`), so
+"matching stair tiles" as literally specified above is not implementable without an additive wire
+field carrying tile shape/sub-type — a plugin protocol change requiring a rebuild + DF-closed
+deploy cycle, out of scope for the task that discovered this gap (Task 1, region graph core).
+`internal/topology/regions.go`'s `neighbors()` therefore treats **any** open tile directly
+above/below another open tile as vertically connected, not just stair-shaped ones.
+
+**False-positive risk this accepts**: an ordinary two-story room where a floor tile sits directly
+above another floor tile — the normal floor/ceiling boundary, no stairs anywhere — is reported as
+the *same* connected region, even though no dwarf can walk between the two floors. This is exactly
+the class of false "these areas are reachable" result this sub-project exists to eliminate (see
+"Why this sub-project first" above). It is accepted for now, not silently: `RegionGraph.SameRegion`
+can produce a false positive but never a false negative (permissive adjacency only ever merges
+regions a stricter rule would keep separate) — so Component 3's reachability guidance can wrongly
+suppress a connector suggestion, but will never wrongly suggest a connector to a region that IS
+truly reachable. `internal/topology/regions_test.go` pins this behavior explicitly (rather than
+leaving it as undocumented incidental behavior) so a future tightening is a deliberate, visible
+code change, not a silent regression discovery.
+
+**Follow-up (not scheduled)**: closing this gap for real requires a new additive-optional wire
+field carrying `df::tiletype_shape` (or a compact stair/ramp/floor sub-type derived from it) from
+`tile_extractor.cpp` through `protocol.h`/`internal/protocol` into `TopologyOverlay`, then
+`neighbors()` gating vertical adjacency on matching stair shapes as originally specified. Revisit
+if live play surfaces an actual false-positive incident (this project's established
+measure-before-optimizing discipline — see the Computation note below for the precedent) rather
+than building it speculatively now.
+
 **Computation**: on-demand, full recompute per call — no incremental maintenance. A flood-fill
 over the tile counts this project's own token-scaling research documents (hundreds to low
 thousands of dug tiles even late-game) is trivial in-process Go work. Add incremental maintenance
@@ -243,7 +275,9 @@ annotations) — no new rendering primitives, just iterated across a line instea
   and `RenderColumn`-reuse correctness for `elevation_view`'s per-column output.
 - Region graph: unit tests over fixture topologies (disconnected rooms, a stair-linked multi-z
   region, the exact "8x8 room 4 tiles from existing floor" shape that caused this session's
-  4,800-tick incident) — `SameRegion`, `NearestRegion`, and multi-z connectivity.
+  4,800-tick incident) — `SameRegion`, `RegionAt`, `NearestRegion`, `Region.BBox`, and multi-z
+  connectivity, including a test that pins the permissive-adjacency false positive documented in
+  Component 1 above (an ordinary floor-over-floor stack reports as one region).
 - `designate_dig`: test that a disconnected designation gets the suggestion text and a connected
   one gets none; test the suggested-connector coordinates are actually adjacent to both regions.
 - `name_place`/`list_places`: round-trip persistence (write, reload, region-gone-on-reload drops
