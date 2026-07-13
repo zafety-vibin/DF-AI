@@ -42,6 +42,23 @@ func TestRenderZones_TypeFilterShowsFullDetail(t *testing.T) {
 	}
 }
 
+func TestRenderZones_ZFilterShowsFullDetail(t *testing.T) {
+	raw := []byte(`{"zones":[
+		{"kind":1,"type_name":"Bedroom","x1":1,"y1":1,"x2":1,"y2":1,"z":90,"owner_unit_id":5,"assigned_units":[]},
+		{"kind":4,"type_name":"DiningHall","x1":5,"y1":5,"x2":8,"y2":8,"z":90,"owner_unit_id":-1,"assigned_units":[]}
+	]}`)
+	// A z filter alone (no type filter) must also switch to full per-zone
+	// detail, per the design doc's "a type/z filter must return full
+	// per-zone detail" testing requirement.
+	out := renderZones(raw, "", 90)
+	if !strings.Contains(out, "(1,1)") || !strings.Contains(out, "(5,5)") {
+		t.Fatalf("expected per-zone extents when filtered by z, got:\n%s", out)
+	}
+	if strings.Contains(out, "owned") {
+		t.Fatalf("z-only filter should not fall back to the summary grouping, got:\n%s", out)
+	}
+}
+
 func TestRenderZones_NoZones(t *testing.T) {
 	out := renderZones([]byte(`{"zones":[]}`), "", -1)
 	if out != "No zones." {
