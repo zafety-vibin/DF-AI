@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -56,6 +57,151 @@ func TestRenderBuildings(t *testing.T) {
 	}
 
 	if out := renderBuildings([]byte(`not json`)); !strings.Contains(out, "unparseable") {
+		t.Fatalf("bad JSON must be reported, got: %q", out)
+	}
+}
+
+func TestRenderStocksAggregated(t *testing.T) {
+	raw := []byte(`{"items":[
+		{"item_type":"BOULDER","material":"shale","count":20,"economic":false},
+		{"item_type":"BOULDER","material":"chalk","count":11,"economic":false},
+		{"item_type":"BOULDER","material":"bauxite","count":9,"economic":true},
+		{"item_type":"WOOD","material":"oak","count":3}
+	]}`)
+	out := renderStocks(raw, false, 0)
+	if !strings.Contains(out, "2 item types, 4 item/material entries total") {
+		t.Fatalf("missing aggregate header:\n%s", out)
+	}
+	if !strings.Contains(out, "BOULDER: 40 total across 3 materials (9 economic); top: shale 20, chalk 11, bauxite 9") {
+		t.Fatalf("boulder aggregate line wrong (materials must sort by count desc, economic count must show):\n%s", out)
+	}
+	if !strings.Contains(out, "WOOD: 3 total across 1 material;") {
+		t.Fatalf("singular 'material' wrong for a single entry:\n%s", out)
+	}
+	if strings.Contains(out, "shale x20") {
+		t.Fatalf("aggregated view must not spell out raw per-material entries:\n%s", out)
+	}
+}
+
+func TestRenderStocksDetailed(t *testing.T) {
+	raw := []byte(`{"items":[
+		{"item_type":"BOULDER","material":"shale","count":20,"economic":false},
+		{"item_type":"BOULDER","material":"bauxite","count":9,"economic":true}
+	]}`)
+	out := renderStocks(raw, true, 0)
+	if !strings.Contains(out, "2 item/material entries:") {
+		t.Fatalf("missing detailed header:\n%s", out)
+	}
+	if !strings.Contains(out, "- BOULDER: shale x20\n") {
+		t.Fatalf("non-economic entry must not carry the tag:\n%s", out)
+	}
+	if !strings.Contains(out, "- BOULDER: bauxite x9 [economic]\n") {
+		t.Fatalf("economic entry must carry the tag:\n%s", out)
+	}
+}
+
+func TestRenderStocksMinCount(t *testing.T) {
+	raw := []byte(`{"items":[
+		{"item_type":"BOULDER","material":"shale","count":20},
+		{"item_type":"BOULDER","material":"chalk","count":2}
+	]}`)
+	out := renderStocks(raw, false, 5)
+	if strings.Contains(out, "chalk") {
+		t.Fatalf("entry below min_count must be filtered out:\n%s", out)
+	}
+	if !strings.Contains(out, "shale") {
+		t.Fatalf("entry at/above min_count must survive:\n%s", out)
+	}
+
+	if out := renderStocks([]byte(`{"items":[{"item_type":"BOULDER","material":"chalk","count":2}]}`), false, 5); out != "No stock items (or all below min_count)." {
+		t.Fatalf("all-filtered response wrong: %q", out)
+	}
+}
+
+func TestRenderStocksBadJSON(t *testing.T) {
+	if out := renderStocks([]byte(`not json`), false, 0); !strings.Contains(out, "unparseable") {
+		t.Fatalf("bad JSON must be reported, got: %q", out)
+	}
+}
+
+func TestRenderManagerOrders(t *testing.T) {
+	raw := []byte(`{"orders":[
+		{"id":0,"job_type":"ConstructBed","amount_total":2,"amount_left":2,"validated":true,"active":false},
+		{"id":1,"job_type":"BrewDrink","amount_total":5,"amount_left":3,"validated":true,"active":true}
+	]}`)
+	out := renderManagerOrders(raw)
+	if !strings.Contains(out, "2 manager orders:") {
+		t.Fatalf("missing count header:\n%s", out)
+	}
+	if !strings.Contains(out, "id=0 ConstructBed x2 (2 left) — queued, not yet dispatched") {
+		t.Fatalf("validated-but-inactive order rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "id=1 BrewDrink x5 (3 left) — ACTIVE") {
+		t.Fatalf("active order rendered wrong:\n%s", out)
+	}
+	if strings.Contains(out, "list_orders") || strings.Contains(out, "job_type\":") {
+		t.Fatalf("must not leak the raw job-type catalog or JSON:\n%s", out)
+	}
+	if out := renderManagerOrders([]byte(`{"orders":[]}`)); out != "No manager orders queued." {
+		t.Fatalf("empty orders rendering wrong: %q", out)
+	}
+}
+
+func TestRenderJobTypes(t *testing.T) {
+	raw := []byte(`{"orders":[
+		{"id":39,"name":"ConstructBed","category":"furniture"},
+		{"id":213,"name":"ConstructHatchCover","category":"other"}
+	]}`)
+	out := renderJobTypes(raw, true)
+	if !strings.Contains(out, "2 job types:") {
+		t.Fatalf("missing count header:\n%s", out)
+	}
+	if !strings.Contains(out, "- ConstructBed [furniture]\n") {
+		t.Fatalf("furniture entry rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "- ConstructHatchCover [other]\n") {
+		t.Fatalf("hatch cover must round-trip by name — this is the whole point of the generalized path:\n%s", out)
+	}
+	if strings.Contains(out, "narrow") {
+		t.Fatalf("filtered, untruncated response must not suggest narrowing:\n%s", out)
+	}
+}
+
+func TestRenderJobTypesEmpty(t *testing.T) {
+	if out := renderJobTypes([]byte(`{"orders":[]}`), true); out != "No job types matched that filter." {
+		t.Fatalf("empty result rendering wrong: %q", out)
+	}
+}
+
+func TestRenderJobTypesTruncation(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString(`{"orders":[`)
+	for i := 0; i < maxJobTypesList+10; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `{"id":%d,"name":"JobType%d","category":"other"}`, i, i)
+	}
+	sb.WriteString(`]}`)
+	out := renderJobTypes([]byte(sb.String()), false)
+	if !strings.Contains(out, fmt.Sprintf("%d job types (showing first %d — pass filter to narrow):", maxJobTypesList+10, maxJobTypesList)) {
+		t.Fatalf("missing truncation header:\n%s", out)
+	}
+	if lines := strings.Count(out, "- JobType"); lines != maxJobTypesList {
+		t.Fatalf("expected %d listed job types, got %d", maxJobTypesList, lines)
+	}
+}
+
+func TestRenderJobTypesUnfilteredHint(t *testing.T) {
+	raw := []byte(`{"orders":[{"id":39,"name":"ConstructBed","category":"furniture"}]}`)
+	out := renderJobTypes(raw, false)
+	if !strings.Contains(out, "pass filter next time to narrow this list") {
+		t.Fatalf("unfiltered small response should still hint at filter:\n%s", out)
+	}
+}
+
+func TestRenderJobTypesBadJSON(t *testing.T) {
+	if out := renderJobTypes([]byte(`not json`), false); !strings.Contains(out, "unparseable") {
 		t.Fatalf("bad JSON must be reported, got: %q", out)
 	}
 }

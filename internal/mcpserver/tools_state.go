@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -72,6 +73,200 @@ func renderBuildings(raw []byte) string {
 	return sb.String()
 }
 
+// stockItem is one (item_type, material) entry from the plugin's
+// stockpile_inventory query.
+type stockItem struct {
+	ItemType string `json:"item_type"`
+	Material string `json:"material"`
+	Count    int    `json:"count"`
+	Economic bool   `json:"economic,omitempty"`
+}
+
+// renderStocks renders the stockpile_inventory response. The plugin keys
+// every item by exact (item_type, material) with no cap, which already
+// exceeds the MCP payload budget at a 7-dwarf fort (see
+// docs/archive/2026-07-12-token-scaling-research.md) — the raw pass-through
+// this replaced silently truncated mid-JSON. Default (detailed=false):
+// aggregate to one line per item_type with top-3 materials by count.
+// detailed=true (set when the caller passed a category filter, which the
+// plugin already narrows before this ever sees it): one line per entry.
+func renderStocks(raw []byte, detailed bool, minCount int) string {
+	var resp struct {
+		Items []stockItem `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Sprintf("unparseable stockpile_inventory response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	items := resp.Items
+	if minCount > 0 {
+		filtered := items[:0]
+		for _, it := range items {
+			if it.Count >= minCount {
+				filtered = append(filtered, it)
+			}
+		}
+		items = filtered
+	}
+	if len(items) == 0 {
+		return "No stock items (or all below min_count)."
+	}
+
+	if detailed {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "%d item/material entries:\n", len(items))
+		for _, it := range items {
+			econ := ""
+			if it.Economic {
+				econ = " [economic]"
+			}
+			fmt.Fprintf(&sb, "- %s: %s x%d%s\n", it.ItemType, it.Material, it.Count, econ)
+		}
+		return sb.String()
+	}
+
+	type typeAgg struct {
+		total     int
+		economic  int
+		materials []stockItem
+	}
+	order := make([]string, 0)
+	byType := make(map[string]*typeAgg)
+	for _, it := range items {
+		agg, ok := byType[it.ItemType]
+		if !ok {
+			agg = &typeAgg{}
+			byType[it.ItemType] = agg
+			order = append(order, it.ItemType)
+		}
+		agg.total += it.Count
+		if it.Economic {
+			agg.economic += it.Count
+		}
+		agg.materials = append(agg.materials, it)
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d item types, %d item/material entries total (pass category to see full per-material detail for one type):\n",
+		len(order), len(items))
+	for _, t := range order {
+		agg := byType[t]
+		sort.Slice(agg.materials, func(i, j int) bool { return agg.materials[i].Count > agg.materials[j].Count })
+		topN := agg.materials
+		if len(topN) > 3 {
+			topN = topN[:3]
+		}
+		tops := make([]string, 0, len(topN))
+		for _, m := range topN {
+			tops = append(tops, fmt.Sprintf("%s %d", m.Material, m.Count))
+		}
+		econNote := ""
+		if agg.economic > 0 {
+			econNote = fmt.Sprintf(" (%d economic)", agg.economic)
+		}
+		fmt.Fprintf(&sb, "- %s: %d total across %d material%s%s; top: %s\n",
+			t, agg.total, len(agg.materials), plural(len(agg.materials)), econNote, strings.Join(tops, ", "))
+	}
+	return sb.String()
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// managerOrder is one entry from the plugin's manager_orders query.
+type managerOrder struct {
+	ID          int    `json:"id"`
+	JobType     string `json:"job_type"`
+	AmountTotal int    `json:"amount_total"`
+	AmountLeft  int    `json:"amount_left"`
+	Validated   bool   `json:"validated"`
+	Active      bool   `json:"active"`
+}
+
+// renderManagerOrders renders the manager_orders response compactly. Does
+// NOT fetch list_orders (the DF job-type enum catalog, ~240 static entries,
+// ~2000 tokens of unchanging noise every call) — the common orderable
+// vocabulary is already in the order/queue_job tool schemas, and anything
+// outside it is discoverable on demand via the separate job_types tool
+// (see registerStateTools below) rather than paid on every orders call.
+func renderManagerOrders(raw []byte) string {
+	var resp struct {
+		Orders []managerOrder `json:"orders"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Sprintf("unparseable manager_orders response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	if len(resp.Orders) == 0 {
+		return "No manager orders queued."
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d manager orders:\n", len(resp.Orders))
+	for _, o := range resp.Orders {
+		status := "queued, not yet dispatched"
+		if o.Active {
+			status = "ACTIVE"
+		} else if !o.Validated {
+			status = "invalid"
+		}
+		fmt.Fprintf(&sb, "- id=%d %s x%d (%d left) — %s\n", o.ID, o.JobType, o.AmountTotal, o.AmountLeft, status)
+	}
+	return sb.String()
+}
+
+// jobTypeEntry is one entry from the plugin's list_orders query — a
+// DFHack df::job_type enum key name plus a heuristic category tag.
+type jobTypeEntry struct {
+	Name     string `json:"name"`
+	Category string `json:"category"`
+}
+
+// maxJobTypesList caps the job_types tool's output. Unfiltered, list_orders
+// returns DF's full job_type enum (~240 entries) — this is exactly the
+// static noise the orders/order/queue_job tools deliberately stopped
+// paying on every call (see renderManagerOrders above); job_types exists
+// so the model pays for that dump only when it actually needs to look up
+// an unfamiliar name, and the cap keeps a forgotten filter from blowing
+// the response budget anyway.
+const maxJobTypesList = 80
+
+// renderJobTypes renders the list_orders response for the job_types
+// discovery tool. Every name shown here round-trips into queue_job's
+// name-based path (protocol.OrderTypeByName) verbatim — this is the
+// catalog half of generalized item construction, work_orders.cpp
+// resolveJobTypeByName is the lookup half.
+func renderJobTypes(raw []byte, filtered bool) string {
+	var resp struct {
+		Orders []jobTypeEntry `json:"orders"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Sprintf("unparseable list_orders response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	if len(resp.Orders) == 0 {
+		return "No job types matched that filter."
+	}
+	entries := resp.Orders
+	truncated := false
+	if len(entries) > maxJobTypesList {
+		entries = entries[:maxJobTypesList]
+		truncated = true
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d job types", len(resp.Orders))
+	if truncated {
+		fmt.Fprintf(&sb, " (showing first %d — pass filter to narrow)", maxJobTypesList)
+	}
+	sb.WriteString(":\n")
+	for _, o := range entries {
+		fmt.Fprintf(&sb, "- %s [%s]\n", o.Name, o.Category)
+	}
+	if !filtered && !truncated {
+		sb.WriteString("(pass filter next time to narrow this list)\n")
+	}
+	return sb.String()
+}
+
 // renderDwarfList renders the id/position roster, capped at maxDwarfList.
 func renderDwarfList(dwarves []protocol.EntityInfo) string {
 	var sb strings.Builder
@@ -99,25 +294,59 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "alerts",
-		Description: "DF's own announcement stream (job cancellations with reasons, sieges, moods, migrants). READ THIS when work isn't progressing — DF usually says exactly why.",
+		Description: "DF's own announcement stream (job cancellations with reasons, sieges, moods, migrants). READ THIS when work isn't progressing — DF usually says exactly why. Once you've read and acted on one, call dismiss_alerts so it stops repeating in every future call — nothing here auto-clears.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 		snap := b.Snapshot()
 		if len(snap.ActiveAlerts) == 0 {
 			return withDash(b, ctx, "No active alerts."), nil, nil
 		}
 		var sb strings.Builder
-		for i, a := range snap.ActiveAlerts {
-			if i >= 30 {
-				fmt.Fprintf(&sb, "... and %d more\n", len(snap.ActiveAlerts)-30)
-				break
-			}
+		for _, a := range snap.ActiveAlerts {
 			fmt.Fprintf(&sb, "- [%d] sev=%d %s", a.ID, a.Severity, a.Text)
 			if a.HasPosition() {
 				fmt.Fprintf(&sb, " @(%d,%d,%d)", a.X, a.Y, a.Z)
 			}
 			sb.WriteString("\n")
 		}
+		if snap.ActiveAlertCount > len(snap.ActiveAlerts) {
+			fmt.Fprintf(&sb, "... and %d more (dismiss some to see them)\n", snap.ActiveAlertCount-len(snap.ActiveAlerts))
+		}
 		return withDash(b, ctx, sb.String()), nil, nil
+	})
+
+	type dismissAlertsIn struct {
+		IDs []int `json:"ids,omitempty" jsonschema:"specific alert ids to dismiss (the [N] prefix from the alerts tool)"`
+		All bool  `json:"all,omitempty" jsonschema:"dismiss every currently active alert instead of listing ids"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "dismiss_alerts",
+		Description: "Mark alerts as seen/handled so they stop repeating in alerts and the dashboard's alert count. Dismissed alerts are NOT deleted from DF's own history — this only shrinks the model's 'still need to look at this' set. Call after reading and acting on an alert.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in dismissAlertsIn) (*mcp.CallToolResult, any, error) {
+		if b == nil || b.WM == nil || b.WM.Observed.Alerts == nil {
+			return withDash(b, ctx, "no alert store available"), nil, nil
+		}
+		store := b.WM.Observed.Alerts
+		if in.All {
+			n := store.DismissAll()
+			return withDash(b, ctx, fmt.Sprintf("dismissed all %d active alerts", n)), nil, nil
+		}
+		if len(in.IDs) == 0 {
+			return withDash(b, ctx, "no ids given and all=false — nothing to dismiss"), nil, nil
+		}
+		dismissed := 0
+		var notFound []int
+		for _, id := range in.IDs {
+			if store.Dismiss(uint32(id)) {
+				dismissed++
+			} else {
+				notFound = append(notFound, id)
+			}
+		}
+		msg := fmt.Sprintf("dismissed %d/%d alerts", dismissed, len(in.IDs))
+		if len(notFound) > 0 {
+			msg += fmt.Sprintf(" (not found or already dismissed: %v)", notFound)
+		}
+		return withDash(b, ctx, msg), nil, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -141,15 +370,24 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 		return withDash(b, ctx, string(raw)), nil, nil
 	})
 
+	type stocksIn struct {
+		Category string `json:"category,omitempty" jsonschema:"optional substring filter on item type (e.g. 'boulder', 'wood') — narrows the query AND switches the response to full per-material detail for that type"`
+		MinCount int    `json:"min_count,omitempty" jsonschema:"optional: hide item/material entries below this count"`
+	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "stocks",
-		Description: "Stockpile inventory by item type and material — what the fort actually has.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
-		raw, err := b.Query(ctx, "stockpile_inventory", "{}")
+		Description: "Stockpile inventory by item type and material — what the fort actually has. Default view is aggregated (one line per item type, top materials); pass category to narrow the query and see full per-material detail for one type.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in stocksIn) (*mcp.CallToolResult, any, error) {
+		args := "{}"
+		if in.Category != "" {
+			argBytes, _ := json.Marshal(map[string]string{"category": in.Category})
+			args = string(argBytes)
+		}
+		raw, err := b.Query(ctx, "stockpile_inventory", args)
 		if err != nil {
 			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
 		}
-		return withDash(b, ctx, capRawJSON(string(raw))), nil, nil
+		return withDash(b, ctx, renderStocks(raw, in.Category != "", in.MinCount)), nil, nil
 	})
 
 	type buildingsIn struct {
@@ -191,17 +429,31 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "orders",
-		Description: "Manager work orders and general job list — what's queued and its status.",
+		Description: "Manager work orders — what's queued and its status. The orderable item vocabulary lives in the order/queue_job tool schemas, not here.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
-		var sb strings.Builder
-		for _, q := range []string{"manager_orders", "list_orders"} {
-			raw, err := b.Query(ctx, q, "{}")
-			if err != nil {
-				fmt.Fprintf(&sb, "%s failed: %v\n", q, err)
-				continue
-			}
-			fmt.Fprintf(&sb, "%s: %s\n", q, capRawJSON(string(raw)))
+		raw, err := b.Query(ctx, "manager_orders", "{}")
+		if err != nil {
+			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
 		}
-		return withDash(b, ctx, sb.String()), nil, nil
+		return withDash(b, ctx, renderManagerOrders(raw)), nil, nil
+	})
+
+	type jobTypesIn struct {
+		Filter string `json:"filter,omitempty" jsonschema:"optional case-insensitive substring filter on the job type name (e.g. 'hatch', 'construct') — narrows the ~240-entry DF job_type enum instead of dumping all of it"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "job_types",
+		Description: "Look up DFHack job_type enum names for queue_job's name-based path — names not in queue_job's short vocabulary (bed/table/.../blocks) can still be queued by passing the exact name found here as queue_job's item, though queue_job still rejects a few workshop-compatible job types outright (meal, crafts) pending a verified material filter — see queue_job's item description. Call this ONLY when you need to discover a name you don't already know; it is a separate tool from order/queue_job/orders precisely so it isn't paid on every call. Pass filter to narrow.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in jobTypesIn) (*mcp.CallToolResult, any, error) {
+		args := "{}"
+		if in.Filter != "" {
+			argBytes, _ := json.Marshal(map[string]string{"filter": in.Filter})
+			args = string(argBytes)
+		}
+		raw, err := b.Query(ctx, "list_orders", args)
+		if err != nil {
+			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+		}
+		return withDash(b, ctx, renderJobTypes(raw, in.Filter != "")), nil, nil
 	})
 }

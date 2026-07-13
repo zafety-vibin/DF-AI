@@ -31,6 +31,23 @@ func ackText(res *commands.CommandResult, err error, what string) string {
 	}
 }
 
+// resultDetail extracts a command result's raw truthful detail text with no
+// SUCCESS/PARTIAL/FAILED prefix — for callers (like queue_job's retry loop)
+// that build their own single outer prefix and would otherwise double it up
+// by embedding an already-prefixed ackText string inside another prefix.
+func resultDetail(res *commands.CommandResult, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if res == nil {
+		return "no result"
+	}
+	if res.ErrorMsg != "" {
+		return res.ErrorMsg
+	}
+	return fmt.Sprintf("ack in %s", res.Duration)
+}
+
 // buildWireCoords converts the model-facing build coordinate to the wire
 // semantic. The protocol's (x,y) is a building's NW CORNER (DFHack
 // allocInstance), but the tool promises CENTER for 3x3 workshops — the
@@ -93,6 +110,36 @@ var orderTypes = map[string]uint8{
 	"cabinet": protocol.OrderTypeMakeCabinet, "coffer": protocol.OrderTypeMakeCoffer,
 	"drink": protocol.OrderTypeBrewDrink, "meal": protocol.OrderTypePrepareMeal,
 	"blocks": protocol.OrderTypeMakeBlocks, "crafts": protocol.OrderTypeMakeCrafts,
+}
+
+// laborNames maps a model-facing labor name to the wire LaborID
+// (protocol.Labor* — the real df::unit_labor enum index). Deliberately a
+// curated subset relevant to a fresh 7-dwarf fort, not DF's full 94-entry
+// labor list.
+var laborNames = map[string]uint8{
+	"mine":            protocol.LaborMine,
+	"cutwood":         protocol.LaborCutwood,
+	"carpenter":       protocol.LaborCarpenter,
+	"stonecutter":     protocol.LaborStonecutter,
+	"stone_carver":    protocol.LaborStoneCarver,
+	"engrave":         protocol.LaborEngraver,
+	"mason":           protocol.LaborMason,
+	"brew":            protocol.LaborBrewer,
+	"cook":            protocol.LaborCook,
+	"plant":           protocol.LaborPlant,
+	"herbalist":       protocol.LaborHerbalist,
+	"fish":            protocol.LaborFish,
+	"smelt":           protocol.LaborSmelt,
+	"forge_weapon":    protocol.LaborForgeWeapon,
+	"forge_armor":     protocol.LaborForgeArmor,
+	"forge_furniture": protocol.LaborForgeFurniture,
+	"metalcraft":      protocol.LaborMetalCraft,
+	"mechanic":        protocol.LaborMechanic,
+	"haul_stone":      protocol.LaborHaulStone,
+	"haul_wood":       protocol.LaborHaulWood,
+	"haul_food":       protocol.LaborHaulFood,
+	"haul_item":       protocol.LaborHaulItem,
+	"haul_furniture":  protocol.LaborHaulFurniture,
 }
 
 var materialClasses = map[string]uint8{
@@ -288,6 +335,82 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		}
 		res, err := b.Exec.SendWorkOrderCommand(ot, uint16(in.Count))
 		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("order %dx %s", in.Count, in.Item))), nil, nil
+	})
+
+	type queueJobIn struct {
+		X     int    `json:"x" jsonschema:"target workshop's tile (any tile of its footprint)"`
+		Y     int    `json:"y"`
+		Z     int    `json:"z"`
+		Item  string `json:"item" jsonschema:"known short vocabulary: bed|table|chair|door|barrel|bucket|cabinet|coffer|blocks (drink/meal/crafts are NOT supported here — drink has no direct job_type mapping; meal/crafts resolve fine but the plugin rejects them, no verified material filter yet — use the order tool for all three instead) — OR any DFHack job_type enum name (e.g. ConstructHatchCover) for anything not in that list; look one up with the job_types tool"`
+		Count int    `json:"count" jsonschema:"how many jobs to queue, one at a time (default 1)"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "queue_job",
+		Description: "Queue a job directly at an existing workshop — no manager noble or office needed (unlike order, which needs both). Use this for an immediate one-off need; use order for standing/bulk production once a manager exists.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in queueJobIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		// The short vocabulary covers the common cases with no wire
+		// round-trip name lookup; anything else falls through to the
+		// plugin's generalized name-based resolution (protocol.OrderTypeByName
+		// — see work_orders.cpp resolveJobTypeByName) using the caller's
+		// string VERBATIM (not lowercased): DFHack job_type keys are
+		// case-sensitive CamelCase, e.g. "ConstructHatchCover".
+		ot, known := orderTypes[strings.ToLower(in.Item)]
+		jobName := ""
+		if !known {
+			ot = protocol.OrderTypeByName
+			jobName = in.Item
+		}
+		count := in.Count
+		if count <= 0 {
+			count = 1
+		}
+		queued := 0
+		var lastErr string
+		for i := 0; i < count; i++ {
+			res, err := b.Exec.SendQueueJob(int16(in.X), int16(in.Y), int16(in.Z), ot, jobName)
+			if err == nil && res != nil && res.Success && res.ErrorMsg == "" {
+				queued++
+				continue
+			}
+			// resultDetail (not ackText) here: the switch below already adds
+			// the single FAILED:/PARTIAL: outer prefix — using ackText would
+			// double it up (e.g. "FAILED: ... - FAILED: ..."), per review.
+			lastErr = resultDetail(res, err)
+			break // stop on first failure (queue full, wrong workshop, unrecognized name, etc.) — don't spam retries
+		}
+		what := fmt.Sprintf("queue %dx %s job at (%d,%d,%d)", count, in.Item, in.X, in.Y, in.Z)
+		switch {
+		case queued == count:
+			return withDash(b, ctx, fmt.Sprintf("SUCCESS: %s (%d/%d queued)", what, queued, count)), nil, nil
+		case queued > 0:
+			return withDash(b, ctx, fmt.Sprintf("PARTIAL: %s — %d/%d queued, then: %s", what, queued, count, lastErr)), nil, nil
+		default:
+			return withDash(b, ctx, fmt.Sprintf("FAILED: %s — %s", what, lastErr)), nil, nil
+		}
+	})
+
+	type setLaborIn struct {
+		ID     int    `json:"id" jsonschema:"the dwarf's id from the dwarves tool"`
+		Labor  string `json:"labor" jsonschema:"mine|cutwood|carpenter|stonecutter|stone_carver|engrave|mason|brew|cook|plant|herbalist|fish|smelt|forge_weapon|forge_armor|forge_furniture|metalcraft|mechanic|haul_stone|haul_wood|haul_food|haul_item|haul_furniture"`
+		Enable bool   `json:"enable" jsonschema:"true to enable the labor, false to disable it"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "set_labor",
+		Description: "Enable or disable one labor on a dwarf. DF's own labor system then assigns matching jobs to whichever dwarf has that labor on — this doesn't queue work directly. Check dwarf_detail first to see a dwarf's current labors before changing them. A labor a dwarf's caste can't perform is a harmless no-op: DF just never generates matching work for that dwarf.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in setLaborIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		lid, ok := laborNames[strings.ToLower(in.Labor)]
+		if !ok {
+			return withDash(b, ctx, fmt.Sprintf("unknown labor %q", in.Labor)), nil, nil
+		}
+		res, err := b.Exec.SendSetLabor(int32(in.ID), lid, in.Enable)
+		what := fmt.Sprintf("set_labor %s=%v for dwarf id=%d", in.Labor, in.Enable, in.ID)
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 
 	type xyzIn struct {

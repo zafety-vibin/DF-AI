@@ -205,6 +205,46 @@ func (e *CommandExecutor) SendWorkOrderCommand(orderType uint8, quantity uint16)
 	return e.SendCommand(cmd)
 }
 
+// SendQueueJob queues a single job directly at the workshop occupying
+// (x,y,z) — the same mechanism a player uses when right-clicking a
+// workshop and picking a task, no Manager noble or office required. Use
+// SendWorkOrderCommand instead for standing/bulk production once a manager
+// exists. Call again to queue more than one job.
+//
+// orderType is normally one of the protocol.OrderType* byte constants;
+// pass protocol.OrderTypeByName with jobTypeName set to a DFHack job_type
+// enum key name (e.g. "ConstructHatchCover") to reach any job type the
+// plugin can resolve by name instead — no new byte constant needed (see
+// the job_types tool for discovery). jobTypeName is ignored unless
+// orderType is protocol.OrderTypeByName.
+func (e *CommandExecutor) SendQueueJob(x, y, z int16, orderType uint8, jobTypeName string) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeQueueJob,
+		QueueJob: protocol.QueueJobDesignation{
+			X: x, Y: y, Z: z,
+			OrderType:   orderType,
+			JobTypeName: jobTypeName,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendSetLabor enables or disables one labor on a unit. laborID is a
+// protocol.Labor* constant (the real df::unit_labor enum index).
+func (e *CommandExecutor) SendSetLabor(unitID int32, laborID uint8, enable bool) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeSetLabor,
+		SetLabor: protocol.SetLaborDesignation{
+			UnitID:  unitID,
+			LaborID: laborID,
+			Enable:  enable,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
 // SendStockpileCommand designates a rectangular region as a stockpile
 // accepting items in the named groups. groupMask is a bitfield of
 // protocol.StockpileGroup* constants (use StockpileGroupAll for an

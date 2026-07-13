@@ -295,6 +295,45 @@ const (
 	CommandTypeSmooth         uint8 = 0x0B // Designate stone tiles for smoothing or engraving
 	CommandTypePause          uint8 = 0x0C // pause/unpause/step simulation control
 	CommandTypeRemoveBuilding uint8 = 0x0D // Mark the building at a tile for deconstruction
+	CommandTypeQueueJob       uint8 = 0x0E // Queue a job directly at an existing workshop (no manager/office needed)
+	CommandTypeSetLabor       uint8 = 0x0F // Enable/disable one labor on a unit
+)
+
+// Labor constants for the SET_LABOR command. The value IS the real
+// df::unit_labor enum index (DFHack 53.15-r1 library/include/df/unit_labor.h,
+// base-type int32_t, valid range 0-93) — sent directly as the wire byte, no
+// translation table on either side. This is a curated subset relevant to a
+// fresh 7-dwarf fort, not DF's full 94-entry labor list. Kept in sync with
+// dfhack-plugin/protocol.h (LABOR_* constants).
+const (
+	LaborMine           uint8 = 0
+	LaborHaulStone      uint8 = 1
+	LaborHaulWood       uint8 = 2
+	LaborHaulFood       uint8 = 4
+	LaborHaulItem       uint8 = 6
+	LaborHaulFurniture  uint8 = 7
+	LaborCutwood        uint8 = 10
+	LaborCarpenter      uint8 = 11
+	LaborStonecutter    uint8 = 12
+	LaborStoneCarver    uint8 = 13
+	LaborEngraver       uint8 = 14 // caption "Stone Engraving" — not DETAIL
+	LaborMason          uint8 = 15
+	LaborBrewer         uint8 = 30
+	LaborCook           uint8 = 38
+	LaborPlant          uint8 = 39
+	LaborHerbalist      uint8 = 40
+	LaborFish           uint8 = 41
+	LaborSmelt          uint8 = 45
+	LaborForgeWeapon    uint8 = 46
+	LaborForgeArmor     uint8 = 47
+	LaborForgeFurniture uint8 = 48
+	LaborMetalCraft     uint8 = 49
+	LaborMechanic       uint8 = 60
+
+	// LaborMaxIndex is the highest valid df::unit_labor array index
+	// (unit_labor.h last_item_value=93). SET_LABOR rejects any LaborID
+	// above this.
+	LaborMaxIndex uint8 = 93
 )
 
 // MaterialClass constants for the BUILD command's trailing material_class
@@ -382,6 +421,14 @@ const (
 	OrderTypePrepareMeal uint8 = 0x0A
 	OrderTypeMakeBlocks  uint8 = 0x0B
 	OrderTypeMakeCrafts  uint8 = 0x0C
+
+	// OrderTypeByName is not one of the hand-maintained order types above —
+	// it's the sentinel for QueueJobDesignation's generalized name-based
+	// path (see that type's doc comment). Only CommandTypeQueueJob
+	// (SendQueueJob) understands it; CommandTypeWorkOrder
+	// (SendWorkOrderCommand) does not and still only accepts the bytes
+	// above. Matches dfhack-plugin/protocol.h ORDER_TYPE_BY_NAME.
+	OrderTypeByName uint8 = 0x00
 )
 
 // DigType constants (matches df::tile_dig_designation enum)
@@ -498,6 +545,40 @@ type RemoveBuildingDesignation struct {
 	X, Y, Z int16
 }
 
+// QueueJobDesignation represents a single job queued directly at the
+// workshop occupying (X,Y,Z) — the same mechanism a player uses when
+// right-clicking a workshop and picking a task from its build menu.
+// Bypasses the manager/work-order system entirely: no Manager noble or
+// office needed, unlike WorkOrderDesignation. Use this for an immediate,
+// one-off need; use WorkOrderDesignation for standing/bulk production once
+// a manager exists. Call again to queue more than one.
+//
+// OrderType is normally one of the OrderType* byte constants — the same
+// ~11-entry hand-maintained vocabulary WorkOrderDesignation uses. Set it
+// to OrderTypeByName instead to reach ANY DFHack job_type the plugin can
+// resolve by name (dfhack-plugin/work_orders.cpp: resolveJobTypeByName,
+// via DFHack's find_enum_item) — no new OrderType byte or plugin rebuild
+// needed for a job_type DFHack already knows about. JobTypeName is the
+// DFHack job_type enum key name (e.g. "ConstructHatchCover", not the raw
+// bay12 token) and is ignored unless OrderType == OrderTypeByName. Only
+// QueueJobDesignation supports this; WorkOrderDesignation does not.
+type QueueJobDesignation struct {
+	X, Y, Z     int16
+	OrderType   uint8  // What to produce (OrderTypeMakeBed etc.), or OrderTypeByName
+	JobTypeName string // DFHack job_type enum key name; only used when OrderType == OrderTypeByName
+}
+
+// SetLaborDesignation represents a single labor toggle on one unit.
+// LaborID is a Labor* constant (the real df::unit_labor enum index,
+// transmitted directly). Enable=true turns the labor on, false turns it
+// off. A labor a unit's caste can't perform is a graceful no-op on DF's
+// side — the plugin doesn't reject it.
+type SetLaborDesignation struct {
+	UnitID  int32
+	LaborID uint8
+	Enable  bool
+}
+
 // WorkOrderDesignation represents a manager work order: produce N items of
 // the given type. The manager dispatches to whichever workshop can fulfill
 // the order, drawing reagents from stockpiles automatically.
@@ -562,6 +643,8 @@ type CommandMessage struct {
 	Smooth      SmoothDesignation         // For SMOOTH commands
 	Pause       PauseControl              // For PAUSE commands
 	Remove      RemoveBuildingDesignation // For REMOVE_BUILDING commands
+	QueueJob    QueueJobDesignation       // For QUEUE_JOB commands
+	SetLabor    SetLaborDesignation       // For SET_LABOR commands
 
 	// Feature 007: Blueprint command fields
 	BlueprintName string // For BLUEPRINT: blueprint filename (without .csv)
@@ -574,7 +657,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeRemoveBuilding {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeSetLabor {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -608,6 +691,14 @@ func (m *CommandMessage) Validate() error {
 		}
 		if m.Pause.Mode == PauseModeStep && m.Pause.Ticks == 0 {
 			return errors.New("pause step requires Ticks > 0")
+		}
+	case CommandTypeSetLabor:
+		if m.SetLabor.LaborID > LaborMaxIndex {
+			return fmt.Errorf("invalid labor id: %d (max %d)", m.SetLabor.LaborID, LaborMaxIndex)
+		}
+	case CommandTypeQueueJob:
+		if m.QueueJob.OrderType == OrderTypeByName && m.QueueJob.JobTypeName == "" {
+			return errors.New("queue_job by-name path (OrderTypeByName) requires a non-empty JobTypeName")
 		}
 	}
 

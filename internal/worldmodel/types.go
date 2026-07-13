@@ -219,6 +219,11 @@ type Snapshot struct {
 	// ActiveAlerts is the current set of un-dismissed DF announcements,
 	// newest first, capped at SnapshotMaxAlerts.
 	ActiveAlerts []Alert
+	// ActiveAlertCount is the TRUE undismissed count, uncapped — use this
+	// for the dashboard, not len(ActiveAlerts), which pins at
+	// SnapshotMaxAlerts and stops carrying signal once alerts accumulate
+	// past it (see docs/archive/2026-07-12-token-scaling-research.md).
+	ActiveAlertCount int
 }
 
 // SnapshotMaxAlerts is the cap on alerts surfaced in a single snapshot.
@@ -244,19 +249,22 @@ func (w *WorldModel) Snapshot() Snapshot {
 	defer w.mu.RUnlock()
 
 	var alerts []Alert
+	var activeCount int
 	if w.Observed.Alerts != nil {
 		alerts = w.Observed.Alerts.Active(SnapshotMaxAlerts)
+		activeCount, _, _ = w.Observed.Alerts.Counts()
 	}
 
 	return Snapshot{
-		Tick:         w.tick.Load(),
-		EventSeq:     w.eventSeq.Load(),
-		TakenAt:      time.Now(),
-		LastUpdate:   w.LastUpdate(),
-		Entities:     w.Observed.Entities,
-		Zones:        w.Observed.Zones,
-		Fort:         w.Observed.Fort,
-		Predictions:  w.Predicted.summary(),
-		ActiveAlerts: alerts,
+		Tick:             w.tick.Load(),
+		EventSeq:         w.eventSeq.Load(),
+		TakenAt:          time.Now(),
+		LastUpdate:       w.LastUpdate(),
+		Entities:         w.Observed.Entities,
+		Zones:            w.Observed.Zones,
+		Fort:             w.Observed.Fort,
+		Predictions:      w.Predicted.summary(),
+		ActiveAlerts:     alerts,
+		ActiveAlertCount: activeCount,
 	}
 }

@@ -53,6 +53,8 @@ var minToolArgs = map[string]map[string]any{
 	"zone":               {"type": "bedroom", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
 	"stockpile":          {"category": "all", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
 	"order":              {"item": "bed", "count": 1},
+	"queue_job":          {"x": 1, "y": 1, "z": 1, "item": "bed", "count": 1},
+	"set_labor":          {"id": 1, "labor": "mine", "enable": true},
 	"unsuspend":          {"x": 1, "y": 1, "z": 1},
 	"remove_building":    {"x": 1, "y": 1, "z": 1},
 	"buildings":          {}, // z is optional — exercise the no-arg path

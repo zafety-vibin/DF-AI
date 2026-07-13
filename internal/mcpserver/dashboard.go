@@ -67,7 +67,7 @@ func renderDashboard(snap worldmodel.Snapshot, connected bool, simJSON string) s
 	if snap.Fort.Valid && snap.Fort.Season < 4 {
 		season = seasons[snap.Fort.Season]
 	}
-	nAlerts := len(snap.ActiveAlerts)
+	nAlerts := snap.ActiveAlertCount
 	return fmt.Sprintf("[GROUND TRUTH events=%d year=%d season=%s day=%d | dwarves=%d enemies=%d | paused=%s | alerts=%d active | %s]",
 		snap.Tick, snap.Fort.Year, season, snap.Fort.DaysElapsed,
 		len(snap.Entities.Dwarves), len(snap.Entities.Enemies), paused, nAlerts,

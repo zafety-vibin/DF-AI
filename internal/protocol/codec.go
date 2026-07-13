@@ -879,6 +879,47 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 				return err
 			}
 		}
+	case CommandTypeQueueJob:
+		// [2: X] [2: Y] [2: Z] [1: OrderType] [2: NameLen][N: Name]
+		// The name tail is present ONLY when OrderType == OrderTypeByName —
+		// mirrors CommandTypeBlueprint's length-prefixed name below.
+		// Existing byte-vocabulary callers (OrderType 0x01-0x0C) produce
+		// the exact same 12-byte payload as before this change.
+		for _, v := range []int16{msg.QueueJob.X, msg.QueueJob.Y, msg.QueueJob.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.QueueJob.OrderType); err != nil {
+			return err
+		}
+		if msg.QueueJob.OrderType == OrderTypeByName {
+			nameBytes := []byte(msg.QueueJob.JobTypeName)
+			if len(nameBytes) > 255 {
+				return errors.New("queue_job job type name too long (max 255 bytes)")
+			}
+			if err := binary.Write(w, binary.BigEndian, uint16(len(nameBytes))); err != nil {
+				return err
+			}
+			if _, err := w.Write(nameBytes); err != nil {
+				return err
+			}
+		}
+	case CommandTypeSetLabor:
+		// [4: UnitID] [1: LaborID] [1: Enable]
+		if err := binary.Write(w, binary.BigEndian, msg.SetLabor.UnitID); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.SetLabor.LaborID); err != nil {
+			return err
+		}
+		enable := uint8(0)
+		if msg.SetLabor.Enable {
+			enable = 1
+		}
+		if err := binary.Write(w, binary.BigEndian, enable); err != nil {
+			return err
+		}
 	case CommandTypeBlueprint:
 		// [2: NameLen] [N: Name] [2: OriginX] [2: OriginY] [2: OriginZ]
 		nameBytes := []byte(msg.BlueprintName)
@@ -1027,6 +1068,41 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 				return nil, err
 			}
 		}
+	case CommandTypeQueueJob:
+		for _, p := range []*int16{&msg.QueueJob.X, &msg.QueueJob.Y, &msg.QueueJob.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.QueueJob.OrderType); err != nil {
+			return nil, err
+		}
+		// Name tail present ONLY when OrderType == OrderTypeByName — a
+		// pre-existing byte-vocabulary payload (0x01-0x0C) ends here, same
+		// as before this change.
+		if msg.QueueJob.OrderType == OrderTypeByName {
+			var nameLen uint16
+			if err := binary.Read(buf, binary.BigEndian, &nameLen); err != nil {
+				return nil, err
+			}
+			nameBytes := make([]byte, nameLen)
+			if _, err := io.ReadFull(buf, nameBytes); err != nil {
+				return nil, err
+			}
+			msg.QueueJob.JobTypeName = string(nameBytes)
+		}
+	case CommandTypeSetLabor:
+		if err := binary.Read(buf, binary.BigEndian, &msg.SetLabor.UnitID); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.SetLabor.LaborID); err != nil {
+			return nil, err
+		}
+		var enable uint8
+		if err := binary.Read(buf, binary.BigEndian, &enable); err != nil {
+			return nil, err
+		}
+		msg.SetLabor.Enable = enable != 0
 	case CommandTypeBlueprint:
 		// Read blueprint name (2 bytes length + N bytes name)
 		var nameLen uint16
