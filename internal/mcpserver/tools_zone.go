@@ -144,7 +144,7 @@ func registerZoneTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "designate_zone",
-		Description: "Designate a civzone rectangle over EXISTING built/carved floor on one z-level — zones claim space, they don't dig it (dig with designate_dig first). Assignment support varies by type: assign_zone works for bedroom/office/tomb/dining_hall (single owner) and pen/pond (animal roster); the other types designate and list fine but cannot be assigned yet (barracks needs squad tooling; the rest have no confirmed DFHack assignment mechanism).",
+		Description: "Designate a civzone rectangle over EXISTING built/carved floor on one z-level — zones claim space, they don't dig it (dig with designate_dig first). Assignment support varies by type: assign_zone works for bedroom/office/tomb/dining_hall (single owner) and pen/pond/dormitory (roster); meeting_hall/archery_range/dungeon/animal_training use a different, non-unit mechanism (see assign_zone's own errors for specifics); the remaining types designate and list fine but have no confirmed DFHack assignment mechanism yet.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in designateZoneIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -166,7 +166,7 @@ func registerZoneTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "assign_zone",
-		Description: "Assign a unit to the zone at a tile (any tile inside the zone's footprint — see list_zones for extents). Owner-type zones (bedroom/office/tomb/dining_hall) get a single owner; roster-type zones (pen/pond) get an animal added to the roster. Other zone types return a clear error naming why assignment isn't supported yet.",
+		Description: "Assign a unit to the zone at a tile (any tile inside the zone's footprint — see list_zones for extents). Owner-type zones (bedroom/office/tomb/dining_hall) get a single owner; roster-type zones (pen/pond/dormitory) get a unit added to the roster. Other zone types return a clear error naming the real reason (a different mechanism entirely, or genuinely not yet confirmed).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in assignZoneIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
