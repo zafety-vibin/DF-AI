@@ -26,6 +26,7 @@ Volumetric/ASCII-3D renderings are rejected on evidence: grid-reading accuracy c
 - The glyph legend is defined once (`internal/mapview.Legend`, mirrored by the plugin's `classifyTile`) — keep them in sync; every crop ships the legend.
 - Grass vs stone vs soil vs mineral distinctions come from DFHack's material classification. If a new tile kind renders wrongly, fix `classifyTile` in `dfhack-plugin/queries.cpp`, not the renderer.
 - The z-axis runs UP (higher z = sky). Surface ≈ the dwarves' embark level. 1200 ticks = 1 game day.
+- **Citizens and fort-controlled animals are different entity types, classified in that order.** A tame pet or pack animal is fort-controlled just like a citizen is (DF's own `isFortControlled` check doesn't distinguish them), so the plugin checks animal-ness before falling back to the broader fort-controlled branch. `EntitySnapshot` keeps `Dwarves`/`Animals`/`Enemies`/`Other` as separate slices; any per-dwarf math must read `Dwarves` only — folding the fort's total unit count in inflates every per-dwarf denominator.
 
 ## Stair-kind rule
 
