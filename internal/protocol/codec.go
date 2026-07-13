@@ -928,6 +928,40 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		if err := binary.Write(w, binary.BigEndian, msg.UnassignZone.UnitID); err != nil {
 			return err
 		}
+	case CommandTypeCreateLocation:
+		// [2: X] [2: Y] [2: Z] [1: LocationType] [2: ProfessionLen] [N: Profession]
+		for _, v := range []int16{msg.CreateLocation.X, msg.CreateLocation.Y, msg.CreateLocation.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.CreateLocation.LocationType); err != nil {
+			return err
+		}
+		profBytes := []byte(msg.CreateLocation.Profession)
+		if err := binary.Write(w, binary.BigEndian, uint16(len(profBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(profBytes); err != nil {
+			return err
+		}
+	case CommandTypeAssignLodging:
+		// [2: TavernX] [2: TavernY] [2: TavernZ] [2: BedroomX] [2: BedroomY] [2: BedroomZ]
+		for _, v := range []int16{
+			msg.AssignLodging.TavernX, msg.AssignLodging.TavernY, msg.AssignLodging.TavernZ,
+			msg.AssignLodging.BedroomX, msg.AssignLodging.BedroomY, msg.AssignLodging.BedroomZ,
+		} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+	case CommandTypeUnassignLodging:
+		// [2: BedroomX] [2: BedroomY] [2: BedroomZ]
+		for _, v := range []int16{msg.UnassignLodging.BedroomX, msg.UnassignLodging.BedroomY, msg.UnassignLodging.BedroomZ} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
 	case CommandTypeUnsuspend:
 		// [2: X] [2: Y] [2: Z]
 		for _, v := range []int16{msg.Unsuspend.X, msg.Unsuspend.Y, msg.Unsuspend.Z} {
@@ -1140,6 +1174,41 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 		}
 		if err := binary.Read(buf, binary.BigEndian, &msg.UnassignZone.UnitID); err != nil {
 			return nil, err
+		}
+	case CommandTypeCreateLocation:
+		for _, p := range []*int16{&msg.CreateLocation.X, &msg.CreateLocation.Y, &msg.CreateLocation.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.CreateLocation.LocationType); err != nil {
+			return nil, err
+		}
+		var profLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &profLen); err != nil {
+			return nil, err
+		}
+		if profLen > 0 {
+			profBytes := make([]byte, profLen)
+			if _, err := io.ReadFull(buf, profBytes); err != nil {
+				return nil, err
+			}
+			msg.CreateLocation.Profession = string(profBytes)
+		}
+	case CommandTypeAssignLodging:
+		for _, p := range []*int16{
+			&msg.AssignLodging.TavernX, &msg.AssignLodging.TavernY, &msg.AssignLodging.TavernZ,
+			&msg.AssignLodging.BedroomX, &msg.AssignLodging.BedroomY, &msg.AssignLodging.BedroomZ,
+		} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+	case CommandTypeUnassignLodging:
+		for _, p := range []*int16{&msg.UnassignLodging.BedroomX, &msg.UnassignLodging.BedroomY, &msg.UnassignLodging.BedroomZ} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
 		}
 	case CommandTypeUnsuspend:
 		for _, p := range []*int16{&msg.Unsuspend.X, &msg.Unsuspend.Y, &msg.Unsuspend.Z} {

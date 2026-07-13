@@ -286,23 +286,26 @@ func (m *EntityUpdateMessage) Validate() error {
 
 // CommandType constants for command messages
 const (
-	CommandTypeDig            uint8 = 0x01
-	CommandTypeBuild          uint8 = 0x02
-	CommandTypeCancel         uint8 = 0x03
-	CommandTypeChop           uint8 = 0x04
-	CommandTypeGather         uint8 = 0x05
-	CommandTypeZone           uint8 = 0x06 // Designate zones (bedroom, dining, etc.)
-	CommandTypeBlueprint      uint8 = 0x07 // Feature 007: Apply blueprint pattern with zones
-	CommandTypeUnsuspend      uint8 = 0x08 // Clear suspend flag on a building's jobs
-	CommandTypeWorkOrder      uint8 = 0x09 // Add a manager work order
-	CommandTypeStockpile      uint8 = 0x0A // Designate a stockpile zone with category flags
-	CommandTypeSmooth         uint8 = 0x0B // Designate stone tiles for smoothing or engraving
-	CommandTypePause          uint8 = 0x0C // pause/unpause/step simulation control
-	CommandTypeRemoveBuilding uint8 = 0x0D // Mark the building at a tile for deconstruction
-	CommandTypeQueueJob       uint8 = 0x0E // Queue a job directly at an existing workshop (no manager/office needed)
-	CommandTypeSetLabor       uint8 = 0x0F // Enable/disable one labor on a unit
-	CommandTypeAssignZone     uint8 = 0x10 // Assign a unit to the zone at a tile (owner or roster, depending on zone type)
-	CommandTypeUnassignZone   uint8 = 0x11 // Remove a unit's zone assignment
+	CommandTypeDig             uint8 = 0x01
+	CommandTypeBuild           uint8 = 0x02
+	CommandTypeCancel          uint8 = 0x03
+	CommandTypeChop            uint8 = 0x04
+	CommandTypeGather          uint8 = 0x05
+	CommandTypeZone            uint8 = 0x06 // Designate zones (bedroom, dining, etc.)
+	CommandTypeBlueprint       uint8 = 0x07 // Feature 007: Apply blueprint pattern with zones
+	CommandTypeUnsuspend       uint8 = 0x08 // Clear suspend flag on a building's jobs
+	CommandTypeWorkOrder       uint8 = 0x09 // Add a manager work order
+	CommandTypeStockpile       uint8 = 0x0A // Designate a stockpile zone with category flags
+	CommandTypeSmooth          uint8 = 0x0B // Designate stone tiles for smoothing or engraving
+	CommandTypePause           uint8 = 0x0C // pause/unpause/step simulation control
+	CommandTypeRemoveBuilding  uint8 = 0x0D // Mark the building at a tile for deconstruction
+	CommandTypeQueueJob        uint8 = 0x0E // Queue a job directly at an existing workshop (no manager/office needed)
+	CommandTypeSetLabor        uint8 = 0x0F // Enable/disable one labor on a unit
+	CommandTypeAssignZone      uint8 = 0x10 // Assign a unit to the zone at a tile (owner or roster, depending on zone type)
+	CommandTypeUnassignZone    uint8 = 0x11 // Remove a unit's zone assignment
+	CommandTypeCreateLocation  uint8 = 0x12 // Convert a MeetingHall civzone into a Location (Tavern/Temple/Library/Guildhall)
+	CommandTypeAssignLodging   uint8 = 0x13 // Link a Bedroom civzone as guest lodging for a Tavern Location
+	CommandTypeUnassignLodging uint8 = 0x14 // Remove a Bedroom civzone from lodging duty
 )
 
 // Labor constants for the SET_LABOR command. The value IS the real
@@ -413,6 +416,17 @@ const (
 	ZoneTypeClayCollection uint8 = 0x10 // Unconfirmed
 	ZoneTypeDungeon        uint8 = 0x11 // Unconfirmed
 	ZoneTypeAnimalTraining uint8 = 0x12 // Unconfirmed
+)
+
+// LocationType constants -- DF-AI's own wire values for
+// df::abstract_building_type's INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL.
+// A Location is created FROM an existing MeetingHall civzone via
+// create_location, not designated directly.
+const (
+	LocationTypeTavern    uint8 = 0x01
+	LocationTypeTemple    uint8 = 0x02
+	LocationTypeLibrary   uint8 = 0x03
+	LocationTypeGuildhall uint8 = 0x04 // requires CreateLocationDesignation.Profession
 )
 
 // OrderType constants for manager work orders.
@@ -550,6 +564,29 @@ type UnassignZoneDesignation struct {
 	UnitID  int32
 }
 
+// CreateLocationDesignation targets the MeetingHall civzone at (X,Y,Z)
+// and converts it into a Location of LocationType. Profession is
+// required only when LocationType is LocationTypeGuildhall.
+type CreateLocationDesignation struct {
+	X, Y, Z      int16
+	LocationType uint8
+	Profession   string
+}
+
+// AssignLodgingDesignation links the Bedroom civzone at
+// (BedroomX,BedroomY,BedroomZ) as guest lodging inside the Tavern
+// Location founded by the civzone at (TavernX,TavernY,TavernZ).
+type AssignLodgingDesignation struct {
+	TavernX, TavernY, TavernZ    int16
+	BedroomX, BedroomY, BedroomZ int16
+}
+
+// UnassignLodgingDesignation removes the Bedroom civzone at
+// (BedroomX,BedroomY,BedroomZ) from whichever tavern it's lodging for.
+type UnassignLodgingDesignation struct {
+	BedroomX, BedroomY, BedroomZ int16
+}
+
 // UnsuspendDesignation represents a single-tile unsuspend command, used to
 // resume a stalled construction (wall placement, building, etc.) after the
 // agent has cleared whatever blocker caused DF to auto-suspend it.
@@ -668,6 +705,10 @@ type CommandMessage struct {
 	AssignZone   AssignZoneDesignation     // For ASSIGN_ZONE commands
 	UnassignZone UnassignZoneDesignation   // For UNASSIGN_ZONE commands
 
+	CreateLocation  CreateLocationDesignation  // For CREATE_LOCATION commands
+	AssignLodging   AssignLodgingDesignation   // For ASSIGN_LODGING commands
+	UnassignLodging UnassignLodgingDesignation // For UNASSIGN_LODGING commands
+
 	// Feature 007: Blueprint command fields
 	BlueprintName string // For BLUEPRINT: blueprint filename (without .csv)
 	OriginX       int16  // For BLUEPRINT: placement X coordinate
@@ -679,7 +720,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeUnassignZone {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeUnassignLodging {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 

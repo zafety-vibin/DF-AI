@@ -107,3 +107,91 @@ func TestEntityUpdateMessage_NoZonesDecodesEmpty(t *testing.T) {
 		t.Fatalf("expected 0 zones, got %d", len(decoded.Zones))
 	}
 }
+
+func TestLocationTypeConstants_MatchThePlanTable(t *testing.T) {
+	cases := map[uint8]uint8{
+		LocationTypeTavern: 0x01, LocationTypeTemple: 0x02,
+		LocationTypeLibrary: 0x03, LocationTypeGuildhall: 0x04,
+	}
+	for got, want := range cases {
+		if got != want {
+			t.Errorf("constant value mismatch: got 0x%02X, want 0x%02X", got, want)
+		}
+	}
+}
+
+func TestEncodeDecodeCreateLocationCommand(t *testing.T) {
+	msg := &CommandMessage{
+		CommandID:      1,
+		CommandType:    CommandTypeCreateLocation,
+		CreateLocation: CreateLocationDesignation{X: 10, Y: 20, Z: 90, LocationType: LocationTypeGuildhall, Profession: "CARPENTER"},
+	}
+	encoded, err := EncodeCommand(msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DecodeCommand(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.CreateLocation != msg.CreateLocation {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", decoded.CreateLocation, msg.CreateLocation)
+	}
+}
+
+func TestEncodeDecodeCreateLocationCommand_NoProfession(t *testing.T) {
+	msg := &CommandMessage{
+		CommandID:      2,
+		CommandType:    CommandTypeCreateLocation,
+		CreateLocation: CreateLocationDesignation{X: 5, Y: 5, Z: 90, LocationType: LocationTypeTavern, Profession: ""},
+	}
+	encoded, err := EncodeCommand(msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DecodeCommand(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.CreateLocation.Profession != "" {
+		t.Fatalf("expected empty profession, got %q", decoded.CreateLocation.Profession)
+	}
+}
+
+func TestEncodeDecodeAssignLodgingCommand(t *testing.T) {
+	msg := &CommandMessage{
+		CommandID:     3,
+		CommandType:   CommandTypeAssignLodging,
+		AssignLodging: AssignLodgingDesignation{TavernX: 1, TavernY: 2, TavernZ: 3, BedroomX: 4, BedroomY: 5, BedroomZ: 6},
+	}
+	encoded, err := EncodeCommand(msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DecodeCommand(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.AssignLodging != msg.AssignLodging {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", decoded.AssignLodging, msg.AssignLodging)
+	}
+}
+
+func TestEncodeDecodeUnassignLodgingCommand(t *testing.T) {
+	msg := &CommandMessage{
+		CommandID:       4,
+		CommandType:     CommandTypeUnassignLodging,
+		UnassignLodging: UnassignLodgingDesignation{BedroomX: 4, BedroomY: 5, BedroomZ: 6},
+	}
+	encoded, err := EncodeCommand(msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DecodeCommand(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.UnassignLodging != msg.UnassignLodging {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", decoded.UnassignLodging, msg.UnassignLodging)
+	}
+}
