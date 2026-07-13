@@ -427,6 +427,10 @@ static std::string handleListBuildings(const std::string &args, uint8_t &status)
            << ",\"x\":" << jsonInt(b->centerx)
            << ",\"y\":" << jsonInt(b->centery)
            << ",\"z\":" << jsonInt(b->z)
+           << ",\"x1\":" << jsonInt(b->x1)
+           << ",\"y1\":" << jsonInt(b->y1)
+           << ",\"x2\":" << jsonInt(b->x2)
+           << ",\"y2\":" << jsonInt(b->y2)
            << ",\"stage\":" << jsonInt(stage)
            << ",\"max_stage\":" << jsonInt(maxStage)
            << ",\"done\":" << (stage == maxStage ? "true" : "false")
@@ -623,7 +627,8 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
     std::string designated = "[";
     std::string water = "[";
     std::string aquifer = "[";
-    int desCount = 0, waterCount = 0, aquiferCount = 0;
+    std::string designationKinds = "[";
+    int desCount = 0, waterCount = 0, aquiferCount = 0, kindCount = 0;
     for (int16_t y = (int16_t)y1; y <= (int16_t)y2; y++) {
         std::string row;
         for (int16_t x = (int16_t)x1; x <= (int16_t)x2; x++) {
@@ -635,6 +640,36 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
                 if (desCount) designated += ",";
                 designated += "[" + jsonInt(x) + "," + jsonInt(y) + "]";
                 desCount++;
+
+                // Kind detail for the designations lens. Smooth/engrave
+                // (des.bits.smooth) is orthogonal to the dig-designation
+                // enum, so it's checked separately and takes priority in
+                // the rendered kind when both are set (a tile can be
+                // marked both dig AND smooth simultaneously in DF, but
+                // the "what am I about to become" question the lens
+                // answers is dominated by whichever finishes first —
+                // smooth only applies to already-carved floor, so a tile
+                // with des.bits.dig != No hasn't been carved yet and
+                // smooth wouldn't apply; this branch order is defensive,
+                // not load-bearing, given that constraint).
+                int kind = 0; // Default (dig)
+                switch (des.bits.dig) {
+                    case df::tile_dig_designation::Channel: kind = 1; break;
+                    case df::tile_dig_designation::Ramp: kind = 2; break;
+                    case df::tile_dig_designation::UpStair:
+                    case df::tile_dig_designation::DownStair:
+                    case df::tile_dig_designation::UpDownStair: kind = 3; break;
+                    default: kind = 0; break;
+                }
+                if (kindCount < 200) {
+                    if (kindCount) designationKinds += ",";
+                    designationKinds += "[" + jsonInt(x) + "," + jsonInt(y) + "," + jsonInt(kind) + "]";
+                    kindCount++;
+                }
+            } else if (des.bits.smooth && kindCount < 200) {
+                if (kindCount) designationKinds += ",";
+                designationKinds += "[" + jsonInt(x) + "," + jsonInt(y) + ",4]"; // smooth/engrave
+                kindCount++;
             }
             // Visible water only — hidden pockets stay under fog, matching
             // the '?' the grid shows for the same tile.
@@ -657,11 +692,12 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
         if (y != (int16_t)y1) rows += ",";
         rows += jsonStr(row);
     }
-    rows += "]"; designated += "]"; water += "]"; aquifer += "]";
+    rows += "]"; designated += "]"; water += "]"; aquifer += "]"; designationKinds += "]";
     status = QUERY_STATUS_SUCCESS;
     return "{\"z\":" + jsonInt(z) + ",\"x1\":" + jsonInt(x1) + ",\"y1\":" + jsonInt(y1) +
            ",\"rows\":" + rows + ",\"designated\":" + designated +
-           ",\"water\":" + water + ",\"aquifer\":" + aquifer + "}";
+           ",\"water\":" + water + ",\"aquifer\":" + aquifer +
+           ",\"designation_kinds\":" + designationKinds + "}";
 }
 
 static std::string queryColumnProfile(const std::string &args, uint8_t &status) {
