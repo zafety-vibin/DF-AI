@@ -10,12 +10,17 @@
 #include "df/unit.h"
 #include "df/historical_entity.h"
 #include "df/global_objects.h"
+#include "df/building_civzonest.h"
+#include "df/building_type.h"
 
 #include <algorithm>
 #include <vector>
 #include <cstring>
 
 using namespace DFHack;
+
+// Forward declaration -- implemented in zones.cpp.
+uint8_t wireFromCivzoneType(df::civzone_type t);
 
 // EntityInfo structure (13 bytes per entity)
 // Matches protocol.EntityInfo in Go:
@@ -223,6 +228,70 @@ std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &enti
             buffer.push_back(year & 0xFF);
         } else {
             buffer.push_back(0);  // HasFortInfo=0 — calendar globals unavailable
+        }
+    }
+
+    // Zone block -- additive, appended after FortInfo. An old decoder
+    // simply stops reading at the end of the FortInfo block and never
+    // sees these bytes; this is the same additive-optional pattern
+    // FortInfo itself already established.
+    // [1: HasZones][4: ZoneCount][N x ZoneEntry], ZoneEntry =
+    // [4: BuildingID][1: WireKind][2: X1][2: Y1][2: X2][2: Y2][2: Z]
+    // [4: OwnerUnitID][2: AssignedCount][4xAssignedCount: AssignedUnitID]
+    {
+        CoreSuspender suspend;
+        std::vector<df::building_civzonest*> zonesToSend;
+        for (auto *b : df::global::world->buildings.all) {
+            if (!b || b->getType() != df::building_type::Civzone) continue;
+            auto *cz = strict_virtual_cast<df::building_civzonest>(b);
+            if (!cz) continue;
+            if (wireFromCivzoneType(cz->type) == 0) continue; // not fortress-relevant
+            zonesToSend.push_back(cz);
+            if (zonesToSend.size() >= 200) break; // matches list_zones' cap
+        }
+
+        buffer.push_back(1); // HasZones
+        uint32_t zoneCount = (uint32_t)zonesToSend.size();
+        buffer.push_back((zoneCount >> 24) & 0xFF);
+        buffer.push_back((zoneCount >> 16) & 0xFF);
+        buffer.push_back((zoneCount >> 8) & 0xFF);
+        buffer.push_back(zoneCount & 0xFF);
+
+        for (auto *cz : zonesToSend) {
+            df::building *b = cz;
+            uint32_t id = (uint32_t)b->id;
+            buffer.push_back((id >> 24) & 0xFF);
+            buffer.push_back((id >> 16) & 0xFF);
+            buffer.push_back((id >> 8) & 0xFF);
+            buffer.push_back(id & 0xFF);
+
+            buffer.push_back(wireFromCivzoneType(cz->type));
+
+            // building's x1/y1/x2/y2/z are int32_t; narrow explicitly (a
+            // braced-init narrowing conversion is a hard error under this
+            // build's /WX, unlike the plain-assignment case).
+            int16_t coords[5] = {(int16_t)b->x1, (int16_t)b->y1,
+                                  (int16_t)b->x2, (int16_t)b->y2, (int16_t)b->z};
+            for (int16_t c : coords) {
+                buffer.push_back((c >> 8) & 0xFF);
+                buffer.push_back(c & 0xFF);
+            }
+
+            int32_t owner = cz->assigned_unit_id;
+            buffer.push_back((owner >> 24) & 0xFF);
+            buffer.push_back((owner >> 16) & 0xFF);
+            buffer.push_back((owner >> 8) & 0xFF);
+            buffer.push_back(owner & 0xFF);
+
+            uint16_t assignedCount = (uint16_t)cz->assigned_units.size();
+            buffer.push_back((assignedCount >> 8) & 0xFF);
+            buffer.push_back(assignedCount & 0xFF);
+            for (int32_t uid : cz->assigned_units) {
+                buffer.push_back((uid >> 24) & 0xFF);
+                buffer.push_back((uid >> 16) & 0xFF);
+                buffer.push_back((uid >> 8) & 0xFF);
+                buffer.push_back(uid & 0xFF);
+            }
         }
     }
 
