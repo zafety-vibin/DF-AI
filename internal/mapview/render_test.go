@@ -236,3 +236,34 @@ func TestRenderColumnFluids(t *testing.T) {
 		t.Fatalf("hidden marker lost on annotated level: %q", lines[2])
 	}
 }
+
+func TestRenderElevation_XAxisSweep(t *testing.T) {
+	col1 := &ColumnProfile{X: 10, Y: 50, Levels: []ColumnLevel{
+		{Z: 100, Glyph: ".", Shape: "floor", Material: "grass"},
+		{Z: 99, Glyph: "#", Shape: "wall", Material: "stone"},
+	}}
+	col2 := &ColumnProfile{X: 11, Y: 50, Levels: []ColumnLevel{
+		{Z: 100, Glyph: "?", Shape: "wall", Material: "soil", Hidden: true},
+		{Z: 99, Glyph: "#", Shape: "wall", Material: "stone"},
+	}}
+	out := RenderElevation([]*ColumnProfile{col1, col2}, "x", 50)
+	if !strings.Contains(out, "elevation along x=10..11 at y=50") {
+		t.Fatalf("missing header:\n%s", out)
+	}
+	lines := strings.Split(out, "\n")
+	var z100Line, z99Line string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "z=100 ") {
+			z100Line = l
+		}
+		if strings.HasPrefix(l, "z=99 ") {
+			z99Line = l
+		}
+	}
+	if !strings.Contains(z100Line, ".?") {
+		t.Fatalf("z=100 row must read '.?' (col1 floor, col2 hidden wall):\n%s", z100Line)
+	}
+	if !strings.Contains(z99Line, "##") {
+		t.Fatalf("z=99 row must read '##':\n%s", z99Line)
+	}
+}

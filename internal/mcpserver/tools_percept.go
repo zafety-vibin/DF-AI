@@ -105,6 +105,72 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 		return withDash(b, ctx, mapview.RenderColumn(c, surfaceZ)), nil, nil
 	})
 
+	type elevationIn struct {
+		Axis    string `json:"axis" jsonschema:"x|y — sweep across x at fixed y, or across y at fixed x"`
+		X       int    `json:"x,omitempty" jsonschema:"required when axis=y: the fixed x"`
+		Y       int    `json:"y,omitempty" jsonschema:"required when axis=x: the fixed y"`
+		X1      int    `json:"x1,omitempty" jsonschema:"required when axis=x: sweep start x"`
+		X2      int    `json:"x2,omitempty" jsonschema:"required when axis=x: sweep end x"`
+		Y1      int    `json:"y1,omitempty" jsonschema:"required when axis=y: sweep start y"`
+		Y2      int    `json:"y2,omitempty" jsonschema:"required when axis=y: sweep end y"`
+		ZTop    int    `json:"z_top" jsonschema:"top z"`
+		ZBottom int    `json:"z_bottom" jsonschema:"bottom z"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "elevation_view",
+		Description: "Vertical slice along a LINE (not a single column like cross_section) — the third orthogonal plane. axis=x sweeps across x at a fixed y; axis=y sweeps across y at a fixed x. Bounded to 30 columns per call (matches look's radius cap) to keep the underlying column_profile calls bounded.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in elevationIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		const maxSweep = 30
+		var coords []int16
+		switch in.Axis {
+		case "x":
+			if in.X2 < in.X1 {
+				return withDash(b, ctx, "axis=x requires x1<=x2"), nil, nil
+			}
+			if in.X2-in.X1+1 > maxSweep {
+				return withDash(b, ctx, fmt.Sprintf("sweep too wide: %d columns, max %d", in.X2-in.X1+1, maxSweep)), nil, nil
+			}
+			for x := in.X1; x <= in.X2; x++ {
+				coords = append(coords, int16(x))
+			}
+		case "y":
+			if in.Y2 < in.Y1 {
+				return withDash(b, ctx, "axis=y requires y1<=y2"), nil, nil
+			}
+			if in.Y2-in.Y1+1 > maxSweep {
+				return withDash(b, ctx, fmt.Sprintf("sweep too wide: %d columns, max %d", in.Y2-in.Y1+1, maxSweep)), nil, nil
+			}
+			for y := in.Y1; y <= in.Y2; y++ {
+				coords = append(coords, int16(y))
+			}
+		default:
+			return withDash(b, ctx, fmt.Sprintf("unknown axis %q — use x or y", in.Axis)), nil, nil
+		}
+
+		var columns []*mapview.ColumnProfile
+		for _, coord := range coords {
+			var c *mapview.ColumnProfile
+			var err error
+			if in.Axis == "x" {
+				c, err = b.ColumnProfile(ctx, coord, int16(in.Y), int16(in.ZTop), int16(in.ZBottom))
+			} else {
+				c, err = b.ColumnProfile(ctx, int16(in.X), coord, int16(in.ZTop), int16(in.ZBottom))
+			}
+			if err != nil {
+				return withDash(b, ctx, fmt.Sprintf("elevation_view failed at column %d: %v", coord, err)), nil, nil
+			}
+			columns = append(columns, c)
+		}
+		fixed := int16(in.Y)
+		if in.Axis == "y" {
+			fixed = int16(in.X)
+		}
+		return withDash(b, ctx, mapview.RenderElevation(columns, in.Axis, fixed)), nil, nil
+	})
+
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "survey_site",
 		Description: "Embark orientation report: map dimensions, surface z, dwarf cluster, sampled soil/stone stratigraphy, surface vegetation. Call FIRST on any new fort or after reconnecting.",

@@ -140,3 +140,55 @@ func RenderColumn(c *ColumnProfile, surfaceZ int16) string {
 	}
 	return sb.String()
 }
+
+// RenderElevation renders a vertical slice along a line (the third
+// orthogonal plane, alongside look's plan view and cross_section's
+// single-column bore) — one row per Z, one glyph column per swept
+// x (or y) position. Reuses each ColumnProfile's own per-level
+// classification (shape/material/hidden/fluids), matching cross_section's
+// existing rendering exactly, just composed across a line instead of a
+// single point.
+//
+// columns must all share the same Z range and be pre-sorted by the swept
+// coordinate (ascending) — RenderElevation does not sort or validate
+// this; the caller (tools_percept.go's elevation_view handler) builds
+// them in sweep order.
+func RenderElevation(columns []*ColumnProfile, axis string, fixed int16) string {
+	if len(columns) == 0 {
+		return "no columns to render"
+	}
+	var sb strings.Builder
+	first, last := columns[0], columns[len(columns)-1]
+	if axis == "x" {
+		fmt.Fprintf(&sb, "elevation along x=%d..%d at y=%d, top to bottom:\n", first.X, last.X, fixed)
+	} else {
+		fmt.Fprintf(&sb, "elevation along y=%d..%d at x=%d, top to bottom:\n", first.Y, last.Y, fixed)
+	}
+
+	// Index each column's levels by Z for row-major access.
+	byZ := make([]map[int16]ColumnLevel, len(columns))
+	for i, c := range columns {
+		m := make(map[int16]ColumnLevel, len(c.Levels))
+		for _, lv := range c.Levels {
+			m[lv.Z] = lv
+		}
+		byZ[i] = m
+	}
+
+	// All columns are expected to share the same Z range (same z_top/z_bottom
+	// request) — use the first column's levels to drive row order.
+	for _, lv0 := range columns[0].Levels {
+		fmt.Fprintf(&sb, "z=%d ", lv0.Z)
+		for i := range columns {
+			lv, ok := byZ[i][lv0.Z]
+			if !ok {
+				sb.WriteString("?")
+				continue
+			}
+			sb.WriteString(lv.Glyph)
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\nlegend: " + Legend + "\n")
+	return sb.String()
+}

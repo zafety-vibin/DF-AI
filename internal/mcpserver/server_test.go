@@ -47,6 +47,7 @@ var minToolArgs = map[string]map[string]any{
 	"jobs":               {"x": 1, "y": 1, "z": 1},
 	"look":               {"x": 10, "y": 10, "z": 100},
 	"cross_section":      {"x": 10, "y": 10},
+	"elevation_view":     {"axis": "x", "x1": 0, "x2": 2, "y": 1, "z_top": 5, "z_bottom": 0},
 	"find_dig_site":      {"width": 3, "height": 3, "z": 90, "near_x": 10, "near_y": 10},
 	"designate_dig":      {"type": "default", "x1": 1, "y1": 1, "z1": 1, "x2": 2, "y2": 2, "z2": 1},
 	"build":              {"type": "bed", "x": 1, "y": 1, "z": 1},
