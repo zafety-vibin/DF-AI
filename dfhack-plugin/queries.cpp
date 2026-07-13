@@ -52,6 +52,10 @@
 #include "df/tile_designation.h"
 #include "df/plotinfost.h"
 #include "df/building_civzonest.h"
+#include "df/world_site.h"
+#include "df/abstract_building.h"
+#include "df/abstract_building_inn_tavernst.h"
+#include "df/rental_roomst.h"
 
 #include "protocol.h"
 
@@ -498,6 +502,76 @@ static std::string handleListZones(const std::string &args, uint8_t &status) {
     return os.str();
 }
 
+// Forward declaration -- implemented in locations.cpp (Task 1).
+uint8_t wireFromAbstractBuildingType(df::abstract_building_type t);
+
+static std::string handleListLocations(const std::string &args, uint8_t &status) {
+    if (!df::global::world || !df::global::plotinfo) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("world is null");
+    }
+    df::world_site *site = df::world_site::find(df::global::plotinfo->site_id);
+    if (!site) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("could not resolve the current site");
+    }
+
+    std::ostringstream os;
+    os << "{\"locations\":[";
+    int count = 0;
+    bool truncated = false;
+    for (auto *bld : site->buildings) {
+        if (!bld) continue;
+        uint8_t wireKind = wireFromAbstractBuildingType(bld->getType());
+        if (wireKind == 0) continue; // not one of the 4 supported types
+        if (count >= 200) { truncated = true; break; }
+        if (count) os << ",";
+        os << "{\"id\":" << jsonInt(bld->id)
+           << ",\"type\":" << jsonStr(ENUM_KEY_STR(abstract_building_type, bld->getType()));
+
+        // Founding civzone's extents, if resolvable. getContents() is the
+        // base class's virtual accessor -- `bld` here is the base
+        // df::abstract_building* type (site->buildings' element type),
+        // which has no `contents` field of its own (only the derived
+        // abstract_building_*st subtypes do; see locations.cpp's
+        // applyCreateLocation, which goes through this same accessor for
+        // the identical reason).
+        df::abstract_building_contents *contents = bld->getContents();
+        if (contents && !contents->building_ids.empty()) {
+            int32_t zoneID = contents->building_ids[0];
+            df::building *zone = df::building::find(zoneID);
+            if (zone) {
+                os << ",\"x1\":" << jsonInt(zone->x1) << ",\"y1\":" << jsonInt(zone->y1)
+                   << ",\"x2\":" << jsonInt(zone->x2) << ",\"y2\":" << jsonInt(zone->y2)
+                   << ",\"z\":" << jsonInt(zone->z);
+            }
+        }
+
+        // Lodging roster -- Tavern only.
+        os << ",\"lodging\":[";
+        if (bld->getType() == df::abstract_building_type::INN_TAVERN) {
+            auto *tavern = strict_virtual_cast<df::abstract_building_inn_tavernst>(bld);
+            if (tavern) {
+                for (size_t i = 0; i < tavern->room_info.size(); i++) {
+                    if (i) os << ",";
+                    auto *room = tavern->room_info[i];
+                    os << "{\"civzone_id\":" << jsonInt(room->civzone)
+                       << ",\"x\":" << jsonInt(room->world_x)
+                       << ",\"y\":" << jsonInt(room->world_y)
+                       << ",\"z\":" << jsonInt(room->world_z) << "}";
+                }
+            }
+        }
+        os << "]}";
+        count++;
+    }
+    os << "]";
+    if (truncated) os << ",\"truncated\":true";
+    os << "}";
+    status = QUERY_STATUS_SUCCESS;
+    return os.str();
+}
+
 static std::string handleStockpileInventory(const std::string &args, uint8_t &status) {
     if (!df::global::world) {
         status = QUERY_STATUS_ERROR;
@@ -847,6 +921,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = handleListBuildings(args, status);
         } else if (name == "list_zones") {
             data = handleListZones(args, status);
+        } else if (name == "list_locations") {
+            data = handleListLocations(args, status);
         } else if (name == "stockpile_inventory") {
             data = handleStockpileInventory(args, status);
         } else if (name == "sim_status") {
