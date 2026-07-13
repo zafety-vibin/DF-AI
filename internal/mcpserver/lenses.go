@@ -32,6 +32,11 @@ var lenses = map[string]LensDef{
 		Legend: "lens=designations: d dig c channel r ramp s stair m smooth — designated, not yet dug",
 		Gather: gatherDesignationsLens,
 	},
+	"zones": {
+		Name:   "zones",
+		Legend: "lens=zones: H housing (bedroom/office/tomb/dining/meeting/dormitory) K barracks A animal (pen/pond/training/archery) R resource-gather (water/dump/sand/fishing/clay/plants) J dungeon — exact owner/roster: list_zones",
+		Gather: gatherZonesLens,
+	},
 }
 
 // lensNames returns the registered lens names, sorted, for error messages.
@@ -54,6 +59,8 @@ func lensGlyphSet(name string) []rune {
 			'w', 'b', 'd', 's', 'm', 'p', 'c', 'o'} // lowercase = planned
 	case "designations":
 		return []rune{'d', 'c', 'r', 's', 'm'}
+	case "zones":
+		return []rune{'H', 'K', 'A', 'R', 'J'}
 	default:
 		return nil
 	}
@@ -198,4 +205,51 @@ func dwarfCollisionFootnote(dwarfMarks map[[2]int16]rune, lensMarks map[[2]int16
 // project's ACK/error discipline).
 func unknownLensError(name string) string {
 	return "unknown lens " + strconv.Quote(name) + " — registered lenses: " + fmt.Sprint(lensNames())
+}
+
+// zoneCategoryGlyph maps a zone type name (list_zones' "type_name" field,
+// which comes straight from DFHack's own civzone_type enum key strings)
+// to one of 5 category glyphs -- a handful of glyphs, not one per
+// civzone_type, per the project's house rule against per-type ASCII
+// budget blowout (the same philosophy buildingCategoryGlyph already
+// applies to the 52 real building_type values).
+func zoneCategoryGlyph(typeName string) rune {
+	switch typeName {
+	case "Bedroom", "Office", "Tomb", "DiningHall", "MeetingHall", "Dormitory":
+		return 'H' // housing/social
+	case "Barracks":
+		return 'K'
+	case "Pen", "Pond", "AnimalTraining", "ArcheryRange":
+		return 'A' // animal/training
+	case "WaterSource", "Dump", "SandCollection", "FishingArea", "ClayCollection", "PlantGathering":
+		return 'R' // resource-gathering
+	case "Dungeon":
+		return 'J'
+	default:
+		return 'H'
+	}
+}
+
+func gatherZonesLens(ctx context.Context, b *Bridge, s *mapview.Slice, z int16) (mapview.Overlay, error) {
+	args := fmt.Sprintf(`{"z":%d}`, z)
+	raw, err := b.Query(ctx, "list_zones", args)
+	if err != nil {
+		return mapview.Overlay{}, err
+	}
+	var resp struct {
+		Zones []zoneListEntry `json:"zones"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return mapview.Overlay{}, fmt.Errorf("zones lens: unparseable list_zones response: %w", err)
+	}
+	marks := map[[2]int16]rune{}
+	for _, zn := range resp.Zones {
+		g := zoneCategoryGlyph(zn.TypeName)
+		for x := zn.X1; x <= zn.X2; x++ {
+			for y := zn.Y1; y <= zn.Y2; y++ {
+				marks[[2]int16{int16(x), int16(y)}] = g
+			}
+		}
+	}
+	return mapview.Overlay{Marks: marks}, nil
 }

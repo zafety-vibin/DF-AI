@@ -76,6 +76,21 @@ func TestLensNamesErrorMessage(t *testing.T) {
 	}
 }
 
+func TestZoneCategoryGlyph(t *testing.T) {
+	cases := map[string]rune{
+		"Bedroom": 'H', "Office": 'H', "Tomb": 'H', "DiningHall": 'H', "MeetingHall": 'H', "Dormitory": 'H',
+		"Barracks": 'K',
+		"Pen": 'A', "Pond": 'A', "AnimalTraining": 'A', "ArcheryRange": 'A',
+		"WaterSource": 'R', "Dump": 'R', "SandCollection": 'R', "FishingArea": 'R', "ClayCollection": 'R', "PlantGathering": 'R',
+		"Dungeon": 'J',
+	}
+	for typeName, want := range cases {
+		if got := zoneCategoryGlyph(typeName); got != want {
+			t.Errorf("zoneCategoryGlyph(%q) = %q, want %q", typeName, string(got), string(want))
+		}
+	}
+}
+
 // TestDwarfCollisionFootnote covers the design doc's "never silently hide
 // a dwarf" requirement (Component 2): a lens overpainting a dwarf's tile
 // must produce a footnote in the exact quoted format ("dwarves in view: 3
