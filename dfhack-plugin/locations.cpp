@@ -265,10 +265,28 @@ bool applyAssignLodging(int16_t tavernX, int16_t tavernY, int16_t tavernZ, int16
     df::building_civzonest *bedroom = findBedroomZoneAt(bedroomX, bedroomY, bedroomZ, error);
     if (!bedroom) return false;
 
-    for (auto *room : tavern->room_info) {
-        if (room->civzone == bedroom->id) {
-            error = "this bedroom is already lodging for this tavern";
-            return false;
+    // Check every tavern at the current site, not just the target one --
+    // assign_lodging never marks the bedroom civzone itself (a bedroom is
+    // never converted into its own Location, so its location_id/site_id
+    // stay unset), so the only way to detect "already lodging elsewhere"
+    // is to scan every tavern's own room_info roster.
+    int32_t siteID = df::global::plotinfo->site_id;
+    df::world_site *site = df::world_site::find(siteID);
+    if (site) {
+        for (auto *bld : site->buildings) {
+            if (!bld || bld->getType() != df::abstract_building_type::INN_TAVERN) continue;
+            auto *otherTavern = strict_virtual_cast<df::abstract_building_inn_tavernst>(bld);
+            if (!otherTavern) continue;
+            for (auto *room : otherTavern->room_info) {
+                if (room->civzone == bedroom->id) {
+                    if (otherTavern == tavern) {
+                        error = "this bedroom is already lodging for this tavern";
+                    } else {
+                        error = "this bedroom is already lodging for a different tavern -- unassign_lodging it first";
+                    }
+                    return false;
+                }
+            }
         }
     }
 
@@ -287,13 +305,18 @@ bool applyUnassignLodging(int16_t bedroomX, int16_t bedroomY, int16_t bedroomZ, 
     df::building_civzonest *bedroom = findBedroomZoneAt(bedroomX, bedroomY, bedroomZ, error);
     if (!bedroom) return false;
 
-    if (bedroom->location_id == -1) {
-        error = "this bedroom is not lodging for any tavern";
-        return false;
-    }
-    df::world_site *site = df::world_site::find(bedroom->site_id);
+    // Fixed 2026-07-13 (final whole-branch review, Critical finding):
+    // assign_lodging never sets bedroom->location_id/site_id (those fields
+    // mean "this civzone IS a location's founding civzone", not "this
+    // civzone is registered as someone else's lodging room"), so the
+    // former fast-path guard here (bedroom->location_id == -1) was always
+    // true and made unassign_lodging permanently non-functional. Resolve
+    // the current site directly (same accessor applyCreateLocation uses)
+    // and scan every tavern's room_info -- the only real source of truth.
+    int32_t siteID = df::global::plotinfo->site_id;
+    df::world_site *site = df::world_site::find(siteID);
     if (!site) {
-        error = "could not resolve the bedroom's site";
+        error = "could not resolve the current site";
         return false;
     }
     for (auto *bld : site->buildings) {
