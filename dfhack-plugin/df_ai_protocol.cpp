@@ -16,6 +16,7 @@
 #include "df/world.h"
 #include "df/coord.h"
 #include "df/unit.h"
+#include "df/unit_labor.h"
 #include "df/tile_dig_designation.h"
 #include "df/building_civzonest.h"
 #include "df/building_type.h"
@@ -46,8 +47,9 @@ bool applyCancelDesignation(const std::vector<uint8_t> &payload, std::string &er
 bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &error);
 bool applySmoothDesignation(const std::vector<uint8_t> &payload, std::string &error);
 
-// Forward declaration for function from work_orders.cpp
+// Forward declarations for functions from work_orders.cpp
 bool applyWorkOrder(uint8_t orderType, uint16_t quantity, std::string &error);
+bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std::string &jobTypeName, std::string &error);
 
 // Forward declarations for functions from plants.cpp
 bool applyChopDesignation(int16_t x1, int16_t y1, int16_t z1, int16_t x2, int16_t y2, int16_t z2, std::string &error);
@@ -57,6 +59,7 @@ bool applyGatherDesignation(int16_t x1, int16_t y1, int16_t z1, int16_t x2, int1
 bool applyZoneDesignation(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
 bool applyUnsuspend(int16_t x, int16_t y, int16_t z, std::string &error);
 bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error);
+bool applySetLabor(int32_t unitID, uint8_t laborID, bool enable, std::string &error);
 
 // Forward declaration for function in buildings.cpp
 bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint32_t groupMask, std::string &error);
@@ -378,6 +381,69 @@ bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error)
     } else {
         error = "deconstruction queued (dwarves will dismantle)";
     }
+    return true;
+}
+
+// Enable or disable one labor on a unit.
+//
+// df::unit::status.labors is a PLAIN FIXED-SIZE C ARRAY of bool
+// (df/unit.h:374-386: `bool labors[enum_traits<unit_labor>::last_item_value+1]`,
+// size 94 per df/unit_labor.h:122) indexed directly by the unit_labor enum
+// value — not std::vector<bool>, not a bitset. The write itself is a plain
+// array assignment with NO CHECK_* macro guarding it (confirmed against
+// autolabor.cpp:622-623,690-691 and labormanager.cpp:672-673, DFHack's own
+// read/write sites for this field). Units::isValidLabor
+// (modules/Units.cpp:1379-1386) is an OPTIONAL advisory helper checking
+// entity_raw->jobs.permitted_labor — a civ-wide "is this labor allowed at
+// all" bitset, not a per-caste physical-capability check — and is not
+// enforced by the engine; manipulator.cpp:729-742 (DFHack's own bulk
+// labor-profile applier) writes status.labors for every labor with zero
+// call to isValidLabor. The one real hazard is out-of-bounds indexing
+// (undefined behavior on a raw C array): bounds-check laborID before the
+// write, mirroring labormanager.cpp:662's guard.
+//
+// Setting a labor a unit's caste can't perform is a graceful no-op — DF's
+// own job-assignment AI simply never generates/matches work for that unit
+// on that labor (same "silently skips invalid targets" principle already
+// documented at designations.cpp:426-428 for dig designations). No error,
+// no crash, just a toggle that never fires a job.
+bool applySetLabor(int32_t unitID, uint8_t laborID, bool enable, std::string &error)
+{
+    using namespace DFHack;
+
+    if (laborID > LABOR_MAX_INDEX) {
+        char buf[80];
+        snprintf(buf, sizeof(buf), "labor id %u out of range (0-%u)", (unsigned)laborID, (unsigned)LABOR_MAX_INDEX);
+        error = buf;
+        return false;
+    }
+
+    // df::unit::find binary-searches world->units.all by id
+    // (library/include/df/static.inc:1449-1456 — generated code, same
+    // pattern as df::building::find used elsewhere in DFHack: Buildings.cpp,
+    // Military.cpp, Gui.cpp, EventManager.cpp, Burrows.cpp). Returns nullptr
+    // on a lookup miss OR a missing world, never throws — no try/catch
+    // needed around this call specifically, though it still runs inside
+    // executeCommand's outer guard.
+    df::unit *u = df::unit::find(unitID);
+    if (!u) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "no unit with id %d", unitID);
+        error = buf;
+        return false;
+    }
+
+    u->status.labors[laborID] = enable;
+
+    // Leave `error` untouched on the success path — executeCommand sends it
+    // verbatim as the ACK's error text alongside ACK_STATUS_SUCCESS, and
+    // ackText() (internal/mcpserver/tools_action.go) categorizes any
+    // Success==true ACK with a non-empty ErrorMsg as PARTIAL, not SUCCESS
+    // (mirrors applyQueueJob's convention in work_orders.cpp, which returns
+    // true with `error` untouched on its success path). The Go-side tool
+    // already builds its own descriptive "set_labor <labor>=<bool> for
+    // dwarf id=<id>" text from the request, so no confirmation string is
+    // lost by staying silent here.
     return true;
 }
 
@@ -728,6 +794,50 @@ void executeCommand(const std::vector<uint8_t> &payload)
             int16_t y = ((int16_t)payload[7] << 8) | payload[8];
             int16_t z = ((int16_t)payload[9] << 8) | payload[10];
             success = applyRemoveBuilding(x, y, z, error);
+            break;
+        }
+        case COMMAND_TYPE_QUEUE_JOB: {
+            // Payload: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z] [1: OrderType]
+            //          [2: NameLen][N: Name]  -- the name tail is present
+            //          ONLY when OrderType == ORDER_TYPE_BY_NAME (0x00).
+            //          Mirrors BLUEPRINT's (case 0x07 above) trailing
+            //          length-prefixed name. Old 12-byte payloads
+            //          (OrderType 0x01-0x0C) parse exactly as before —
+            //          this is purely additive.
+            if (payload.size() < 12) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid QUEUE_JOB payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            uint8_t orderType = payload[11];
+            std::string jobTypeName;
+            if (orderType == ORDER_TYPE_BY_NAME) {
+                if (payload.size() < 14) {  // 12 existing + NameLen(2)
+                    sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid QUEUE_JOB by-name payload");
+                    return;
+                }
+                uint16_t nameLen = ((uint16_t)payload[12] << 8) | payload[13];
+                if (payload.size() < 14 + nameLen) {
+                    sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid QUEUE_JOB by-name payload size");
+                    return;
+                }
+                jobTypeName.assign(payload.begin() + 14, payload.begin() + 14 + nameLen);
+            }
+            success = applyQueueJob(x, y, z, orderType, jobTypeName, error);
+            break;
+        }
+        case COMMAND_TYPE_SET_LABOR: {
+            // Payload: [4: cmdID] [1: cmdType] [4: UnitID] [1: LaborID] [1: Enable]
+            if (payload.size() < 11) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SET_LABOR payload");
+                return;
+            }
+            int32_t unitID = (int32_t)read_uint32_be(payload, 5);
+            uint8_t laborID = payload[9];
+            bool enable = payload[10] != 0;
+            success = applySetLabor(unitID, laborID, enable, error);
             break;
         }
         default:

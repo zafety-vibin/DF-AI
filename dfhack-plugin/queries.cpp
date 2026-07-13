@@ -40,6 +40,7 @@
 #include "df/manager_order.h"
 #include "df/manager_order_status.h"
 #include "df/unit.h"
+#include "df/unit_labor.h"
 #include "df/unit_soul.h"
 #include "df/unit_skill.h"
 #include "df/job_skill.h"
@@ -140,11 +141,25 @@ static int64_t jsonGetInt(const std::string &args, const std::string &key, int64
 // string and sets `status` (QUERY_STATUS_*).
 // ---------------------------------------------------------------------------
 
+// handleListOrders is the discovery half of generalized item construction:
+// queue_job's ORDER_TYPE_BY_NAME path (work_orders.cpp:
+// resolveJobTypeByName, via DFHack's find_enum_item<df::job_type>) accepts
+// ANY of the names this enumerates, verbatim, with no C++ whitelist — this
+// query is how the model finds a name it doesn't already know without a
+// plugin rebuild. Exposed on the Go side as the standalone `job_types` tool
+// (NOT folded into order/queue_job/orders — those stay cheap on every
+// call; see internal/mcpserver/tools_state.go).
 static std::string handleListOrders(const std::string &args, uint8_t &status) {
-    // Walks df::job_type enum. Returns name + a coarse category for
-    // filtering. Categories are heuristic — when DFHack adds
-    // job_type::is_designation_job() or similar helpers, swap to those.
+    // filter is an optional case-insensitive SUBSTRING match against the
+    // job type NAME (e.g. filter="hatch" finds ConstructHatchCover among
+    // ~240 entries) — mirrors the stocks tool's category param
+    // (handleStockpileInventory above: substring match on item type name).
+    // category below is a separate, heuristic string-matching
+    // classification kept for readability in the response; it is NOT used
+    // for filtering.
     std::string filter = jsonGetString(args, "filter");
+    std::string lfilter = filter;
+    for (auto &c : lfilter) c = tolower(c);
 
     std::ostringstream os;
     os << "{\"orders\":[";
@@ -155,12 +170,19 @@ static std::string handleListOrders(const std::string &args, uint8_t &status) {
     // If unavailable, hard-cap at 300 to be safe.
     int maxJob = 300;
     for (int i = 0; i < maxJob; i++) {
-        const char *name = ENUM_KEY_STR(job_type, (df::job_type)i).c_str();
-        if (!name || strlen(name) == 0) continue;
+        // Own the string (not a .c_str() pointer into it): ENUM_KEY_STR
+        // returns a temporary std::string, and a raw pointer into that
+        // temporary dangles the instant this statement ends — every use
+        // below (strlen/lname copy/jsonStr) would be undefined behavior.
+        std::string name = ENUM_KEY_STR(job_type, (df::job_type)i);
+        if (name.empty()) continue;
 
-        std::string category = "other";
         std::string lname = name;
         for (auto &c : lname) c = tolower(c);
+
+        if (!lfilter.empty() && lname.find(lfilter) == std::string::npos) continue;
+
+        std::string category = "other";
         if (lname.find("construct") != std::string::npos &&
             (lname.find("bed") != std::string::npos ||
              lname.find("table") != std::string::npos ||
@@ -185,7 +207,6 @@ static std::string handleListOrders(const std::string &args, uint8_t &status) {
             category = "raw";
         }
 
-        if (!filter.empty() && category != filter) continue;
         if (!first) os << ",";
         first = false;
         os << "{\"id\":" << i
@@ -295,6 +316,21 @@ static std::string handleDwarfDetail(const std::string &args, uint8_t &status) {
 
     // Mood — very coarse. VERIFY: u->mood is an enum in recent versions.
     os << ",\"mood\":" << jsonInt((int)u->mood);
+
+    // Currently-enabled labors — status.labors is a fixed C array of bool
+    // indexed 0..LABOR_MAX_INDEX by the unit_labor enum (df/unit.h:374-386,
+    // df/unit_labor.h:122). Surfaced so set_labor callers can see current
+    // state before changing it (see protocol.h LABOR_* for the same
+    // indices the set_labor command accepts).
+    os << ",\"labors\":[";
+    bool firstLabor = true;
+    for (int i = 0; i <= LABOR_MAX_INDEX; i++) {
+        if (!u->status.labors[i]) continue;
+        if (!firstLabor) os << ",";
+        firstLabor = false;
+        os << jsonStr(ENUM_KEY_STR(unit_labor, (df::unit_labor)i));
+    }
+    os << "]";
 
     os << "}";
     status = QUERY_STATUS_SUCCESS;

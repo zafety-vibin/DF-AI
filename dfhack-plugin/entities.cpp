@@ -48,7 +48,7 @@ std::vector<EntityInfo> extract_entities()
     auto &units = df::global::world->units.active;
 
     // Debug counters
-    int total = 0, citizens = 0, fort_controlled = 0, hostile = 0, other = 0;
+    int total = 0, citizens = 0, fort_controlled = 0, hostile = 0, animals = 0, other = 0;
 
     for (auto unit : units) {
         if (!unit) continue;
@@ -65,27 +65,60 @@ std::vector<EntityInfo> extract_entities()
         entity.z = unit->pos.z;
         entity.subtype = unit->race;
 
-        // Classify with debug output for first 3 units
+        // Classify with debug output for first 3 units.
+        //
+        // Census bug (fixed): Units::isFortControlled() returns true for
+        // ANY tame unit — its own doc comment says "Similar to isCitizen,
+        // but includes tame animals" (Units.h:83), and Units.cpp:182-183
+        // short-circuits `else if (unit->flags1.bits.tame) return true;`
+        // before ever checking isOwnGroup/isOwnCiv. Every pet, pack animal,
+        // and piece of livestock at the fort is fort-controlled AND tame,
+        // so without the isAnimal() check below they fell into the
+        // is_fort_ctrl branch and were stamped ENTITY_TYPE_DWARF right
+        // alongside real citizens — inflating dwarf counts (and anything
+        // downstream that divides by them, e.g. has_shelter_N_per_dwarf)
+        // by the animal population. Units::isCitizen() is the correct
+        // citizen-only check (isOwnGroup walks the historical figure's
+        // entity_links for a MEMBER link to plotinfo->group_id — animals
+        // essentially never have one, Units.cpp:194-205); isFortControlled
+        // is only for "should this unit react to the fort's alerts/orders"
+        // (ambusher visibility etc.), a broader set that legitimately
+        // includes tame animals. Reference: dwarfmonitor.cpp:1315,
+        // stocks.cpp:1045, preserve-rooms.cpp:333 all gate on isCitizen for
+        // this exact "real dwarf" question.
         bool is_citizen = Units::isCitizen(unit);
         bool is_fort_ctrl = Units::isFortControlled(unit);
+        bool is_animal = Units::isAnimal(unit);
 
         if (total <= 3) {
-            console.print("Unit %d: civ_id=%d, citizen=%d, fort_ctrl=%d, race=%d\n",
-                unit->id, unit->civ_id, is_citizen, is_fort_ctrl, unit->race);
+            console.print("Unit %d: civ_id=%d, citizen=%d, fort_ctrl=%d, animal=%d, race=%d\n",
+                unit->id, unit->civ_id, is_citizen, is_fort_ctrl, is_animal, unit->race);
         }
 
         if (is_citizen) {
             entity.type = ENTITY_TYPE_DWARF;
             citizens++;
-        } else if (is_fort_ctrl) {
+        } else if (is_fort_ctrl && !is_animal) {
             entity.type = ENTITY_TYPE_DWARF;
             fort_controlled++;
+        } else if (is_fort_ctrl && is_animal) {
+            // Tame pet/pack animal/livestock — fort-controlled but not a
+            // citizen. See the census-bug comment above.
+            entity.type = ENTITY_TYPE_ANIMAL;
+            animals++;
         } else if (unit->flags1.bits.marauder || unit->flags1.bits.invader_origin ||
                    unit->flags2.bits.underworld || unit->flags2.bits.visitor_uninvited) {
             entity.type = ENTITY_TYPE_ENEMY;
             hostile++;
         } else if (unit->flags1.bits.merchant || unit->flags2.bits.visitor) {
+            // Visiting merchants/diplomats are humans, not animals — this
+            // branch was previously (and incorrectly) stamped ANIMAL.
+            entity.type = ENTITY_TYPE_OTHER;
+            other++;
+        } else if (is_animal) {
+            // Untamed wildlife wandering the map (not fort-controlled).
             entity.type = ENTITY_TYPE_ANIMAL;
+            animals++;
         } else {
             entity.type = ENTITY_TYPE_OTHER;
             other++;
@@ -94,8 +127,8 @@ std::vector<EntityInfo> extract_entities()
         entities.push_back(entity);
     }
 
-    console.print("Entity summary: %d total, %d citizens, %d fort-controlled, %d hostile, %d other\n",
-        total, citizens, fort_controlled, hostile, other);
+    console.print("Entity summary: %d total, %d citizens, %d fort-controlled, %d hostile, %d animals, %d other\n",
+        total, citizens, fort_controlled, hostile, animals, other);
 
     return entities;
 }

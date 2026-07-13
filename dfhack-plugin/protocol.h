@@ -71,6 +71,8 @@ constexpr uint8_t COMMAND_TYPE_STOCKPILE  = 0x0A;
 constexpr uint8_t COMMAND_TYPE_SMOOTH     = 0x0B;
 constexpr uint8_t COMMAND_TYPE_PAUSE      = 0x0C;
 constexpr uint8_t COMMAND_TYPE_REMOVE_BUILDING = 0x0D;
+constexpr uint8_t COMMAND_TYPE_QUEUE_JOB  = 0x0E;
+constexpr uint8_t COMMAND_TYPE_SET_LABOR  = 0x0F;
 
 // Pause modes (payload byte after cmdType): matches internal/protocol/message.go.
 constexpr uint8_t PAUSE_MODE_UNPAUSE = 0x00;
@@ -101,6 +103,47 @@ constexpr uint8_t ZONE_TYPE_HOSPITAL       = 0x16;
 constexpr uint8_t ZONE_TYPE_ANIMAL_TRAIN   = 0x17;
 constexpr uint8_t ZONE_TYPE_TOMB           = 0x18;
 
+// Labor IDs for the SET_LABOR command. The value IS the real
+// df::unit_labor enum index (library/include/df/unit_labor.h in the
+// DFHack 53.15-r1 checkout, base-type int32_t, valid range 0-93) —
+// transmitted directly as the wire byte so the plugin can index
+// status.labors[] with no translation table. This is a curated subset
+// relevant to a fresh 7-dwarf fort, not the full 94-entry DF list; the
+// plugin bounds-checks any byte against LABOR_MAX_INDEX regardless of
+// whether it appears in this subset. Kept in sync with
+// internal/protocol/message.go (Labor* constants).
+constexpr uint8_t LABOR_MINE            = 0;
+constexpr uint8_t LABOR_HAUL_STONE      = 1;
+constexpr uint8_t LABOR_HAUL_WOOD       = 2;
+constexpr uint8_t LABOR_HAUL_FOOD       = 4;
+constexpr uint8_t LABOR_HAUL_ITEM       = 6;
+constexpr uint8_t LABOR_HAUL_FURNITURE  = 7;
+constexpr uint8_t LABOR_CUTWOOD         = 10;
+constexpr uint8_t LABOR_CARPENTER       = 11;
+constexpr uint8_t LABOR_STONECUTTER     = 12;
+constexpr uint8_t LABOR_STONE_CARVER    = 13;
+constexpr uint8_t LABOR_ENGRAVER        = 14; // caption "Stone Engraving" (df.d_basics.xml:11215-11218) — not DETAIL
+constexpr uint8_t LABOR_MASON           = 15;
+constexpr uint8_t LABOR_BREWER          = 30;
+constexpr uint8_t LABOR_COOK            = 38;
+constexpr uint8_t LABOR_PLANT           = 39;
+constexpr uint8_t LABOR_HERBALIST       = 40;
+constexpr uint8_t LABOR_FISH            = 41;
+constexpr uint8_t LABOR_SMELT           = 45;
+constexpr uint8_t LABOR_FORGE_WEAPON    = 46;
+constexpr uint8_t LABOR_FORGE_ARMOR     = 47;
+constexpr uint8_t LABOR_FORGE_FURNITURE = 48;
+constexpr uint8_t LABOR_METAL_CRAFT     = 49;
+constexpr uint8_t LABOR_MECHANIC        = 60;
+
+// Highest valid df::unit_labor array index (unit_labor.h:122,
+// last_item_value=93; status.labors is a fixed C array of that size+1,
+// df/unit.h:374-386). Bounds-check any wire LaborID against this before
+// indexing status.labors[] — mirrors the defensive guard at
+// autolabor/labormanager.cpp:662. NONE(-1) is excluded by the uint8_t
+// wire type itself (it cannot represent a negative value).
+constexpr uint8_t LABOR_MAX_INDEX = 93;
+
 // Work order types — what the manager queue should produce
 constexpr uint8_t ORDER_TYPE_MAKE_BED      = 0x01;
 constexpr uint8_t ORDER_TYPE_MAKE_TABLE    = 0x02;
@@ -114,6 +157,26 @@ constexpr uint8_t ORDER_TYPE_BREW_DRINK    = 0x09;
 constexpr uint8_t ORDER_TYPE_PREPARE_MEAL  = 0x0A;
 constexpr uint8_t ORDER_TYPE_MAKE_BLOCKS   = 0x0B;
 constexpr uint8_t ORDER_TYPE_MAKE_CRAFTS   = 0x0C;
+
+// Sentinel OrderType for COMMAND_TYPE_QUEUE_JOB's generalized name-based
+// path (0x00 was never assigned to one of the hand-maintained order types
+// above). When a QUEUE_JOB payload's OrderType byte equals this, a
+// trailing [2:NameLen][N:Name] follows the OrderType byte — the SAME
+// length-prefixed-string tail pattern COMMAND_TYPE_BLUEPRINT already uses
+// for its blueprint filename (df_ai_protocol.cpp case 0x07). The name is
+// looked up against DFHack's df::job_type key_table via find_enum_item
+// (work_orders.cpp: resolveJobTypeByName) instead of the protocolToJobType
+// switch in work_orders.cpp — this is how a caller reaches a job_type that
+// has no ORDER_TYPE_* byte above (e.g. "ConstructHatchCover"). Existing
+// callers that only ever send bytes 0x01-0x0C are completely unaffected:
+// the plugin only looks for a trailing name when it sees this exact byte.
+//
+// NOTE: COMMAND_TYPE_WORK_ORDER (the manager-queue path, applyWorkOrder)
+// does NOT support this sentinel — only QUEUE_JOB (the direct-to-workshop
+// path, applyQueueJob) does. See work_orders.cpp for the scope boundary
+// (job-type resolution is generalized; workshop-compatibility and
+// material-class filtering are not, this pass).
+constexpr uint8_t ORDER_TYPE_BY_NAME       = 0x00;
 
 // BuildType constants — kept in sync with internal/protocol/message.go.
 // Ranges: 0x01-0x0F constructions, 0x10-0x2F workshops, 0x30-0x4F furniture,
