@@ -76,13 +76,22 @@ Sequence, mirroring `set_location()` (`zone.lua:300-354`) exactly:
 1. Get the current site: `int32_t siteID = df::global::plotinfo->site_id; df::world_site *site =
    df::world_site::find(siteID);` (confirmed C++ chain — `dfhack.world.getCurrentSite()` is pure Lua wrapping
    the DFHack-exported `World::GetCurrentSiteId()`, which in fortress mode is exactly `plotinfo->site_id`).
-2. Allocate the right subtype (`new df::abstract_building_inn_tavernst()` etc.), set `id = site->next_building_id`,
-   `site_id = site->id`, `pos = site->pos`, apply the type's static defaults from the table above (including,
-   for Guildhall, `contents.profession` from the resolved `profession` param), then `site->buildings.push_back(bld);
+2. Allocate the right subtype — **corrected during implementation**: `abstract_building_*st` subtypes are
+   `virtual_class` types with a PROTECTED constructor (only `df::allocator_fn<T>` is a friend), so a literal
+   `new df::abstract_building_inn_tavernst()` does not compile. DFHack's own built-in `plugins/zone.cpp` hits the
+   identical problem for a different `virtual_class` type and documents the fix inline ("calling new() doesn't
+   work, need `_identity.instantiate()` instead", `plugins/zone.cpp:240`); allocate via each type's own
+   `virtual_identity::instantiate()` and cast the returned `virtual_ptr` instead, e.g. `(df::abstract_building_inn_tavernst*)
+   df::abstract_building_inn_tavernst::_identity.instantiate()`. Then set `id = site->next_building_id`, `site_id
+   = site->id`, `pos = site->pos`, apply the type's static defaults from the table above (including, for
+   Guildhall, `contents.profession` from the resolved `profession` param), then `site->buildings.push_back(bld);
    site->next_building_id++;`. No DFHack helper exists for this — `df::world_site` is a plain struct with no
    `AddNewBuilding`-style method, confirmed by reading its full field list.
-3. Append the founding civzone's id to the new Location's `contents.building_ids` (`bld->contents.building_ids.
-   push_back(zone->id)`).
+3. Append the founding civzone's id to the new Location's building list — **corrected during implementation**:
+   `contents` (holding `building_ids`) is a field on the derived `abstract_building_*st` types only, not on the
+   base `df::abstract_building` pointer the code holds `bld` as; link via the base class's own `getContents()`
+   virtual accessor instead of a `bld->contents` field access, which would not compile against the base pointer:
+   `bld->getContents()->building_ids.push_back(zone->id)`.
 4. Set `site_id`/`location_id` (base `df::building` fields) on the civzone itself.
 5. Call `zone->uncategorize(); zone->categorize(true);` directly — **corrected during planning research**: these
    are `df::building`'s own game virtual methods (add/remove-from-arrays), NOT a DFHack module function.
