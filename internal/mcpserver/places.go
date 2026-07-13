@@ -1,12 +1,16 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/df-ai/orchestrator/internal/topology"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Place is one named region, keyed by a stable anchor tile rather than a
@@ -108,4 +112,66 @@ func (ps *PlaceStore) Reconcile(rg topology.RegionGraph) {
 			delete(ps.items, anchor)
 		}
 	}
+}
+
+// resolveAnchor finds the region containing (x,y,z) and returns its
+// anchor coordinate — for name_place, the anchor IS the tile the model
+// pointed at (not the region's own min-corner or centroid), since that's
+// the stable, model-chosen reference point per the design doc.
+func resolveAnchor(topo *topology.TopologyOverlay, x, y, z int16) (topology.Coord, error) {
+	rg := topology.BuildRegionGraph(topo)
+	c := topology.Coord{X: x, Y: y, Z: z}
+	if _, ok := rg.RegionAt(c); !ok {
+		return topology.Coord{}, fmt.Errorf("no dug/open region at (%d,%d,%d) — pick a tile inside carved space", x, y, z)
+	}
+	return c, nil
+}
+
+func registerPlaceTools(srv *mcp.Server, b *Bridge) {
+	type namePlaceIn struct {
+		X    int    `json:"x" jsonschema:"a tile inside the region to name"`
+		Y    int    `json:"y"`
+		Z    int    `json:"z"`
+		Name string `json:"name" jsonschema:"the label for this region, e.g. 'the storage hall'"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "name_place",
+		Description: "Attach a persistent name to the dug/open region containing a tile — for anything worth tracking spatially (a hallway, a quarry section, an informal storage area), not just formal DF zones. Names survive df-mcp restarts. The tile must be inside already-carved space.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in namePlaceIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		topo := b.Topo()
+		if topo == nil {
+			return withDash(b, ctx, "topology not built yet (waiting for full state)"), nil, nil
+		}
+		anchor, err := resolveAnchor(topo, int16(in.X), int16(in.Y), int16(in.Z))
+		if err != nil {
+			return withDash(b, ctx, err.Error()), nil, nil
+		}
+		b.Places.Set(anchor, in.Name)
+		if err := b.Places.Save(); err != nil {
+			return withDash(b, ctx, fmt.Sprintf("named %q but failed to persist: %v", in.Name, err)), nil, nil
+		}
+		return withDash(b, ctx, fmt.Sprintf("SUCCESS: named the region at (%d,%d,%d) %q", in.X, in.Y, in.Z, in.Name)), nil, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_places",
+		Description: "List every named region (anchor tile + name). Use to recall what you've already named before naming something new nearby.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+		if b == nil || b.Places == nil {
+			return TextResult("NOT CONNECTED: start DF, then run `ai-connect` in the DFHack console."), nil, nil
+		}
+		places := b.Places.All()
+		if len(places) == 0 {
+			return withDash(b, ctx, "No named places yet."), nil, nil
+		}
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "%d named places:\n", len(places))
+		for _, p := range places {
+			fmt.Fprintf(&sb, "- %q at (%d,%d,%d)\n", p.Name, p.Anchor.X, p.Anchor.Y, p.Anchor.Z)
+		}
+		return withDash(b, ctx, sb.String()), nil, nil
+	})
 }

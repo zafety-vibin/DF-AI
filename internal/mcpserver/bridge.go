@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/df-ai/orchestrator/internal/blueprints"
@@ -28,6 +29,7 @@ type Bridge struct {
 	Populator  *worldmodel.Populator
 	Preds      *predicate.Library
 	Blueprints *blueprints.BlueprintLibrary
+	Places     *PlaceStore
 	Logger     *logging.Logger
 	port       uint16
 }
@@ -49,6 +51,7 @@ func NewBridge(cfgPath string) (*Bridge, error) {
 		Client: client, Exec: exec, WM: wm, Populator: populator,
 		Preds:      predicate.NewStarterLibrary(),
 		Blueprints: blueprints.NewBlueprintLibrary("blueprints"),
+		Places:     NewPlaceStore(filepath.Join("fortress", "state", "places.json")),
 		Logger:     logger,
 		port:       cfg.ListenPort,
 	}
@@ -73,6 +76,11 @@ func NewBridge(cfgPath string) (*Bridge, error) {
 		wm.SetOverlays(topo, hzd, mods)
 		populator.SetModDetector(det)
 		populator.OnFullState(state)
+		if err := b.Places.Load(); err != nil {
+			logger.Error("places: load failed", err)
+		} else {
+			b.Places.Reconcile(topology.BuildRegionGraph(topo))
+		}
 		logger.Info("worldmodel installed")
 	})
 	return b, nil

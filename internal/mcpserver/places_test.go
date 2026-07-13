@@ -66,3 +66,23 @@ func TestPlaceStore_ReconcileDropsUnresolvableAnchors(t *testing.T) {
 		t.Fatalf("expected only 'still there' to survive reconciliation, got %+v", all)
 	}
 }
+
+func TestResolveAnchor_TileWithNoRegionErrors(t *testing.T) {
+	topo := topology.NewTopologyOverlay(10, 10, 1) // nothing dug — no regions
+	_, err := resolveAnchor(topo, 5, 5, 0)
+	if err == nil {
+		t.Fatal("expected an error for a tile with no region (solid rock)")
+	}
+}
+
+func TestResolveAnchor_OpenTileResolves(t *testing.T) {
+	topo := topology.NewTopologyOverlay(10, 10, 1)
+	_ = topo.SetTileState(5, 5, 0, topology.StateOpen)
+	c, err := resolveAnchor(topo, 5, 5, 0)
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if c != (topology.Coord{X: 5, Y: 5, Z: 0}) {
+		t.Fatalf("expected the anchor to resolve to itself when open, got %+v", c)
+	}
+}

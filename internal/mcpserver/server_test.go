@@ -64,6 +64,8 @@ var minToolArgs = map[string]map[string]any{
 	"smooth":             {"mode": "smooth", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
 	"apply_blueprint":    {"name": "", "origin_x": 0, "origin_y": 0, "origin_z": 0},
 	"step":               {"ticks": 1},
+	"name_place":         {"x": 1, "y": 1, "z": 1, "name": "test"},
+	// list_places has no required fields — {} default is fine, no entry needed.
 }
 
 // TestEveryToolNilBridge lists every registered tool and calls each one
