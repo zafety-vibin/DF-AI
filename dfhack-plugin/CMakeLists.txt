@@ -42,6 +42,7 @@ DFHACK_PLUGIN(df_ai_protocol
     plants.cpp
     buildings.cpp
     zones.cpp
+    locations.cpp
     work_orders.cpp
     queries.cpp
     announcements.cpp

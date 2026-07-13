@@ -75,6 +75,22 @@ constexpr uint8_t COMMAND_TYPE_QUEUE_JOB  = 0x0E;
 constexpr uint8_t COMMAND_TYPE_SET_LABOR  = 0x0F;
 constexpr uint8_t COMMAND_TYPE_ASSIGN_ZONE   = 0x10;
 constexpr uint8_t COMMAND_TYPE_UNASSIGN_ZONE = 0x11;
+constexpr uint8_t COMMAND_TYPE_CREATE_LOCATION   = 0x12;
+constexpr uint8_t COMMAND_TYPE_ASSIGN_LODGING    = 0x13;
+constexpr uint8_t COMMAND_TYPE_UNASSIGN_LODGING  = 0x14;
+
+// Location types -- DF-AI's own wire values for df::abstract_building_type's
+// INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL. A Location is created FROM an
+// existing MeetingHall civzone (see designate_zone), not designated
+// directly -- these values only ever appear as create_location's `type`
+// param. Guildhall additionally requires a profession name (see
+// applyCreateLocation) -- confirmed via DFHack's own quickfort reference
+// (scripts/internal/quickfort/zone.lua's set_location(), which refuses
+// to create a guildhall without one); the other three need no extra input.
+constexpr uint8_t LOCATION_TYPE_TAVERN    = 0x01;
+constexpr uint8_t LOCATION_TYPE_TEMPLE    = 0x02;
+constexpr uint8_t LOCATION_TYPE_LIBRARY   = 0x03;
+constexpr uint8_t LOCATION_TYPE_GUILDHALL = 0x04;
 
 // Pause modes (payload byte after cmdType): matches internal/protocol/message.go.
 constexpr uint8_t PAUSE_MODE_UNPAUSE = 0x00;

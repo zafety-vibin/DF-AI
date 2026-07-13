@@ -68,6 +68,9 @@ bool applyDesignateZone(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int
 bool applyAssignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::string &error);
 bool applyUnassignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::string &error);
 
+// Forward declaration from locations.cpp
+bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, const std::string &profession, std::string &error);
+
 // Forward declaration for function from queries.cpp
 void executeQuery(uint32_t queryID, const std::string &name, const std::string &args);
 
@@ -840,6 +843,27 @@ void executeCommand(const std::vector<uint8_t> &payload)
             int16_t z = ((int16_t)payload[9] << 8) | payload[10];
             int32_t unitID = (int32_t)read_uint32_be(payload, 11);
             success = applyUnassignZone(x, y, z, unitID, error);
+            break;
+        }
+        case COMMAND_TYPE_CREATE_LOCATION: {
+            // Payload: [4:cmdID][1:cmdType][2:X][2:Y][2:Z][1:LocationType][2:ProfessionLen][N:ProfessionName]
+            // (the trailing length-prefixed name mirrors QUEUE_JOB's existing by-name trailing field)
+            if (payload.size() < 12) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid CREATE_LOCATION payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            uint8_t locationType = payload[11];
+            std::string profession;
+            if (payload.size() >= 14) {
+                uint16_t nameLen = ((uint16_t)payload[12] << 8) | payload[13];
+                if (payload.size() >= 14 + nameLen) {
+                    profession.assign(payload.begin() + 14, payload.begin() + 14 + nameLen);
+                }
+            }
+            success = applyCreateLocation(x, y, z, locationType, profession, error);
             break;
         }
         default:
