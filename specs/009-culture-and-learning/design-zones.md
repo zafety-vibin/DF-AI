@@ -161,25 +161,27 @@ stockpile creation exactly (confirmed via the DFHack 53.15-r1 checkout as the ca
 allocated building → `Buildings::setSize(bld, size)` → `Buildings::constructAbstract(bld)`. No
 materials/filters (abstract buildings skip that path entirely — this is the same reason
 `buildings.cpp` warns `constructAbstract` must never be called for a real, materials-backed
-building). Returns the new zone's DFHack building ID in the ACK.
+building).
 
 **Validation**: a civzone claims existing floor space, it doesn't dig — `applyDesignateZone` must
 reject a rectangle that isn't fully built/carved floor, with a specific error (which tiles failed
 and why), matching this project's existing truthful-ACK discipline rather than DFHack's own
 generic construction-failure behavior.
 
-**zone_id resolution — verify against source during implementation.** `assign_zone`/`unassign_zone`/
-`list_zones` all need to resolve a `zone_id` the model passes back into the actual `df::building*`
-DFHack allocated at creation time. The natural candidate is DFHack's own building `id` (assigned
-inside `Buildings::constructAbstract`, per `buildings.cpp`'s own comment "assigns stockpile_number,
-links the building into the world") — the same globally-unique building-id space `list_buildings`
-already reports, not the civzone-specific `zone_num` field (`building_civzonest`'s original name
-`id_number`, a display index scoped only to zones). The lookup-by-id path itself needs confirming
-against the checkout before writing the branch — `applySetLabor` (`dfhack-plugin/`, existing code)
-resolves a wire-supplied unit ID via `df::unit::find(unitID)`; check whether `library/modules/
-Buildings.h` exposes an analogous `df::building::find(id)`, and if not, fall back to iterating
-`df::global::world->buildings.all` matching `->id`, mirroring `handleListBuildings`' own iteration
-pattern (`queries.cpp:417`).
+**Zones are identified by tile coordinate, not a synthetic ID — corrected during planning
+research.** The original draft had `assign_zone`/`unassign_zone` take a `zone_id` and left open how
+the plugin would resolve one back to a `df::building*`, and how `designate_zone`'s ACK (a plain
+success/error string, per `sendCommandAck`'s signature — there's no numeric-return channel on
+success without misusing the PARTIAL status) would even communicate a freshly-generated ID back to
+the model. Both problems disappear by following this codebase's own existing convention instead:
+`remove_building(x,y,z)` and `unsuspend(x,y,z)` already target a building by a tile coordinate
+inside it, not a synthetic ID (`internal/mcpserver/server_test.go`'s `minToolArgs` confirms both
+signatures). Zones do the same: `assign_zone`/`unassign_zone` take `(x, y, z, unit_id)`, and the
+plugin resolves the civzone at that tile via `Buildings::findCivzonesAt(&results, df::coord(x,y,z))`
+(confirmed present at `library/modules/Buildings.h:100` in the checkout) — no ID tracking, no ACK
+return-value problem, and one less DFHack API call to verify blind. `list_zones` reports each
+zone's extents (the same `x1/y1/x2/y2` shape `list_buildings` already emits) as the caller's handle
+for picking a tile to target.
 
 ## Component 3: Zone assignment (`applyAssignZone` / `applyUnassignZone`)
 
@@ -242,8 +244,10 @@ No new Go-side worldmodel code is needed at all — once the wire carries real d
 
 ## Component 5: MCP tools
 
-`designate_zone(type, x1,y1,z,x2,y2)`, `assign_zone(zone_id, unit_id)`, `unassign_zone(zone_id,
-unit_id)`, `list_zones(type?, z?)` — replacing the existing stub `zone` tool
+`designate_zone(type, x1,y1,z,x2,y2)`, `assign_zone(x, y, z, unit_id)`, `unassign_zone(x, y, z,
+unit_id)` (both target the civzone at that tile via `Buildings::findCivzonesAt`, matching
+`remove_building`/`unsuspend`'s existing by-tile-coordinate convention), `list_zones(type?, z?)` —
+replacing the existing stub `zone` tool
 (`internal/mcpserver/tools_action.go`) entirely rather than layering on top of it, since the stub's
 tool name, param shape, and type list are all being superseded. Tool descriptions state plainly
 that a zone claims existing floor, is not a dig designation, and that assignment mechanism (owner
