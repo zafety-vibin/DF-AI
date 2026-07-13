@@ -56,27 +56,39 @@ mechanically similar risk to Zones' own creation path. Component C (lodging) has
 zero DFHack precedent anywhere — genuinely the first implementation of that mechanism, and is scoped, tasked,
 and verified separately from A/B for that reason.
 
-## Component A: `create_location(x, y, z, type)`
+## Component A: `create_location(x, y, z, type, profession?)`
 
-Targets the civzone at that tile via `Buildings::findCivzonesAt` (matching `assign_zone`'s existing convention).
-Rejects if the civzone isn't `MeetingHall`, or if it already carries a non-zero `location_id` (no silent
-double-create). `type` is one of a small DF-AI-owned wire enum: `Tavern=0x01, Temple=0x02, Library=0x03,
-Guildhall=0x04` (matching `df::abstract_building_type`'s `INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL`).
+**Fully resolved during planning research** — every step below is now confirmed against `zone.lua`'s literal
+source, not inferred. Targets the civzone at that tile via `Buildings::findCivzonesAt` (matching `assign_zone`'s
+existing convention). Rejects if the civzone isn't `MeetingHall`, or if it already carries a non-zero
+`location_id` (no silent double-create). `type` is one of a small DF-AI-owned wire enum: `Tavern=0x01,
+Temple=0x02, Library=0x03, Guildhall=0x04` (matching `df::abstract_building_type`'s
+`INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL`). `profession` is an optional string, **required only for Guildhall** —
+DFHack's own reference implementation refuses to create a guildhall without one (`zone.lua:301`); it's a real
+`df::profession` enum value (the same enum every unit's job/profession uses, `library/include/df/profession.h`),
+resolved by name the same way this plugin's `queue_job` tool already resolves job-type names generically
+(`df::find_enum_item<T>`) — no new name-resolution pattern needed. Tavern/Temple/Library need no extra input;
+DFHack's own defaults (goblet/instrument/paper procurement targets, a `Religion=-1`/no-deity default for Temple)
+are copied verbatim from `zone.lua`'s `valid_locations` table rather than exposed as tool parameters — they're
+DF's own suggested starting values, not a placement/quality decision this project's model needs to make.
 
-Sequence, mirroring `scripts/internal/quickfort/zone.lua`'s `set_location()` (confirmed working reference,
-lines 300-354 in the DFHack 53.15-r1 checkout):
-1. Get the current site (`dfhack.world.getCurrentSite()`'s C++ equivalent — `df::global::world->world_data`'s
-   current site record; confirm the exact accessor during implementation).
-2. Allocate the right `abstract_building_*st` subtype (`abstract_building_inn_tavernst`,
-   `_templest`, `_libraryst`, `_guildhallst`) and insert it into the site's `buildings` vector.
-3. Append the founding civzone's id to the new Location's `contents.building_ids`
-   (`abstract_building_contents.h:41`).
-4. Set `site_id`/`location_id` (base `df::building` fields, `building.h:71-72`) on the civzone itself.
-5. **Verify against source during implementation**: quickfort's Lua calls `zone:uncategorize();
-   zone:categorize(true)` at this point — some kind of state-refresh/registration step. Best-confidence guess is
-   this maps to `Buildings::notifyCivzoneModified` (confirmed to exist, used elsewhere in this project's own
-   design for "rebuild associations after manually editing a zone"), but this is a named uncertainty, not an
-   assumption — confirm the real DFHack equivalent before treating this task as done.
+Sequence, mirroring `set_location()` (`zone.lua:300-354`) exactly:
+1. Get the current site: `int32_t siteID = df::global::plotinfo->site_id; df::world_site *site =
+   df::world_site::find(siteID);` (confirmed C++ chain — `dfhack.world.getCurrentSite()` is pure Lua wrapping
+   the DFHack-exported `World::GetCurrentSiteId()`, which in fortress mode is exactly `plotinfo->site_id`).
+2. Allocate the right subtype (`new df::abstract_building_inn_tavernst()` etc.), set `id = site->next_building_id`,
+   `site_id = site->id`, `pos = site->pos`, apply the type's static defaults from the table above (including,
+   for Guildhall, `contents.profession` from the resolved `profession` param), then `site->buildings.push_back(bld);
+   site->next_building_id++;`. No DFHack helper exists for this — `df::world_site` is a plain struct with no
+   `AddNewBuilding`-style method, confirmed by reading its full field list.
+3. Append the founding civzone's id to the new Location's `contents.building_ids` (`bld->contents.building_ids.
+   push_back(zone->id)`).
+4. Set `site_id`/`location_id` (base `df::building` fields) on the civzone itself.
+5. Call `zone->uncategorize(); zone->categorize(true);` directly — **corrected during planning research**: these
+   are `df::building`'s own game virtual methods (add/remove-from-arrays), NOT a DFHack module function.
+   `Buildings::notifyCivzoneModified` (the design's earlier guess) does something unrelated — it only rewires
+   "civzone contains furniture" spatial relations, confirmed by reading its implementation. No DFHack wrapper
+   exists for `categorize`/`uncategorize`; call the virtual methods on the `df::building*` directly.
 
 ## Component B: `list_locations(type?)`
 
