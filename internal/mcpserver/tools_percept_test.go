@@ -4,11 +4,13 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/df-ai/orchestrator/internal/logging"
 	"github.com/df-ai/orchestrator/internal/mapview"
+	"github.com/df-ai/orchestrator/internal/modifications"
 	"github.com/df-ai/orchestrator/internal/protocol"
 	"github.com/df-ai/orchestrator/internal/topology"
 	"github.com/df-ai/orchestrator/internal/worldmodel"
@@ -233,5 +235,150 @@ func TestLookScopeOverview_RejectsOutOfRangeZ(t *testing.T) {
 	out := callTool(t, b, "look", map[string]any{"x": 10, "y": 10, "z": 99, "scope": "overview"})
 	if !strings.Contains(out, "out of range") {
 		t.Fatalf("expected out-of-range rejection, got: %q", out)
+	}
+}
+
+// TestLookUnknownScope asserts an unrecognized scope value gets a specific,
+// educational rejection rather than silently falling back to local.
+func TestLookUnknownScope(t *testing.T) {
+	out := callTool(t, nil, "look", map[string]any{"x": 10, "y": 10, "z": 5, "scope": "bogus"})
+	if !strings.Contains(out, "unknown scope") {
+		t.Fatalf("expected unknown-scope rejection, got: %q", out)
+	}
+}
+
+// TestLookScopeElevation_NilBridgeReadable mirrors
+// TestLookScopeOverview_NilBridgeReadable for the elevation scope: nil
+// bridge must nil-safely report "not built yet" instead of panicking.
+func TestLookScopeElevation_NilBridgeReadable(t *testing.T) {
+	out := callTool(t, nil, "look", map[string]any{"x": 10, "y": 10, "z": 5, "scope": "elevation"})
+	if !strings.Contains(out, "topology not built yet") {
+		t.Fatalf("expected a readable 'not built yet' message, got: %q", out)
+	}
+}
+
+// TestLookScopeFort_NilBridgeReadable mirrors the same nil-bridge contract
+// for the fort scope's topology check.
+func TestLookScopeFort_NilBridgeReadable(t *testing.T) {
+	out := callTool(t, nil, "look", map[string]any{"x": 10, "y": 10, "z": 5, "scope": "fort"})
+	if !strings.Contains(out, "topology not built yet") {
+		t.Fatalf("expected a readable 'not built yet' message, got: %q", out)
+	}
+}
+
+// TestLookScopeFort_ModsNilButTopoPresent: solidTestBridge wires a real
+// topology but no modifications overlay (worldmodel.New's mods param is
+// nil) — fort scope must report the modifications-specific unavailable
+// message, not the topology one, and never a nil-pointer panic.
+func TestLookScopeFort_ModsNilButTopoPresent(t *testing.T) {
+	b := solidTestBridge(t)
+	out := callTool(t, b, "look", map[string]any{"x": 10, "y": 10, "z": 1, "scope": "fort"})
+	if !strings.Contains(out, "modifications overlay not built yet") {
+		t.Fatalf("expected modifications-not-built message, got: %q", out)
+	}
+}
+
+// TestLookScopeFort_NoModificationsAtZ: an empty (but present) modification
+// overlay at the requested z must produce the truthful "nothing recorded"
+// message, never a silent fallback to some other crop.
+func TestLookScopeFort_NoModificationsAtZ(t *testing.T) {
+	b := solidTestBridge(t)
+	b.WM.Observed.Modifications = modifications.NewModificationOverlay(modifications.Bounds{Width: 20, Height: 20, Depth: 2})
+	out := callTool(t, b, "look", map[string]any{"x": 10, "y": 10, "z": 1, "scope": "fort"})
+	if !strings.Contains(out, "no modifications recorded on z=1") {
+		t.Fatalf("expected truthful no-modifications message, got: %q", out)
+	}
+}
+
+// TestFortFootprintBBox_EmptyIsNotOK asserts an overlay with no
+// modifications at the requested z reports ok=false — the signal callers
+// use to return a truthful "nothing here yet" message instead of computing
+// a bogus bbox.
+func TestFortFootprintBBox_EmptyIsNotOK(t *testing.T) {
+	mods := modifications.NewModificationOverlay(modifications.Bounds{Width: 50, Height: 50, Depth: 5})
+	if _, _, _, _, ok := fortFootprintBBox(mods, 50, 50, 3, 8); ok {
+		t.Fatal("expected ok=false with no modifications recorded")
+	}
+}
+
+// TestFortFootprintBBox_MarginAndClamp exercises the core bbox arithmetic:
+// two modified tiles at z=3 define a (2,2)-(10,10) bbox; +8 margin clamped
+// at 0 on the low side. A modification at a DIFFERENT z must not widen the
+// z=3 bbox — GetModificationsInRegion's z filter is load-bearing here.
+func TestFortFootprintBBox_MarginAndClamp(t *testing.T) {
+	mods := modifications.NewModificationOverlay(modifications.Bounds{Width: 50, Height: 50, Depth: 5})
+	for _, c := range [][2]int16{{2, 2}, {10, 10}} {
+		if err := mods.Add(modifications.Coordinate{X: c[0], Y: c[1], Z: 3},
+			modifications.ModificationInfo{Type: modifications.ModificationDug, DetectedAt: time.Now()}); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+	if err := mods.Add(modifications.Coordinate{X: 40, Y: 40, Z: 4},
+		modifications.ModificationInfo{Type: modifications.ModificationDug, DetectedAt: time.Now()}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	x0, y0, x1, y1, ok := fortFootprintBBox(mods, 50, 50, 3, 8)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if x0 != 0 || y0 != 0 || x1 != 18 || y1 != 18 {
+		t.Fatalf("bbox = (%d,%d)-(%d,%d), want (0,0)-(18,18)", x0, y0, x1, y1)
+	}
+}
+
+// TestFortFootprintBBox_ClampsHighSideToMapBounds checks the high-side
+// clamp independently of the low-side clamp covered above.
+func TestFortFootprintBBox_ClampsHighSideToMapBounds(t *testing.T) {
+	mods := modifications.NewModificationOverlay(modifications.Bounds{Width: 20, Height: 20, Depth: 5})
+	if err := mods.Add(modifications.Coordinate{X: 18, Y: 18, Z: 1},
+		modifications.ModificationInfo{Type: modifications.ModificationDug, DetectedAt: time.Now()}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	x0, y0, x1, y1, ok := fortFootprintBBox(mods, 20, 20, 1, 8)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if x1 != 19 || y1 != 19 {
+		t.Fatalf("high side not clamped: x1=%d y1=%d, want 19,19", x1, y1)
+	}
+	if x0 != 10 || y0 != 10 {
+		t.Fatalf("low side wrong: x0=%d y0=%d, want 10,10", x0, y0)
+	}
+}
+
+// TestRenderFullOrDownsampled_FullFidelityAtBudget asserts a stitched
+// region exactly at the 100x100 budget takes the full-fidelity path (no
+// downsampling).
+func TestRenderFullOrDownsampled_FullFidelityAtBudget(t *testing.T) {
+	rows := make([]string, 100)
+	for i := range rows {
+		rows[i] = strings.Repeat(".", 100)
+	}
+	s := &mapview.Slice{Z: 1, X1: 0, Y1: 0, Rows: rows}
+	out := renderFullOrDownsampled(s, "test header")
+	if !strings.Contains(out, "full fidelity") {
+		t.Fatalf("expected full-fidelity path at 100x100, got: %.200q", out)
+	}
+	if strings.Contains(out, "downsampled") {
+		t.Fatalf("should not downsample at exactly the budget: %.200q", out)
+	}
+}
+
+// TestElevationDownsamplePolicy_OverBudgetSelectsBlockPath asserts a
+// stitched region larger than the 100x100 budget on either axis switches to
+// the block-downsample path, with the block size disclosed in the header
+// (mirrors RenderOverview's own disclosure contract).
+func TestElevationDownsamplePolicy_OverBudgetSelectsBlockPath(t *testing.T) {
+	rows := make([]string, 150)
+	for i := range rows {
+		rows[i] = strings.Repeat(".", 150)
+	}
+	s := &mapview.Slice{Z: 1, X1: 0, Y1: 0, Rows: rows}
+	out := renderFullOrDownsampled(s, "test header")
+	if !strings.Contains(out, "downsampled") {
+		t.Fatalf("expected downsample path over 100x100, got: %.200q", out)
+	}
+	if !strings.Contains(out, "1 cell =") {
+		t.Fatalf("expected block-size disclosure in header, got: %.300q", out)
 	}
 }

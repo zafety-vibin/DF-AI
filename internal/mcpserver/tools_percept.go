@@ -4,11 +4,125 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/df-ai/orchestrator/internal/mapview"
+	"github.com/df-ai/orchestrator/internal/modifications"
 )
+
+// fullFidelityMaxDim is the render-budget cutoff shared by look's
+// elevation and fort scopes: a stitched region rendered at <=1 tok/tile
+// (RenderCrop) stays full fidelity up to this size on both axes; beyond it,
+// the region is downsampled block-by-block (mapview.RenderDownsampledSlice)
+// with the block size disclosed in the header, matching RenderOverview's
+// own disclosure contract. One policy, two entry points.
+const fullFidelityMaxDim = 100
+
+// blockFetchMax mirrors the plugin's map_slice region cap (queries.cpp:
+// "region too large (max 48x48)") — the largest single map_slice query.
+const blockFetchMax = 48
+
+// fetchStitchedRegion fetches a rectangular region [x0,x1] x [y0,y1] (both
+// inclusive, absolute map coords) at z as a grid of <=48-wide/tall
+// map_slice blocks and stitches them into one Slice via
+// mapview.StitchSlices. Shared by elevation (whole map) and fort
+// (modified-footprint bbox) scope.
+func fetchStitchedRegion(ctx context.Context, b *Bridge, z, x0, y0, x1, y1 int16) (*mapview.Slice, error) {
+	var grid [][]*mapview.Slice
+	for by := y0; by <= y1; by += blockFetchMax {
+		byEnd := by + blockFetchMax - 1
+		if byEnd > y1 {
+			byEnd = y1
+		}
+		var row []*mapview.Slice
+		for bx := x0; bx <= x1; bx += blockFetchMax {
+			bxEnd := bx + blockFetchMax - 1
+			if bxEnd > x1 {
+				bxEnd = x1
+			}
+			s, err := b.MapSlice(ctx, bx, by, z, bxEnd, byEnd)
+			if err != nil {
+				return nil, fmt.Errorf("block (%d,%d)-(%d,%d): %w", bx, by, bxEnd, byEnd, err)
+			}
+			row = append(row, s)
+		}
+		grid = append(grid, row)
+	}
+	return mapview.StitchSlices(grid)
+}
+
+// renderFullOrDownsampled applies the shared full-fidelity/downsample
+// policy to an already-stitched Slice: full RenderCrop rendering (~1
+// tok/tile) when both dimensions fit within fullFidelityMaxDim, otherwise
+// a block-downsampled render with the block size disclosed in the header.
+func renderFullOrDownsampled(s *mapview.Slice, header string) string {
+	w, h := 0, len(s.Rows)
+	if h > 0 {
+		w = len(s.Rows[0])
+	}
+	if w <= fullFidelityMaxDim && h <= fullFidelityMaxDim {
+		return header + " — full fidelity\n" + mapview.RenderCrop(s, nil, "")
+	}
+	block := mapview.DownsampleBlockSizeFor(w, h, fullFidelityMaxDim)
+	return header + " — downsampled (exceeds full-fidelity budget)\n" + mapview.RenderDownsampledSlice(s, block)
+}
+
+// fortFootprintBBox computes the render bbox for scope=fort: the bounding
+// box of all modifications recorded at z, expanded by margin tiles on each
+// side and clamped to the map bounds. ok=false means no modifications were
+// recorded at that z — callers must return a truthful "nothing here yet"
+// message rather than silently falling back to some other crop.
+func fortFootprintBBox(mods *modifications.ModificationOverlay, mapW, mapH uint16, z int16, margin int16) (x0, y0, x1, y1 int16, ok bool) {
+	region := modifications.Region{
+		XMin: 0, XMax: int16(mapW) - 1,
+		YMin: 0, YMax: int16(mapH) - 1,
+		ZMin: z, ZMax: z,
+	}
+	hits := mods.GetModificationsInRegion(region, time.Time{})
+	if len(hits) == 0 {
+		return 0, 0, 0, 0, false
+	}
+	xMin, xMax := int16(32767), int16(-32768)
+	yMin, yMax := int16(32767), int16(-32768)
+	for coord := range hits {
+		if coord.X < xMin {
+			xMin = coord.X
+		}
+		if coord.X > xMax {
+			xMax = coord.X
+		}
+		if coord.Y < yMin {
+			yMin = coord.Y
+		}
+		if coord.Y > yMax {
+			yMax = coord.Y
+		}
+	}
+	xMin -= margin
+	yMin -= margin
+	xMax += margin
+	yMax += margin
+	if xMin < 0 {
+		xMin = 0
+	}
+	if yMin < 0 {
+		yMin = 0
+	}
+	if xMax > int16(mapW)-1 {
+		xMax = int16(mapW) - 1
+	}
+	if yMax > int16(mapH)-1 {
+		yMax = int16(mapH) - 1
+	}
+	return xMin, yMin, xMax, yMax, true
+}
+
+// fortFootprintMargin is the padding added around the modified-tile bbox
+// for scope=fort — enough to see the room's threshold/approach, not the
+// whole map.
+const fortFootprintMargin = 8
 
 // clampLookRadius applies look's radius default/cap: 0 (or unset) becomes
 // the 12-tile default; anything above 23 is clamped down. 23 is the largest
@@ -32,13 +146,16 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 		Z      int    `json:"z" jsonschema:"z-level to view"`
 		Radius int    `json:"radius,omitempty" jsonschema:"radius 12 (25x25) default; up to 23 (47x47, ~2.3k tokens). For whole-fort orientation use scope=overview instead."`
 		Lens   string `json:"lens,omitempty" jsonschema:"optional overlay: buildings|designations. Paints one annotation layer onto the terrain grid; omit for the plain terrain view (which still shows dig designations as 'd'). Exact building/zone types via buildings/building_status."`
-		Scope  string `json:"scope,omitempty" jsonschema:"local (default): terrain crop around (x,y) at radius. overview: downsampled whole-map orientation view at z (ignores x/y/radius/lens) rendered instantly from resident state, no plugin round-trip."`
+		Scope  string `json:"scope,omitempty" jsonschema:"Cost table (tokens ~= 1.05*W*H + 80): local (default, ignores z-window scoping) terrain crop around (x,y) at radius, up to 47x47 ~2.3k tokens. overview: whole-map downsampled orientation (ignores x/y/radius/lens), ~1-1.5k tokens on any map size, no plugin round-trip. elevation: the FULL z-level (ignores x/y/radius/lens) at full ~1 tok/tile fidelity when the map is <=100 wide/tall (e.g. 96x96 ~9.6k tokens); auto-downsamples into majority-vote blocks above that, with the block size disclosed in the header. fort: the bounding box of tiles you've actually modified at z (dug/built/smoothed) plus an 8-tile margin, same fidelity/downsample rule as elevation but scoped to your footprint instead of the whole map — the recommended planning view once you have dug something."`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "look",
-		Description: "Render a small annotated map crop of one z-level around (x,y). Glyph grid with legend; dwarves marked @, dig designations marked d. Pass lens=buildings or lens=designations for detail overlays. '?' tiles are hidden fog — solid undug ground you CAN designate digging into. Use for local layout checks; use find_dig_site for choosing dig locations. Pass scope=overview for a whole-map orientation view instead of a local crop.",
+		Description: "Render an annotated map view of one z-level. Glyph grid with legend; dwarves marked @, dig designations marked d. Pass lens=buildings or lens=designations for detail overlays. '?' tiles are hidden fog — solid undug ground you CAN designate digging into. Default scope=local is a small crop around (x,y); use find_dig_site for choosing dig locations. scope=overview/elevation/fort give whole-map or whole-footprint views instead — see the scope parameter for the cost/fidelity tradeoffs of each.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in lookIn) (*mcp.CallToolResult, any, error) {
-		if in.Scope == "overview" {
+		switch in.Scope {
+		case "", "local":
+			// falls through to the default crop below
+		case "overview":
 			topo := b.Topo()
 			if topo == nil {
 				return withDash(b, ctx, "overview unavailable: topology not built yet (waiting for full state)"), nil, nil
@@ -50,6 +167,46 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 				}
 			}
 			return withDash(b, ctx, mapview.RenderOverview(topo, int16(in.Z), dwarfXY)), nil, nil
+		case "elevation":
+			topo := b.Topo()
+			if topo == nil {
+				return withDash(b, ctx, "elevation unavailable: topology not built yet (waiting for full state)"), nil, nil
+			}
+			w, h, d := topo.GetDimensions()
+			if in.Z < 0 || in.Z >= int(d) {
+				return withDash(b, ctx, fmt.Sprintf("z=%d out of range: map has %d levels (valid z is 0..%d)", in.Z, d, int(d)-1)), nil, nil
+			}
+			s, err := fetchStitchedRegion(ctx, b, int16(in.Z), 0, 0, int16(w)-1, int16(h)-1)
+			if err != nil {
+				return withDash(b, ctx, "elevation failed: "+err.Error()), nil, nil
+			}
+			header := fmt.Sprintf("elevation view (full z-level) at z=%d, map %dx%d", in.Z, w, h)
+			return withDash(b, ctx, renderFullOrDownsampled(s, header)), nil, nil
+		case "fort":
+			topo := b.Topo()
+			if topo == nil {
+				return withDash(b, ctx, "fort view unavailable: topology not built yet (waiting for full state)"), nil, nil
+			}
+			mods := b.Mods()
+			if mods == nil {
+				return withDash(b, ctx, "fort view unavailable: modifications overlay not built yet (waiting for full state)"), nil, nil
+			}
+			w, h, d := topo.GetDimensions()
+			if in.Z < 0 || in.Z >= int(d) {
+				return withDash(b, ctx, fmt.Sprintf("z=%d out of range: map has %d levels (valid z is 0..%d)", in.Z, d, int(d)-1)), nil, nil
+			}
+			x0, y0, x1, y1, ok := fortFootprintBBox(mods, w, h, int16(in.Z), fortFootprintMargin)
+			if !ok {
+				return withDash(b, ctx, fmt.Sprintf("no modifications recorded on z=%d — nothing dug/built at this level yet; try scope=overview or a z you've worked", in.Z)), nil, nil
+			}
+			s, err := fetchStitchedRegion(ctx, b, int16(in.Z), x0, y0, x1, y1)
+			if err != nil {
+				return withDash(b, ctx, "fort view failed: "+err.Error()), nil, nil
+			}
+			header := fmt.Sprintf("fort view (modified footprint + %d-tile margin) at z=%d: bbox (%d,%d)-(%d,%d)", fortFootprintMargin, in.Z, x0, y0, x1, y1)
+			return withDash(b, ctx, renderFullOrDownsampled(s, header)), nil, nil
+		default:
+			return withDash(b, ctx, fmt.Sprintf("unknown scope %q — use local, overview, elevation, or fort", in.Scope)), nil, nil
 		}
 		r := clampLookRadius(in.Radius)
 		x1, y1 := int16(in.X-r), int16(in.Y-r)

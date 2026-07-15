@@ -122,6 +122,15 @@ func (b *Bridge) Topo() *topology.TopologyOverlay {
 	return b.WM.Observed.Topology
 }
 
+// Mods returns the modification overlay, nil until the first FULL_STATE
+// arrives. Every consumer must nil-check (mirrors Topo()).
+func (b *Bridge) Mods() *modifications.ModificationOverlay {
+	if b == nil || b.WM == nil {
+		return nil
+	}
+	return b.WM.Observed.Modifications
+}
+
 // Query forwards a named JSON query to the plugin.
 func (b *Bridge) Query(ctx context.Context, name, argsJSON string) ([]byte, error) {
 	if !b.Connected() {
