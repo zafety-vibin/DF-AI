@@ -365,6 +365,17 @@ static bool applyQueueReactionJob(int16_t x, int16_t y, int16_t z, const std::st
         ji->min_dimension = ri->min_dimension;
         ji->has_tool_use = ri->has_tool_use;
         ji->quantity = ri->quantity;
+        // OR the reagent's own filter flags onto the job_item's -- these are
+        // additive match requirements (e.g. BREW_DRINK_FROM_PLANT's plant
+        // reagent sets flags1.unrotten, its barrel reagent sets
+        // flags1.empty + flags3.food_storage). OR-ing rather than assigning
+        // preserves the allow_artifact=true default set above, since that
+        // bit stays 1 regardless of what bits ri->flags2 contributes.
+        ji->flags1.whole |= ri->flags1.whole;
+        ji->flags2.whole |= ri->flags2.whole;
+        ji->flags3.whole |= ri->flags3.whole;
+        ji->flags4 |= ri->flags4;
+        ji->flags5 |= ri->flags5;
 
         ji->reaction_id = reaction->index;
         ji->reagent_index = (int32_t)reagentIdx;

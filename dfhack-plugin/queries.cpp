@@ -290,10 +290,12 @@ static std::string handleListReactions(const std::string &args, uint8_t &status)
             }
         }
         os << "],\"reagents\":[";
+        int reagentsEmitted = 0;
         for (size_t r = 0; r < reaction->reagents.size(); r++) {
             df::reaction_reagent *reagent = reaction->reagents[r];
             if (!reagent) continue;
-            if (r) os << ",";
+            if (reagentsEmitted) os << ",";
+            reagentsEmitted++;
             os << "{\"code\":" << jsonStr(reagent->code)
                << ",\"quantity\":" << jsonInt(reagent->quantity);
             if (reagent->getType() == df::reaction_reagent_type::item) {
