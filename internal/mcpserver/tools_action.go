@@ -155,22 +155,39 @@ func buildWireCoords(buildType uint8, x, y int) (int16, int16) {
 	return int16(x), int16(y)
 }
 
+// digTypeFromName maps a model-facing (or blueprint-CSV-facing) dig type
+// name to the wire DigType byte. Two name families feed this: the
+// designate_dig tool's own vocabulary (default|stairs|channel|ramp|
+// upstair|downstair) and parseQuickfortGrid's snake_case output
+// (updown_stair|down_stair|up_stair|remove_ramp) — every quickfort "i/j/u"
+// stair cell in every shipped blueprints/*.csv used to fail silently here
+// because only the tool's own names were accepted; the aliases below are
+// the fix.
 func digTypeFromName(s string) (uint8, error) {
 	switch strings.ToLower(s) {
 	case "default", "dig", "mine":
 		return protocol.DigTypeDefault, nil
-	case "stairs":
+	case "stairs", "updown_stair":
 		return protocol.DigTypeUpDownStair, nil
 	case "channel":
 		return protocol.DigTypeChannel, nil
 	case "ramp":
 		return protocol.DigTypeRamp, nil
-	case "downstair":
+	case "downstair", "down_stair":
 		return protocol.DigTypeDownStair, nil
-	case "upstair":
+	case "upstair", "up_stair":
 		return protocol.DigTypeUpStair, nil
+	case "remove_ramp":
+		// quickfort's "x" cell (ramp/stair removal). There is no
+		// df::tile_dig_designation value on the wire for this — see
+		// internal/protocol's DigType constants (Default/UpDownStair/
+		// Channel/Ramp/DownStair/UpStair only) and dfhack-plugin's
+		// designations.cpp switch, which has no case for it either.
+		// Fail loudly instead of silently dropping the tile or
+		// guessing a substitute designation.
+		return 0, fmt.Errorf("remove_ramp is not on the wire protocol yet (no tile_dig_designation value for ramp/stair removal is exposed) — this blueprint tile is reported as failed, not silently skipped")
 	}
-	return 0, fmt.Errorf("unknown dig type %q (default|stairs|channel|ramp|upstair|downstair)", s)
+	return 0, fmt.Errorf("unknown dig type %q (default|stairs|channel|ramp|upstair|downstair|updown_stair|down_stair|up_stair|remove_ramp)", s)
 }
 
 var buildTypes = map[string]uint8{
@@ -573,13 +590,13 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "apply_blueprint",
-		Description: "Apply a dig blueprint from the library at an origin. ALWAYS dry_run=true first: it reports how many tiles would carve solid ground vs hit open space. Empty name lists available blueprints.",
+		Description: "Apply a dig blueprint from the library at an origin. ALWAYS dry_run=true first: it reports how many tiles would carve solid ground vs hit open space. Empty name lists available blueprints. blueprints/*.csv is re-scanned on every call, so a CSV you hand-authored or captured with save_blueprint this session is picked up without restarting the server. Quickfort 'remove ramp' cells (dig_type remove_ramp) aren't on the wire protocol yet — those tiles report as a specific failure, not silence.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in bpIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
 		}
 		if in.Name == "" {
-			return withDash(b, ctx, "available blueprints: "+strings.Join(b.Blueprints.ListBlueprints(), ", ")), nil, nil
+			return withDash(b, ctx, "available blueprints: "+strings.Join(listBlueprints(b.Blueprints), ", ")), nil, nil
 		}
 		origin := modifications.Coordinate{X: int16(in.OriginX), Y: int16(in.OriginY), Z: int16(in.OriginZ)}
 		cmds, err := expandBlueprint(b.Blueprints, in.Name, origin)
@@ -595,5 +612,43 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 			body += " — first failure: " + firstErr
 		}
 		return withDash(b, ctx, body), nil, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_blueprints",
+		Description: "List dig blueprints available in the library. Re-scans blueprints/*.csv on every call (see apply_blueprint) so hand-authored or freshly captured (save_blueprint) CSVs show up without restarting the server.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+		if b == nil || b.Blueprints == nil {
+			return TextResult("blueprint library not available (bridge not initialized)"), nil, nil
+		}
+		names := listBlueprints(b.Blueprints)
+		if len(names) == 0 {
+			return withDash(b, ctx, "no blueprints available (blueprints/ is empty)"), nil, nil
+		}
+		return withDash(b, ctx, "available blueprints: "+strings.Join(names, ", ")), nil, nil
+	})
+
+	type saveBpIn struct {
+		Name string `json:"name" jsonschema:"name for the new blueprint (becomes blueprints/<name>.csv; re-usable via apply_blueprint)"`
+		X1   int    `json:"x1"`
+		Y1   int    `json:"y1"`
+		Z1   int    `json:"z1"`
+		X2   int    `json:"x2"`
+		Y2   int    `json:"y2"`
+		Z2   int    `json:"z2"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "save_blueprint",
+		Description: "Capture the dig modifications this session made inside a 3D region as a named blueprint CSV under blueprints/ — design a pod once, capture it, re-stamp it elsewhere with apply_blueprint. Only tiles this session actually DUG are captured (built walls/floors, smoothing, etc are not); every captured tile is recorded as dig_type 'default' today (inferring stairs/ramps/channels from tile shape is a known gap), so re-designate those by hand after re-applying if the source pod had any.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in saveBpIn) (*mcp.CallToolResult, any, error) {
+		if b == nil || b.WM == nil || b.WM.Observed.Modifications == nil {
+			return TextResult("NOT CONNECTED: start DF, then run `ai-connect` in the DFHack console — no modification history to capture yet."), nil, nil
+		}
+		region := normalizeRegion(int16(in.X1), int16(in.Y1), int16(in.Z1), int16(in.X2), int16(in.Y2), int16(in.Z2))
+		count, path, err := saveBlueprint(b, in.Name, region)
+		if err != nil {
+			return withDash(b, ctx, fmt.Sprintf("save_blueprint %q failed: %v", in.Name, err)), nil, nil
+		}
+		return withDash(b, ctx, fmt.Sprintf("captured blueprint %q: %d tiles written to %s — re-apply with apply_blueprint{name:%q, origin_x, origin_y, origin_z}", in.Name, count, path, in.Name)), nil, nil
 	})
 }
