@@ -278,21 +278,31 @@ func (e *CommandExecutor) SendWorkOrderCommand(orderType uint8, quantity uint16)
 // SendWorkOrderCommand instead for standing/bulk production once a manager
 // exists. Call again to queue more than one job.
 //
-// orderType is normally one of the protocol.OrderType* byte constants;
-// pass protocol.OrderTypeByName with jobTypeName set to a DFHack job_type
-// enum key name (e.g. "ConstructHatchCover") to reach any job type the
-// plugin can resolve by name instead — no new byte constant needed (see
-// the job_types tool for discovery). jobTypeName is ignored unless
-// orderType is protocol.OrderTypeByName.
-func (e *CommandExecutor) SendQueueJob(x, y, z int16, orderType uint8, jobTypeName string) (*CommandResult, error) {
+// orderType is normally one of the protocol.OrderType* byte constants.
+// Pass protocol.OrderTypeByName with name set to a DFHack job_type enum
+// key name (e.g. "ConstructHatchCover") to reach any job type the plugin
+// can resolve by name instead — no new byte constant needed (see the
+// job_types tool for discovery). Pass protocol.OrderTypeCustomReaction
+// with name set to a df::reaction code (e.g. "BREW_DRINK_FROM_PLANT",
+// discoverable via the list_reactions tool) to reach a raw-defined
+// reaction directly instead — this is how brewing and anything else with
+// no job_type mapping gets queued. name is ignored (and left unset on the
+// wire) for the plain byte-vocabulary orderTypes.
+func (e *CommandExecutor) SendQueueJob(x, y, z int16, orderType uint8, name string) (*CommandResult, error) {
+	qj := protocol.QueueJobDesignation{
+		X: x, Y: y, Z: z,
+		OrderType: orderType,
+	}
+	switch orderType {
+	case protocol.OrderTypeByName:
+		qj.JobTypeName = name
+	case protocol.OrderTypeCustomReaction:
+		qj.ReactionCode = name
+	}
 	cmd := &protocol.CommandMessage{
 		CommandID:   e.tracker.GenerateCommandID(),
 		CommandType: protocol.CommandTypeQueueJob,
-		QueueJob: protocol.QueueJobDesignation{
-			X: x, Y: y, Z: z,
-			OrderType:   orderType,
-			JobTypeName: jobTypeName,
-		},
+		QueueJob:    qj,
 	}
 	return e.SendCommand(cmd)
 }

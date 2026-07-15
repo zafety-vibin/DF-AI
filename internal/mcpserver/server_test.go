@@ -74,6 +74,7 @@ var minToolArgs = map[string]map[string]any{
 	"step":               {"ticks": 1},
 	"name_place":         {"x": 1, "y": 1, "z": 1, "name": "test"},
 	// list_places has no required fields — {} default is fine, no entry needed.
+	// list_reactions has no required fields — {} default is fine, no entry needed.
 }
 
 // TestEveryToolNilBridge lists every registered tool and calls each one

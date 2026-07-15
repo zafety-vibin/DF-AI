@@ -369,30 +369,48 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	})
 
 	type queueJobIn struct {
-		X     int    `json:"x" jsonschema:"target workshop's tile (any tile of its footprint)"`
-		Y     int    `json:"y"`
-		Z     int    `json:"z"`
-		Item  string `json:"item" jsonschema:"known short vocabulary: bed|table|chair|door|barrel|bucket|cabinet|coffer|blocks (drink/meal/crafts are NOT supported here — drink has no direct job_type mapping; meal/crafts resolve fine but the plugin rejects them, no verified material filter yet — use the order tool for all three instead) — OR any DFHack job_type enum name (e.g. ConstructHatchCover) for anything not in that list; look one up with the job_types tool"`
-		Count int    `json:"count" jsonschema:"how many jobs to queue, one at a time (default 1)"`
+		X        int    `json:"x" jsonschema:"target workshop's tile (any tile of its footprint)"`
+		Y        int    `json:"y"`
+		Z        int    `json:"z"`
+		Item     string `json:"item,omitempty" jsonschema:"known short vocabulary: bed|table|chair|door|barrel|bucket|cabinet|coffer|blocks (drink/meal/crafts are NOT supported here — drink has no direct job_type mapping; meal/crafts resolve fine but the plugin rejects them, no verified material filter yet — use the order tool for all three instead) — OR any DFHack job_type enum name (e.g. ConstructHatchCover) for anything not in that list; look one up with the job_types tool. Mutually exclusive with reaction — set exactly one."`
+		Reaction string `json:"reaction,omitempty" jsonschema:"reaction code e.g. BREW_DRINK_FROM_PLANT — discover via list_reactions; requires plugin rebuild to take effect. Mutually exclusive with item — set exactly one."`
+		Count    int    `json:"count" jsonschema:"how many jobs to queue, one at a time (default 1)"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "queue_job",
-		Description: "Queue a job directly at an existing workshop — no manager noble or office needed (unlike order, which needs both). Use this for an immediate one-off need; use order for standing/bulk production once a manager exists.",
+		Description: "Queue a job directly at an existing workshop — no manager noble or office needed (unlike order, which needs both). Use this for an immediate one-off need; use order for standing/bulk production once a manager exists. Pass exactly one of item (job-type vocabulary) or reaction (raw reaction code, e.g. for brewing — see list_reactions).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in queueJobIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
 		}
-		// The short vocabulary covers the common cases with no wire
-		// round-trip name lookup; anything else falls through to the
-		// plugin's generalized name-based resolution (protocol.OrderTypeByName
-		// — see work_orders.cpp resolveJobTypeByName) using the caller's
-		// string VERBATIM (not lowercased): DFHack job_type keys are
-		// case-sensitive CamelCase, e.g. "ConstructHatchCover".
-		ot, known := orderTypes[strings.ToLower(in.Item)]
-		jobName := ""
-		if !known {
-			ot = protocol.OrderTypeByName
-			jobName = in.Item
+		hasItem := in.Item != ""
+		hasReaction := in.Reaction != ""
+		if hasItem == hasReaction {
+			return withDash(b, ctx, "queue_job requires exactly one of item or reaction, not both/neither"), nil, nil
+		}
+
+		var ot uint8
+		var wireName string
+		var label string
+		if hasReaction {
+			ot = protocol.OrderTypeCustomReaction
+			wireName = in.Reaction
+			label = "reaction " + in.Reaction
+		} else {
+			// The short vocabulary covers the common cases with no wire
+			// round-trip name lookup; anything else falls through to the
+			// plugin's generalized name-based resolution (protocol.OrderTypeByName
+			// — see work_orders.cpp resolveJobTypeByName) using the caller's
+			// string VERBATIM (not lowercased): DFHack job_type keys are
+			// case-sensitive CamelCase, e.g. "ConstructHatchCover".
+			known, ok := orderTypes[strings.ToLower(in.Item)]
+			if ok {
+				ot = known
+			} else {
+				ot = protocol.OrderTypeByName
+				wireName = in.Item
+			}
+			label = in.Item
 		}
 		count := in.Count
 		if count <= 0 {
@@ -401,7 +419,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		queued := 0
 		var lastErr string
 		for i := 0; i < count; i++ {
-			res, err := b.Exec.SendQueueJob(int16(in.X), int16(in.Y), int16(in.Z), ot, jobName)
+			res, err := b.Exec.SendQueueJob(int16(in.X), int16(in.Y), int16(in.Z), ot, wireName)
 			if err == nil && res != nil && res.Success && res.ErrorMsg == "" {
 				queued++
 				continue
@@ -412,7 +430,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 			lastErr = resultDetail(res, err)
 			break // stop on first failure (queue full, wrong workshop, unrecognized name, etc.) — don't spam retries
 		}
-		what := fmt.Sprintf("queue %dx %s job at (%d,%d,%d)", count, in.Item, in.X, in.Y, in.Z)
+		what := fmt.Sprintf("queue %dx %s job at (%d,%d,%d)", count, label, in.X, in.Y, in.Z)
 		switch {
 		case queued == count:
 			return withDash(b, ctx, fmt.Sprintf("SUCCESS: %s (%d/%d queued)", what, queued, count)), nil, nil

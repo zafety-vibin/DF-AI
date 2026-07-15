@@ -277,6 +277,83 @@ func renderJobTypes(raw []byte, filtered bool) string {
 	return sb.String()
 }
 
+// reactionReagentEntry is one reagent summary from the plugin's
+// list_reactions query. ItemType is omitted when the reagent isn't an
+// item-typed reagent (queue_job's reaction path currently rejects those —
+// see work_orders.cpp applyQueueReactionJob).
+type reactionReagentEntry struct {
+	Code     string `json:"code"`
+	Quantity int    `json:"quantity"`
+	ItemType string `json:"item_type,omitempty"`
+}
+
+// reactionEntry is one entry from the plugin's list_reactions query — a
+// df::reaction's code, display name, the workshop(s) it can run at, and a
+// summary of its reagents.
+type reactionEntry struct {
+	Code      string                 `json:"code"`
+	Name      string                 `json:"name"`
+	Buildings []string               `json:"buildings"`
+	Reagents  []reactionReagentEntry `json:"reagents"`
+}
+
+// maxReactionsList caps the list_reactions tool's output, same rationale
+// as maxJobTypesList below — this is the pay-on-demand discovery tool for
+// queue_job's reaction path, not something called on every turn.
+const maxReactionsList = 60
+
+// renderReactions renders the list_reactions response for the discovery
+// tool. Every code shown here round-trips into queue_job's reaction param
+// (protocol.OrderTypeCustomReaction) verbatim — this is the catalog half
+// of reaction-based job queueing, work_orders.cpp
+// applyQueueReactionJob is the lookup/build half.
+func renderReactions(raw []byte, filtered bool) string {
+	var resp struct {
+		Reactions []reactionEntry `json:"reactions"`
+		Truncated bool            `json:"truncated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Sprintf("unparseable list_reactions response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	if len(resp.Reactions) == 0 {
+		return "No reactions matched that filter."
+	}
+	entries := resp.Reactions
+	truncated := resp.Truncated
+	if len(entries) > maxReactionsList {
+		entries = entries[:maxReactionsList]
+		truncated = true
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d reactions", len(resp.Reactions))
+	if truncated {
+		fmt.Fprintf(&sb, " (showing first %d — pass filter to narrow)", len(entries))
+	}
+	sb.WriteString(":\n")
+	for _, r := range entries {
+		fmt.Fprintf(&sb, "- %s (%s) @ %s", r.Code, r.Name, strings.Join(r.Buildings, "/"))
+		if len(r.Reagents) > 0 {
+			var parts []string
+			for _, rg := range r.Reagents {
+				part := rg.Code
+				if rg.ItemType != "" {
+					part += "=" + rg.ItemType
+				}
+				if rg.Quantity != 1 {
+					part += fmt.Sprintf("x%d", rg.Quantity)
+				}
+				parts = append(parts, part)
+			}
+			fmt.Fprintf(&sb, " [needs: %s]", strings.Join(parts, ", "))
+		}
+		sb.WriteString("\n")
+	}
+	if !filtered && !truncated {
+		sb.WriteString("(pass filter next time to narrow this list)\n")
+	}
+	return sb.String()
+}
+
 // renderDwarfList renders the id/position roster, capped at maxDwarfList.
 func renderDwarfList(dwarves []protocol.EntityInfo) string {
 	var sb strings.Builder
@@ -465,5 +542,24 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
 		}
 		return withDash(b, ctx, renderJobTypes(raw, in.Filter != "")), nil, nil
+	})
+
+	type listReactionsIn struct {
+		Filter string `json:"filter,omitempty" jsonschema:"optional case-insensitive substring filter against the reaction code or display name (e.g. 'brew', 'plant') — narrows the fortress-mode reaction catalog instead of dumping all of it"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_reactions",
+		Description: "Look up raw-defined df::reaction codes for queue_job's reaction param — this is the ONLY way to queue reactions like brewing that have no job_type mapping at all (queue_job's item vocabulary can't reach them). Pass the exact code found here (e.g. BREW_DRINK_FROM_PLANT) as queue_job's reaction argument. Call this ONLY when you need to discover a code you don't already know; it is a separate tool from queue_job precisely so it isn't paid on every call. Pass filter to narrow.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in listReactionsIn) (*mcp.CallToolResult, any, error) {
+		args := "{}"
+		if in.Filter != "" {
+			argBytes, _ := json.Marshal(map[string]string{"filter": in.Filter})
+			args = string(argBytes)
+		}
+		raw, err := b.Query(ctx, "list_reactions", args)
+		if err != nil {
+			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+		}
+		return withDash(b, ctx, renderReactions(raw, in.Filter != "")), nil, nil
 	})
 }
