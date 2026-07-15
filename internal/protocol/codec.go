@@ -1089,34 +1089,6 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		if err := binary.Write(w, binary.BigEndian, msg.OriginZ); err != nil {
 			return err
 		}
-	case CommandTypeBuildFarmPlot:
-		// [2: X1] [2: Y1] [2: Z] [2: X2] [2: Y2] — byte-identical to
-		// CommandTypeStockpile minus the trailing GroupMask.
-		for _, v := range []int16{msg.FarmPlot.X1, msg.FarmPlot.Y1, msg.FarmPlot.Z, msg.FarmPlot.X2, msg.FarmPlot.Y2} {
-			if err := binary.Write(w, binary.BigEndian, v); err != nil {
-				return err
-			}
-		}
-	case CommandTypeSetFarmCrop:
-		// [2: X] [2: Y] [2: Z] [1: Season] [2: NameLen] [N: CropName]
-		for _, v := range []int16{msg.SetFarmCrop.X, msg.SetFarmCrop.Y, msg.SetFarmCrop.Z} {
-			if err := binary.Write(w, binary.BigEndian, v); err != nil {
-				return err
-			}
-		}
-		if err := binary.Write(w, binary.BigEndian, msg.SetFarmCrop.Season); err != nil {
-			return err
-		}
-		cropBytes := []byte(msg.SetFarmCrop.CropName)
-		if len(cropBytes) > 255 {
-			return errors.New("set_farm_crop crop name too long (max 255 bytes)")
-		}
-		if err := binary.Write(w, binary.BigEndian, uint16(len(cropBytes))); err != nil {
-			return err
-		}
-		if _, err := w.Write(cropBytes); err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -1365,30 +1337,6 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 		if err := binary.Read(buf, binary.BigEndian, &msg.OriginZ); err != nil {
 			return nil, err
 		}
-	case CommandTypeBuildFarmPlot:
-		for _, p := range []*int16{&msg.FarmPlot.X1, &msg.FarmPlot.Y1, &msg.FarmPlot.Z, &msg.FarmPlot.X2, &msg.FarmPlot.Y2} {
-			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
-				return nil, err
-			}
-		}
-	case CommandTypeSetFarmCrop:
-		for _, p := range []*int16{&msg.SetFarmCrop.X, &msg.SetFarmCrop.Y, &msg.SetFarmCrop.Z} {
-			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
-				return nil, err
-			}
-		}
-		if err := binary.Read(buf, binary.BigEndian, &msg.SetFarmCrop.Season); err != nil {
-			return nil, err
-		}
-		var cropLen uint16
-		if err := binary.Read(buf, binary.BigEndian, &cropLen); err != nil {
-			return nil, err
-		}
-		cropBytes := make([]byte, cropLen)
-		if _, err := io.ReadFull(buf, cropBytes); err != nil {
-			return nil, err
-		}
-		msg.SetFarmCrop.CropName = string(cropBytes)
 	default:
 		return nil, fmt.Errorf("unknown command type: 0x%02X", msg.CommandType)
 	}

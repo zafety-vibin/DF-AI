@@ -89,18 +89,6 @@ constexpr uint8_t COMMAND_TYPE_CREATE_LOCATION   = 0x12;
 constexpr uint8_t COMMAND_TYPE_ASSIGN_LODGING    = 0x13;
 constexpr uint8_t COMMAND_TYPE_UNASSIGN_LODGING  = 0x14;
 constexpr uint8_t COMMAND_TYPE_REMOVE_ZONE       = 0x15;
-constexpr uint8_t COMMAND_TYPE_BUILD_FARM_PLOT   = 0x16;
-constexpr uint8_t COMMAND_TYPE_SET_FARM_CROP     = 0x17;
-
-// Farm season wire values for COMMAND_TYPE_SET_FARM_CROP's Season byte.
-// 0-3 select one of df::building_farmplotst::plant_id[season]'s four
-// slots; SEASON_ALL is a wire-level convenience (write the same crop into
-// all four slots) -- matches internal/protocol/message.go FarmSeason*.
-constexpr uint8_t SEASON_SPRING = 0x00;
-constexpr uint8_t SEASON_SUMMER = 0x01;
-constexpr uint8_t SEASON_AUTUMN = 0x02;
-constexpr uint8_t SEASON_WINTER = 0x03;
-constexpr uint8_t SEASON_ALL    = 0xFF;
 
 // Location types -- DF-AI's own wire values for df::abstract_building_type's
 // INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL. A Location is created FROM an

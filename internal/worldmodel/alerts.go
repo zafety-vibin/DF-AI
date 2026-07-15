@@ -79,6 +79,12 @@ func (s *AlertStore) Add(a Alert) bool {
 		}
 		s.entries[idx].RepeatCount = a.RepeatCount
 		s.entries[idx].ReceivedAt = a.ReceivedAt
+		// A repeat-count bump means the SAME problem fired again -- if the
+		// LLM had previously dismissed this ID, that dismissal no longer
+		// applies to the new occurrence. Without this, a dismissed alert's
+		// repeat bump stays invisible forever: Snapshot/Active() filter
+		// Dismissed alerts out, so the recurrence never reaches stepReport.
+		s.entries[idx].Dismissed = false
 		return true
 	}
 
