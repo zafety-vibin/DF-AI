@@ -117,9 +117,12 @@ Runs alongside Gates 2-4:
   it needs both a Manager noble and a walled office (chair+table+door),
   and nothing currently assigns a noble or claims a room, so it will sit
   `validated=true, active=false` forever on a fresh fort.
-- Day-one `stocks` check on DRINK/food quantities. If thin, don't count on
-  brewing to cover the gap this session — brewing is a CustomReaction with
-  no `job_type` mapping, so it may not be queueable at all yet.
+- Day-one `stocks` check on DRINK/food quantities. If thin, reach for
+  `queue_job` with `reaction=BREW_DRINK_FROM_PLANT` at a built Still — this
+  is the fort's one real drink chain today (see `df-farming`). The `order`
+  tool's `drink` item is the dead end, not brewing itself: it maps to a
+  `job_type` of -1 and never dispatches. Re-test the `queue_job` reaction
+  path at session start per `df-farming`'s caveat before counting on it.
 - Locate surface water (open water tile via `survey_site`/`cross_section`/
   `look`) and `designate_zone` `water_source` over it as dehydration
   insurance, independent of whether the drink chain is available.
@@ -144,9 +147,11 @@ If a social space is wanted, `designate_zone` `meeting_hall` +
 
 Zone type names are snake_case and case-insensitive but NOT
 camelCase-tolerant (`meeting_hall`/`Bedroom` work, `MeetingHall` doesn't).
-There is no zone-deletion tool — a zone painted in the wrong tile is a
-permanent squatter for the fort's life. Don't test-paint zones in rooms you
-care about later.
+`remove_zone` exists and is wired end-to-end (plugin `applyRemoveZone`) —
+a zone painted in the wrong tile is recoverable, not a permanent squatter.
+Still don't test-paint zones carelessly in rooms you care about, but a
+mistake here is fixable with `remove_zone` rather than a reason to plan
+around it.
 
 ## Cross-cutting, applies at every gate
 

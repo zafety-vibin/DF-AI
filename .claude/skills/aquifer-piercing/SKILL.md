@@ -12,24 +12,31 @@ aquifer; treat every step below as load-bearing unless marked otherwise.
 ## 0. Identify before you commit
 
 DF tags each aquifer Light / Heavy / Varied at worldgen — this is fixed and
-cannot change fort-to-fort. **Gap: no current tool surfaces that tag.**
-`survey_site`, `cross_section`, and `look` all expose an aquifer boolean and
-a water-depth number per tile (including hidden tiles — this is one of the
-few sanctioned exceptions to the fog-of-war rule), but not the
-Light/Heavy/Varied classification itself. You will have to infer heaviness
-from behavior:
+cannot change fort-to-fort. The embark/site-selection screen shows this tag
+directly — read and record it there, before you ever break ground, rather
+than waiting to infer it from in-dig behavior. **Gap: once past embark, no
+current tool surfaces that tag again.** `survey_site`, `cross_section`, and
+`look` all expose an aquifer boolean and a water-depth number per tile
+(including hidden tiles — this is one of the few sanctioned exceptions to
+the fog-of-war rule), but not the Light/Heavy/Varied classification itself.
+If you didn't capture the embark-screen tag (a resumed fort, a site someone
+else embarked), fall back to inferring heaviness from in-dig behavior:
 
 - **LIGHT** (the only variant this protocol is verified against): a freshly
-  opened aquifer tile seeps slowly — depth climbs over game-days, not ticks.
-  The rest of this skill applies as written.
-- **HEAVY**: a freshly opened tile visibly fills to standing depth within a
-  single short `step()`. If you see this, STOP piercing immediately — the
+  opened aquifer tile seeps slowly — roughly a few units of depth per
+  tile per in-game month, i.e. days per tile of visible rise. The rest of
+  this skill applies as written.
+- **HEAVY**: seepage runs roughly an order of magnitude faster tile-for-tile
+  (on the order of a full depth-step per tile within tens of ticks) — a
+  freshly opened tile visibly fills to standing depth within a single short
+  `step()`. If you see this, STOP piercing immediately — the
   wall-in-shallow-water step below does not work against heavy inflow (see
   §7). Do not keep digging "to see how bad it is"; each additional opened
   tile is an additional uncapped inflow source.
-- Record which one you're dealing with in `fortress/memory/learnings.md`
-  once observed — it's worldgen-fixed, so this fort's answer is also every
-  future descent's answer at the same site, not a one-time note.
+- Record which one you're dealing with (embark tag if you have it, inferred
+  behavior otherwise) in `fortress/memory/learnings.md` once known — it's
+  worldgen-fixed, so this fort's answer is also every future descent's
+  answer at the same site, not a one-time note.
 
 ## 1. Shaft down to one level above the aquifer
 
@@ -39,20 +46,16 @@ sanctioned fixed-dimension rule (charter-level, not an aquifer-specific
 choice). Stop the designation at the level immediately above the aquifer
 layer; don't let a single stairs call blindly run through the wet layer
 and beyond, or you lose the ability to freeze the descent at the right
-depth (§3).
+depth (§2).
 
-## 2. Quarry the stone below FIRST
+## 2. Pierce, expect a silent cancel, re-designate
 
-Before opening the aquifer layer at all, get a miner onto the stone level(s)
-below it and start quarrying boulders. This is a lesson paid for in an
-earlier fort: the seal in §5 needs boulders for constructed walls on every
-ring tile, all at once, the moment the ring opens — if you wait to mine
-boulders until after the ring is dug, the seal stalls for days on missing
-material while the ring keeps seeping. Bank the boulders before you pierce.
+Designate the aquifer level itself (stairs, continuing the same shaft), and
+let that same stairs call carry through 1-2 levels further, into the stone
+below the aquifer — you need the shaft to actually reach that stone before
+it can be quarried in §3; quarrying stone that's still sealed behind the
+unpierced aquifer is not physically possible.
 
-## 3. Pierce, expect a silent cancel, re-designate
-
-Designate the aquifer level itself (stairs, continuing the same shaft).
 The first attempt will very likely warning-cancel on contact with the
 aquifer — DF announces this LOUDLY exactly once, then the announcement
 system dedups: a second silent cancel on the same tiles produces **no
@@ -60,9 +63,21 @@ alert at all**. Don't try to diagnose a vanished designation from alerts;
 just re-designate the same tiles a second time. The second designation
 digs for real.
 
-Immediately after the pierce takes, freeze the descent: cancel any deeper
-stairs designation (`cancel_designation`) so seepage collects in a small
-catch basin at this level rather than draining into the rest of the fort.
+Once the shaft has reached 1-2 levels below the aquifer, freeze the
+descent there: cancel any deeper stairs designation (`cancel_designation`)
+so seepage collects in a small catch basin spanning the aquifer level down
+to that landing, rather than draining further into the rest of the fort.
+
+## 3. Quarry the stone below FIRST
+
+With the shaft now reaching stone 1-2 levels below the aquifer (§2), get a
+miner onto that level and start quarrying boulders BEFORE mining the seal
+ring at the aquifer level (§4). This is a lesson paid for in an earlier
+fort: the seal in §5 needs boulders for constructed walls on every ring
+tile, all at once, the moment the ring opens — if you wait to mine
+boulders until after the ring is dug, the seal stalls for days on missing
+material while the ring keeps seeping. Bank the boulders before you open
+the ring.
 
 ## 4. Ring the aquifer level — orthogonal only
 
@@ -74,7 +89,7 @@ optional" as a shortcut is actually just correct physics, not a risk.
 Mine the orthogonal neighbor ring around the shaft at the aquifer level
 (`designate_dig type=mine`). Expect this to take up to **three
 designation rounds**, not one or two — and remember the same dedup rule
-from §3 applies here: a ring tile that re-cancels because it's adjacent to
+from §2 applies here: a ring tile that re-cancels because it's adjacent to
 tiles with standing water produces no alert on repeat cancels either. Keep
 re-designating any ring tile that hasn't visibly dug yet after a step;
 designations are free, so there's no cost to over-re-issuing. The wetter
@@ -87,7 +102,7 @@ natural wall is made of:
 
 - **Sand/soil aquifer**: natural walls can't be smoothed shut. Queue
   constructed walls (`build`) on every mined ring tile using the boulders
-  banked in §2. Builders will work standing in shallow water, so don't
+  banked in §3. Builders will work standing in shallow water, so don't
   wait for the tile to dry — queue the build the instant the ring tile is
   mined. ALL sides of the ring must end as constructed wall; a ring with
   one unsealed face isn't sealed.
@@ -106,34 +121,34 @@ Two things NOT to do:
   pocket drain and thin out down the shaft, then wall the gap to
   re-isolate it same as any other ring tile.
 
-## 6. Mining vs. construction stall diagnostic — unverified depth numbers, don't over-trust the digits
+## 6. Mining vs. construction stall diagnostic — the 2/7 vs 4/7 split
 
 Two different job types run at the same time in a flooding ring, and
-confusing their stall behavior wastes a session. Unlike the rest of this
-checklist, the exact depth thresholds below are **not yet backed by fort
-experience** — treat the behavior pattern as reliable and the specific
-numbers as rough estimates to sanity-check against what you actually
-observe, not ground truth to plan around:
+confusing their stall behavior wastes a session:
 
-- **Mining** (opening ring tiles) stops once a tile is wet enough — deep
-  standing water will block a dig outright. The exact depth isn't
-  verified; treat "won't dig, ring tile stays undug turn after turn" as the
-  signal rather than trusting a specific digit.
-- **Construction** (sealing ring tiles) tolerates real standing water: the
-  verified fort-experience finding in `fortress/memory/learnings.md` is
-  that builders work fine in **≤3-depth water**. Beyond that, a queued
-  build job can sit SUSPENDED waiting for the water to recede a notch
-  rather than failing outright — but the exact depth where suspension
-  kicks in is not yet verified, and should NOT be assumed to be a lower
-  number than the ≤3 builders are already known to tolerate.
+- **Construction** (sealing ring tiles) suspends once water reaches
+  **2/7** depth at the tile — the job doesn't fail, it sits queued and
+  waiting. This is a lower threshold than you'd guess from the earlier
+  fort-experience note that builders "work fine in ≤3-depth water": below
+  2/7 the job runs normally, at-or-above 2/7 it suspends rather than
+  completing, and it can still be sitting there, recoverable, well past
+  that point.
+- **Mining** (opening ring tiles) tolerates more standing water before it
+  gives up outright — it keeps working until roughly **4/7**, beyond which
+  the dig stops. A ring tile that stays undug turn after turn despite
+  repeated re-designation (§4) at this depth is hitting this ceiling, not
+  a dedup-hidden cancel.
 
-If walls are stalling while mining elsewhere on the same ring keeps
-progressing, that's the suspend case, not a broken plan: use `unsuspend`
-on the stalled building/job and retry, rather than re-designating or
-redesigning the seal. Re-planning a suspended-not-failed job wastes a turn
-for nothing. Record the actual depth you observe triggering a suspend in
-`fortress/memory/learnings.md` once seen, so this section can graduate
-from estimate to verified.
+If walls are stalling (suspended) while mining elsewhere on the same ring
+keeps progressing, that's the 2/7 suspend case, not a broken plan: use
+`unsuspend` on the stalled building/job and retry, rather than
+re-designating or redesigning the seal. Re-planning a suspended-not-failed
+job wastes a turn for nothing. Conversely, if a ring tile simply won't dig
+no matter how many times you re-designate it, check the water depth first
+— at or above the ~4/7 mining ceiling, re-designating won't help until the
+level around it drains a notch (draw down through the shaft/basin, or wait
+out evaporation from an already-sealed neighbor face) — it's not a
+dedup-swallowed damp-cancel like §2/§4.
 
 ## 7. HEAVY aquifers — unverified, do not treat as interchangeable with light
 
@@ -166,8 +181,10 @@ gaps close, dangerous while trying to pierce past it).
 ## 8. Multi-layer aquifers
 
 If `cross_section`/`survey_site` shows the aquifer flag set on more than
-one z-level, treat each damp level as its own full instance of §3-§6:
-every wet level needs its own ring and its own seal, not just the top one.
+one z-level, treat each damp level as its own full instance of the
+pierce/ring/wall/diagnostic cycle (§2, §4-§6 — the one-time boulder
+quarry in §3 doesn't repeat per level): every wet level needs its own
+ring and its own seal, not just the top one.
 Also: the level immediately BELOW the lowest wet layer is still wet space
 from a seepage standpoint (straight-down seepage from the layer above) —
 don't assume "the aquifer" ends the moment you stop seeing the flag; check
