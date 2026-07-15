@@ -257,6 +257,21 @@ func (e *CommandExecutor) SendRemoveBuilding(x, y, z int16) (*CommandResult, err
 	return e.SendCommand(cmd)
 }
 
+// SendRemoveZone deconstructs the civzone occupying (x,y,z) immediately —
+// civzones take DFHack's on_civzone_delete branch, unlike constructed
+// buildings (see SendRemoveBuilding), so this never queues dwarf labor.
+// The plugin rejects the call if the zone founds a Location.
+func (e *CommandExecutor) SendRemoveZone(x, y, z int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeRemoveZone,
+		RemoveZone: protocol.RemoveZoneDesignation{
+			X: x, Y: y, Z: z,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
 // SendWorkOrderCommand adds a manager work order to produce N items of
 // the given type. The manager dispatches to whichever workshop can fulfill
 // the order, drawing reagents from stockpiles automatically.

@@ -306,6 +306,7 @@ const (
 	CommandTypeCreateLocation  uint8 = 0x12 // Convert a MeetingHall civzone into a Location (Tavern/Temple/Library/Guildhall)
 	CommandTypeAssignLodging   uint8 = 0x13 // Link a Bedroom civzone as guest lodging for a Tavern Location
 	CommandTypeUnassignLodging uint8 = 0x14 // Remove a Bedroom civzone from lodging duty
+	CommandTypeRemoveZone      uint8 = 0x15 // Deconstruct the civzone at a tile (rejected if it founds a Location)
 )
 
 // Labor constants for the SET_LABOR command. The value IS the real
@@ -577,6 +578,16 @@ type UnassignZoneDesignation struct {
 	UnitID  int32
 }
 
+// RemoveZoneDesignation targets the civzone occupying (X,Y,Z) for immediate
+// deconstruction (Buildings::deconstruct takes the on_civzone_delete
+// immediate-removal branch for civzones — no dwarf labor involved, unlike
+// RemoveBuildingDesignation's constructed buildings). Rejected plugin-side
+// if the zone founds a Location (location_id set) — cascade behavior there
+// is unconfirmed, so unassign/retire the Location first.
+type RemoveZoneDesignation struct {
+	X, Y, Z int16
+}
+
 // CreateLocationDesignation targets the MeetingHall civzone at (X,Y,Z)
 // and converts it into a Location of LocationType. Profession is
 // required only when LocationType is LocationTypeGuildhall.
@@ -724,6 +735,7 @@ type CommandMessage struct {
 	SetLabor     SetLaborDesignation       // For SET_LABOR commands
 	AssignZone   AssignZoneDesignation     // For ASSIGN_ZONE commands
 	UnassignZone UnassignZoneDesignation   // For UNASSIGN_ZONE commands
+	RemoveZone   RemoveZoneDesignation     // For REMOVE_ZONE commands
 
 	CreateLocation  CreateLocationDesignation  // For CREATE_LOCATION commands
 	AssignLodging   AssignLodgingDesignation   // For ASSIGN_LODGING commands
@@ -740,7 +752,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeUnassignLodging {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeRemoveZone {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 

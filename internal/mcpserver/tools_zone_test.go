@@ -66,6 +66,38 @@ func TestRenderZones_NoZones(t *testing.T) {
 	}
 }
 
+func TestRenderZones_NonAnimalRosterSaysAssigned(t *testing.T) {
+	// Dormitory is a roster-type zone like Pen/Pond, but its roster is
+	// units, not livestock -- must not get the "animals" phrasing.
+	raw := []byte(`{"zones":[
+		{"kind":6,"type_name":"Dormitory","x1":1,"y1":1,"x2":4,"y2":4,"z":90,"owner_unit_id":-1,"assigned_units":[7]}
+	]}`)
+	out := renderZones(raw, "", -1)
+	if !strings.Contains(out, "1 assigned") {
+		t.Fatalf("expected Dormitory to say 'assigned', got:\n%s", out)
+	}
+	if strings.Contains(out, "animals") {
+		t.Fatalf("Dormitory must not use 'animals' phrasing, got:\n%s", out)
+	}
+}
+
+func TestZoneTypeVocabulary_ContainsAllTypesSorted(t *testing.T) {
+	// designate_zone's unknown-type error appends this vocabulary so the
+	// model never has to guess at valid zone type names.
+	vocab := zoneTypeVocabulary()
+	for name := range zoneWireTypes {
+		if !strings.Contains(vocab, name) {
+			t.Fatalf("zoneTypeVocabulary missing %q: %s", name, vocab)
+		}
+	}
+	if !strings.Contains(vocab, "bedroom") || !strings.Contains(vocab, "water_source") {
+		t.Fatalf("expected bedroom and water_source in vocabulary: %s", vocab)
+	}
+	if strings.Index(vocab, "bedroom") > strings.Index(vocab, "water_source") {
+		t.Fatalf("expected sorted vocabulary (bedroom before water_source): %s", vocab)
+	}
+}
+
 func TestRenderZones_Truncated(t *testing.T) {
 	out := renderZones([]byte(`{"zones":[{"kind":1,"type_name":"Bedroom","x1":1,"y1":1,"x2":1,"y2":1,"z":90,"owner_unit_id":-1,"assigned_units":[]}],"truncated":true}`), "", -1)
 	if !strings.Contains(out, "truncated") {

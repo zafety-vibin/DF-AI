@@ -58,6 +58,7 @@ bool applyGatherDesignation(int16_t x1, int16_t y1, int16_t z1, int16_t x2, int1
 // Forward declarations for functions in this file
 bool applyUnsuspend(int16_t x, int16_t y, int16_t z, std::string &error);
 bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error);
+bool applyRemoveZone(int16_t x, int16_t y, int16_t z, std::string &error);
 bool applySetLabor(int32_t unitID, uint8_t laborID, bool enable, std::string &error);
 
 // Forward declaration for function in buildings.cpp
@@ -846,6 +847,18 @@ void executeCommand(const std::vector<uint8_t> &payload)
             int16_t z = ((int16_t)payload[9] << 8) | payload[10];
             int32_t unitID = (int32_t)read_uint32_be(payload, 11);
             success = applyUnassignZone(x, y, z, unitID, error);
+            break;
+        }
+        case COMMAND_TYPE_REMOVE_ZONE: {
+            // Payload: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z]
+            if (payload.size() < 11) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid REMOVE_ZONE payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            success = applyRemoveZone(x, y, z, error);
             break;
         }
         case COMMAND_TYPE_CREATE_LOCATION: {

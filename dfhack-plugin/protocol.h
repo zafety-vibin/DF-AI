@@ -78,6 +78,7 @@ constexpr uint8_t COMMAND_TYPE_UNASSIGN_ZONE = 0x11;
 constexpr uint8_t COMMAND_TYPE_CREATE_LOCATION   = 0x12;
 constexpr uint8_t COMMAND_TYPE_ASSIGN_LODGING    = 0x13;
 constexpr uint8_t COMMAND_TYPE_UNASSIGN_LODGING  = 0x14;
+constexpr uint8_t COMMAND_TYPE_REMOVE_ZONE       = 0x15;
 
 // Location types -- DF-AI's own wire values for df::abstract_building_type's
 // INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL. A Location is created FROM an

@@ -54,6 +54,7 @@ var minToolArgs = map[string]map[string]any{
 	"designate_zone": {"type": "bedroom", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
 	"assign_zone":    {"x": 1, "y": 1, "z": 1, "unit_id": 1},
 	"unassign_zone":  {"x": 1, "y": 1, "z": 1, "unit_id": 1},
+	"remove_zone":    {"x": 1, "y": 1, "z": 1},
 	// list_zones has no required fields — {} default is fine, no entry needed.
 	"create_location":  {"x": 1, "y": 1, "z": 1, "type": "tavern"},
 	"assign_lodging":   {"tavern_x": 1, "tavern_y": 1, "tavern_z": 1, "bedroom_x": 2, "bedroom_y": 2, "bedroom_z": 2},

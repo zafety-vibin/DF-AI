@@ -29,6 +29,29 @@ func TestRemoveBuildingRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEncodeDecodeRemoveZoneCommand(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   9,
+		CommandType: CommandTypeRemoveZone,
+		RemoveZone:  RemoveZoneDesignation{X: 20, Y: 30, Z: 90},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 9 || got.CommandType != CommandTypeRemoveZone || got.RemoveZone != orig.RemoveZone {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
 func TestQueueJobRoundTrip(t *testing.T) {
 	orig := &CommandMessage{
 		CommandID:   8,

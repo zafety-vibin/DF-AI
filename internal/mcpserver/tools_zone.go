@@ -26,6 +26,18 @@ var zoneWireTypes = map[string]uint8{
 	"dungeon": protocol.ZoneTypeDungeon, "animal_training": protocol.ZoneTypeAnimalTraining,
 }
 
+// zoneTypeVocabulary renders zoneWireTypes' keys sorted, for use in
+// educational error messages (house style: never leave the model guessing
+// at the valid vocabulary).
+func zoneTypeVocabulary() string {
+	keys := make([]string, 0, len(zoneWireTypes))
+	for k := range zoneWireTypes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
+}
+
 type zoneListEntry struct {
 	Kind          int    `json:"kind"`
 	TypeName      string `json:"type_name"`
@@ -118,9 +130,15 @@ func renderZones(raw []byte, typeFilter string, zFilter int) string {
 				animals += len(z.AssignedUnits)
 			}
 			fmt.Fprintf(&sb, "- %d %s", len(zones), t)
+			// "animals" phrasing only makes sense for Pen/Pond (roster =
+			// livestock); every other roster-type zone (e.g. Dormitory)
+			// rosters units, not animals, so say "assigned" instead.
+			isAnimalZone := strings.EqualFold(t, "Pen") || strings.EqualFold(t, "Pond")
 			switch {
-			case animals > 0:
+			case animals > 0 && isAnimalZone:
 				fmt.Fprintf(&sb, " (%d animals total)", animals)
+			case animals > 0:
+				fmt.Fprintf(&sb, " (%d assigned)", animals)
 			case hasOwnerData:
 				fmt.Fprintf(&sb, " (%d owned, %d unowned)", owned, unowned)
 			}
@@ -151,7 +169,7 @@ func registerZoneTools(srv *mcp.Server, b *Bridge) {
 		}
 		zt, ok := zoneWireTypes[strings.ToLower(in.Type)]
 		if !ok {
-			return withDash(b, ctx, fmt.Sprintf("unknown zone type %q", in.Type)), nil, nil
+			return withDash(b, ctx, fmt.Sprintf("unknown zone type %q -- valid types: %s", in.Type, zoneTypeVocabulary())), nil, nil
 		}
 		res, err := b.Exec.SendZoneCommand(zt, int16(in.X1), int16(in.Y1), int16(in.Z), int16(in.X2), int16(in.Y2))
 		what := fmt.Sprintf("designate_zone %s (%d,%d)-(%d,%d) z=%d", in.Type, in.X1, in.Y1, in.X2, in.Y2, in.Z)
@@ -222,5 +240,22 @@ func registerZoneTools(srv *mcp.Server, b *Bridge) {
 			zFilter = *in.Z
 		}
 		return withDash(b, ctx, renderZones(raw, in.Type, zFilter)), nil, nil
+	})
+
+	type removeZoneIn struct {
+		X int `json:"x" jsonschema:"a tile inside the target zone"`
+		Y int `json:"y"`
+		Z int `json:"z"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "remove_zone",
+		Description: "Deconstruct the zone at a tile immediately (civzones are removed on the spot, no dwarf labor involved -- unlike remove_building). Rejected if the zone founds a Location (Tavern/Temple/Library/Guildhall) -- unassign/retire the Location first.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in removeZoneIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		res, err := b.Exec.SendRemoveZone(int16(in.X), int16(in.Y), int16(in.Z))
+		what := fmt.Sprintf("remove_zone (%d,%d,%d)", in.X, in.Y, in.Z)
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 }

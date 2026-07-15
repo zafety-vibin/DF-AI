@@ -1012,6 +1012,13 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 				return err
 			}
 		}
+	case CommandTypeRemoveZone:
+		// [2: X] [2: Y] [2: Z]
+		for _, v := range []int16{msg.RemoveZone.X, msg.RemoveZone.Y, msg.RemoveZone.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
 	case CommandTypeQueueJob:
 		// [2: X] [2: Y] [2: Z] [1: OrderType] [2: NameLen][N: Name]
 		// The name tail is present ONLY when OrderType == OrderTypeByName or
@@ -1258,6 +1265,12 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 		}
 	case CommandTypeRemoveBuilding:
 		for _, p := range []*int16{&msg.Remove.X, &msg.Remove.Y, &msg.Remove.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+	case CommandTypeRemoveZone:
+		for _, p := range []*int16{&msg.RemoveZone.X, &msg.RemoveZone.Y, &msg.RemoveZone.Z} {
 			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
 				return nil, err
 			}

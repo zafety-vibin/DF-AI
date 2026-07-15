@@ -430,3 +430,34 @@ bool applyUnassignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::str
             return false;
     }
 }
+
+// Deconstruct the civzone at (x,y,z) immediately. Civzones take DFHack's
+// on_civzone_delete branch inside Buildings::deconstruct (confirmed against
+// library/modules/Buildings.cpp:1307-1348 in the 53.15-r1 checkout) -- no
+// dwarf labor queued, unlike a constructed building (applyRemoveBuilding).
+//
+// Rejected if the zone founds a Location (location_id != -1): what happens
+// to the Location side of that relationship when its founding civzone
+// disappears out from under it is not confirmed against this checkout, so
+// per house style this is an explicit named error rather than a guess --
+// unassign/retire the Location first (see locations.cpp), then remove the
+// zone.
+bool applyRemoveZone(int16_t x, int16_t y, int16_t z, std::string &error)
+{
+    df::building_civzonest *zone = findZoneAt(x, y, z, error);
+    if (!zone) return false;
+
+    if (zone->location_id != -1) {
+        error = "this zone founds a Location (location_id=" + std::to_string(zone->location_id) +
+                ") -- removing located zones is not supported yet; unassign/retire the location first";
+        return false;
+    }
+
+    if (!Buildings::deconstruct(zone)) {
+        error = "Buildings::deconstruct failed to remove the zone";
+        return false;
+    }
+
+    error = "zone removed immediately";
+    return true;
+}
