@@ -10,6 +10,7 @@
 
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <cstdint>
 
 using namespace DFHack;
@@ -35,7 +36,16 @@ extern void write_int16_be(std::vector<uint8_t> &buf, int16_t value);
 
 // Shared flag computation (implemented in tile_extractor.cpp) — single
 // source of truth for tile flags across the full-state and delta paths.
-uint8_t compute_tile_flags(MapExtras::MapCache &map_cache, const df::coord &pos, df::tiletype tile_type);
+// `dig_job_targets` must be built once per pass via collect_dig_job_targets
+// and threaded through unchanged -- see the comment on compute_tile_flags
+// in tile_extractor.cpp for why (the 062455f asymmetry bug this guards
+// against).
+uint8_t compute_tile_flags(MapExtras::MapCache &map_cache, const df::coord &pos, df::tiletype tile_type,
+                            const std::unordered_set<df::coord> &dig_job_targets);
+
+// Builds the set of tiles with an in-flight dig-designation job (implemented
+// in tile_extractor.cpp).
+std::unordered_set<df::coord> collect_dig_job_targets();
 
 // Detect changed tiles by comparing current state to cache
 // Returns binary tile data for changed tiles only (9 bytes per tile)
@@ -55,6 +65,10 @@ std::vector<uint8_t> detect_tile_changes()
 
     MapExtras::MapCache map_cache;
 
+    // Job-target coords with an in-flight dig job, built once for this pass
+    // (see compute_tile_flags's declaration comment above).
+    std::unordered_set<df::coord> dig_job_targets = collect_dig_job_targets();
+
     // Scan all tiles and compare to cache
     for (int32_t z = 0; z < z_max; z++) {
         for (int32_t y = 0; y < y_max; y++) {
@@ -65,7 +79,7 @@ std::vector<uint8_t> detect_tile_changes()
                 // Full flag byte — same computation as the full-state path
                 // (compute_tile_flags in tile_extractor.cpp), so delta tiles
                 // carry real hidden/designated/wall/floor/liquid knowledge.
-                uint8_t flags = compute_tile_flags(map_cache, pos, current_type);
+                uint8_t flags = compute_tile_flags(map_cache, pos, current_type, dig_job_targets);
 
                 uint64_t key = make_tile_key(x, y, z);
                 uint32_t state = make_tile_state(current_type, flags);

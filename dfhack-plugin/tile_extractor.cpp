@@ -9,15 +9,65 @@
 #include "df/world.h"
 #include "df/tiletype.h"
 #include "df/tiletype_material.h"
+#include "df/job.h"
+#include "df/job_list_link.h"
 
 #include "protocol.h"
 
 #include <vector>
+#include <unordered_set>
 #include <cstdint>
 #include <cstdio>
 
 using namespace DFHack;
 using namespace df::enums;
+
+// Whether a job_type represents an in-flight dig-designation job — a unit
+// has claimed the designation and is walking to/working the tile. DF clears
+// (or stops reflecting) designation.bits.dig once a job claims it, so a
+// tile mid-dig looks indistinguishable from an undesignated one if we only
+// read the designation bit. DFHack's own dig-now.cpp (plugins/dig-now.cpp,
+// DesignationJobs::load) treats exactly this set of job types as
+// designation-equivalent; mirrored here for the same reason.
+bool is_dig_job_type(df::job_type type)
+{
+    switch (type) {
+        case df::job_type::Dig:
+        case df::job_type::DigChannel:
+        case df::job_type::CarveRamp:
+        case df::job_type::CarveUpwardStaircase:
+        case df::job_type::CarveDownwardStaircase:
+        case df::job_type::CarveUpDownStaircase:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Build the set of tile coordinates with an in-flight dig-designation job
+// (see is_dig_job_type). Call once per extraction pass and pass the result
+// into compute_tile_flags for every tile in that pass -- walking the global
+// job list per-tile would be O(tiles * jobs).
+std::unordered_set<df::coord> collect_dig_job_targets()
+{
+    std::unordered_set<df::coord> targets;
+
+    if (!df::global::world) {
+        return targets;
+    }
+
+    for (df::job_list_link *node = df::global::world->jobs.list.next; node; node = node->next) {
+        df::job *job = node->item;
+        if (!job) {
+            continue;
+        }
+        if (is_dig_job_type(job->job_type)) {
+            targets.insert(job->pos);
+        }
+    }
+
+    return targets;
+}
 
 // Helper to serialize uint16 big-endian
 void write_uint16_be(std::vector<uint8_t> &buf, uint16_t value) {
@@ -55,7 +105,17 @@ void write_uint64_be(std::vector<uint8_t> &buf, uint64_t value) {
 // source of truth for tile flags — called by both the full-state path
 // (extract_full_map_state below) and the delta path (detect_tile_changes
 // in tile_updates.cpp) so the two can never drift.
-uint8_t compute_tile_flags(MapExtras::MapCache &map_cache, const df::coord &pos, df::tiletype tile_type)
+//
+// `dig_job_targets` must be built ONCE per extraction pass by both callers
+// (via collect_dig_job_targets above) and threaded through here as a
+// parameter -- an earlier version of this fix computed the flag byte
+// straight from the designation bit in each path independently, which is
+// exactly the asymmetry that caused the 062455f regression: one path
+// picked up a follow-on tweak and the other didn't, and the two silently
+// diverged again. A shared parameter makes that class of bug impossible --
+// there's only one signature to change.
+uint8_t compute_tile_flags(MapExtras::MapCache &map_cache, const df::coord &pos, df::tiletype tile_type,
+                            const std::unordered_set<df::coord> &dig_job_targets)
 {
     uint8_t flags = 0;
 
@@ -98,8 +158,17 @@ uint8_t compute_tile_flags(MapExtras::MapCache &map_cache, const df::coord &pos,
         flags |= FLAG_DISCOVERED;
     }
 
-    // Check if designated for digging
-    if (des.bits.dig != df::tile_dig_designation::No) {
+    // Check if designated for digging. DF clears (or stops reflecting)
+    // designation.bits.dig once a unit claims the dig job, so the raw bit
+    // alone goes cold mid-dig -- a tile with a unit actively digging it
+    // would otherwise report as "not designated" for the whole job
+    // duration. Treat an in-flight job on this tile (see
+    // collect_dig_job_targets/is_dig_job_type above) as equally
+    // authoritative. NOTE: this is deliberately NOT the same thing as
+    // marker-mode digging (dig_marked/DES_MARKER_ONLY) -- marker mode is a
+    // player UI concept for staged designation review, unrelated to
+    // whether a job has been claimed.
+    if (des.bits.dig != df::tile_dig_designation::No || dig_job_targets.count(pos)) {
         flags |= FLAG_DESIGNATED;
     }
 
@@ -208,6 +277,11 @@ std::vector<uint8_t> extract_full_map_state()
     // Use MapCache for efficient tile access
     MapExtras::MapCache map_cache;
 
+    // Job-target coords with an in-flight dig job, built once for this
+    // whole pass (see compute_tile_flags's comment on why this must be
+    // shared/threaded rather than recomputed per path).
+    std::unordered_set<df::coord> dig_job_targets = collect_dig_job_targets();
+
     // Iterate in row-major order: Z outermost, then Y, then X innermost
     for (int32_t z = 0; z < z_max; z++) {
         for (int32_t y = 0; y < y_max; y++) {
@@ -219,7 +293,7 @@ std::vector<uint8_t> extract_full_map_state()
 
                 // Full flag byte — shared with the delta path
                 // (see compute_tile_flags above).
-                uint8_t flags = compute_tile_flags(map_cache, pos, tile_type);
+                uint8_t flags = compute_tile_flags(map_cache, pos, tile_type, dig_job_targets);
 
                 // Histogram + classification counts for diagnostics,
                 // derived from the computed flags. Shape values are -1..18
