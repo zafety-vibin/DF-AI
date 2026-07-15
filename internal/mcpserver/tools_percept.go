@@ -206,7 +206,7 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 		// sampled column's own surface Z and report the range — a single
 		// dwarf-Z proxy stamped onto every column is the exact bug this
 		// replaces. Window is capped at 60 z-levels per column_profile call
-		// (queries.cpp:837), so the requested crewZ+20/-40 anchor is
+		// (queries.cpp:926), so the requested crewZ+20/-40 anchor is
 		// trimmed by one level (crewZ-39, not crewZ-40) to fit.
 		zTop, zBottom := crewZ+20, crewZ-39
 		if zBottom < 0 {

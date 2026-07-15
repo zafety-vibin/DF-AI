@@ -54,25 +54,61 @@ type ColumnProfile struct {
 	Levels []ColumnLevel `json:"levels"`
 }
 
-// ColumnSurfaceZ finds THIS column's own surface: the first level (Levels is
-// already ordered top-to-bottom) whose Shape/Material isn't open air. Two
-// live incidents traced back to callers instead using one map-wide proxy
-// (highest dwarf Z) and stamping it onto every column queried, which drifts
-// as dwarves walk and is simply wrong for any column whose real ground sits
-// at a different Z (a hill, a valley, anywhere off the exact dwarf tile).
-// ok=false means the entire queried z-window was open air — the window
-// needs to be widened, not that the column has no surface.
-func ColumnSurfaceZ(c *ColumnProfile) (z int16, ok bool) {
-	if c == nil {
-		return 0, false
+// SurfaceResult classifies what ColumnSurfaceZ found in a queried z-window.
+// A single ok=false was not enough: "the window never left open air" and
+// "the window's top was already solid ground" need opposite fixes (widen
+// z_bottom downward vs. raise z_top upward) and must not be reported as
+// the same inconclusive case.
+type SurfaceResult int
+
+const (
+	// SurfaceFound: Levels[0] is open air and a solid level exists below
+	// it in the window — the column's own surface is confirmed at that Z.
+	SurfaceFound SurfaceResult = iota
+	// SurfaceAboveWindow: Levels[0] (the window's top) is already solid.
+	// The true surface may sit exactly there (with open air just above,
+	// outside the window) or the ground may keep rising well above z_top
+	// (a mountain, or a deep stone cross-section that never reached the
+	// surface) — this function cannot tell those apart from inside the
+	// window, so it does not guess. Caller fix: raise z_top.
+	SurfaceAboveWindow
+	// SurfaceUnknownAllAir: every level in the window is open air; the
+	// surface (if any) is below z_bottom. Caller fix: widen z_bottom
+	// downward.
+	SurfaceUnknownAllAir
+)
+
+// ColumnSurfaceZ finds THIS column's own surface within the queried
+// z-window: the first solid (non-open-air) level, but ONLY when the
+// window's top (Levels[0], top-to-bottom order) is itself open air —
+// otherwise there is no way to tell a confirmed surface from solid ground
+// that merely happens to sit at the window's top (deep stone picked via an
+// explicit z_top/z_bottom window, or terrain rising above the window on a
+// hill/mountain). Two live incidents traced back to callers instead using
+// one map-wide proxy (highest dwarf Z) stamped onto every column queried,
+// which drifts as dwarves walk and is simply wrong for any column whose
+// real ground sits at a different Z (a hill, a valley, anywhere off the
+// exact dwarf tile); a third traced to this function itself confirming a
+// "surface" at a non-air Levels[0], mislabeling solid stone deep
+// underground and terrain that rises above the sampled window.
+func ColumnSurfaceZ(c *ColumnProfile) (z int16, result SurfaceResult) {
+	if c == nil || len(c.Levels) == 0 {
+		return 0, SurfaceUnknownAllAir
+	}
+	if !isOpenAir(c.Levels[0]) {
+		return 0, SurfaceAboveWindow
 	}
 	for _, lv := range c.Levels {
-		if lv.Shape == "open" || lv.Material == "air" {
+		if isOpenAir(lv) {
 			continue
 		}
-		return lv.Z, true
+		return lv.Z, SurfaceFound
 	}
-	return 0, false
+	return 0, SurfaceUnknownAllAir
+}
+
+func isOpenAir(lv ColumnLevel) bool {
+	return lv.Shape == "open" || lv.Material == "air"
 }
 
 func DecodeSlice(raw []byte) (*Slice, error) {

@@ -8,12 +8,34 @@ import (
 	"github.com/df-ai/orchestrator/internal/protocol"
 )
 
-// surfaceSampleAt builds a minimal single-level ColumnProfile whose surface
+// surfaceSampleAt builds a minimal ColumnProfile whose CONFIRMED surface
 // (mapview.ColumnSurfaceZ) is exactly z — enough to drive the survey's
-// surface-range line in tests without needing a full stratigraphy.
+// surface-range line in tests without needing a full stratigraphy. The
+// window's top level must itself be open air for the surface to count as
+// confirmed (see mapview.ColumnSurfaceZ) — a single solid floor level at
+// Levels[0] is the exact "top of window mistaken for surface" bug this
+// task fixes, so the fixture carries an open-air level above z first.
 func surfaceSampleAt(x, y, z int16) *mapview.ColumnProfile {
 	return &mapview.ColumnProfile{X: x, Y: y, Levels: []mapview.ColumnLevel{
+		{Z: z + 1, Glyph: "_", Shape: "open", Material: "air"},
 		{Z: z, Glyph: ",", Shape: "floor", Material: "grass"},
+	}}
+}
+
+// surfaceSampleAboveWindow builds a column whose window-top is already
+// solid — the "terrain rises above the sampled window" case (e.g. a hill
+// exceeding crewZ+20). Must never be folded into the confirmed range.
+func surfaceSampleAboveWindow(x, y, z int16) *mapview.ColumnProfile {
+	return &mapview.ColumnProfile{X: x, Y: y, Levels: []mapview.ColumnLevel{
+		{Z: z, Glyph: "#", Shape: "wall", Material: "stone"},
+	}}
+}
+
+// surfaceSampleAllAir builds a column whose entire queried window is open
+// air — the surface (if any) is below z_bottom.
+func surfaceSampleAllAir(x, y, z int16) *mapview.ColumnProfile {
+	return &mapview.ColumnProfile{X: x, Y: y, Levels: []mapview.ColumnLevel{
+		{Z: z, Glyph: "_", Shape: "open", Material: "air"},
 	}}
 }
 
@@ -117,6 +139,33 @@ func TestAquiferNote(t *testing.T) {
 				t.Fatalf("aquiferNote = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRenderSurfaceRange_MixedConclusiveness: a mix of a confirmed sample,
+// a "window-top already solid" sample (terrain rising above the window —
+// the exact bug this task fixes, previously silently folded into the
+// range), and an "all open air" sample. The two inconclusive causes need
+// opposite fixes (raise z_top vs. widen z_bottom) and must be reported
+// separately, never merged into one count or folded into the range.
+func TestRenderSurfaceRange_MixedConclusiveness(t *testing.T) {
+	samples := []*mapview.ColumnProfile{
+		surfaceSampleAt(10, 10, 111),
+		surfaceSampleAboveWindow(20, 20, 131), // crewZ+20-style window top, still solid
+		surfaceSampleAllAir(30, 30, 90),
+	}
+	out := renderSurfaceRange(samples, 111)
+	if !strings.Contains(out, "surface z ranges 111..111 across 1 sampled columns (embark crew at z=111)") {
+		t.Fatalf("confirmed range must only count the one confirmed sample:\n%s", out)
+	}
+	if strings.Contains(out, "surface z ranges 90..131") || strings.Contains(out, "..131") {
+		t.Fatalf("the above-window sample must never widen the confirmed range:\n%s", out)
+	}
+	if !strings.Contains(out, "1 of 3 samples inconclusive: terrain still solid at the sample window's top — raise the window") {
+		t.Fatalf("missing distinct above-window inconclusive line:\n%s", out)
+	}
+	if !strings.Contains(out, "1 of 3 samples inconclusive: open air throughout the queried z-window — widen it downward") {
+		t.Fatalf("missing distinct all-air inconclusive line:\n%s", out)
 	}
 }
 

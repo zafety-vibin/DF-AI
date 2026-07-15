@@ -117,10 +117,10 @@ func RenderCrop(s *Slice, overlays []Overlay, legendExtra string) string {
 func RenderColumn(c *ColumnProfile) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "column (%d,%d), top to bottom:\n", c.X, c.Y)
-	surfaceZ, ok := ColumnSurfaceZ(c)
+	surfaceZ, result := ColumnSurfaceZ(c)
 	for _, lv := range c.Levels {
 		rel := ""
-		if ok {
+		if result == SurfaceFound {
 			switch {
 			case lv.Z == surfaceZ:
 				rel = "  <- SURFACE"
@@ -144,8 +144,11 @@ func RenderColumn(c *ColumnProfile) string {
 		}
 		fmt.Fprintf(&sb, "z=%d %s %s/%s%s%s%s\n", lv.Z, lv.Glyph, lv.Shape, lv.Material, hidden, fluids, rel)
 	}
-	if !ok {
-		sb.WriteString("no surface in this z-window — widen z_top/z_bottom\n")
+	switch result {
+	case SurfaceAboveWindow:
+		sb.WriteString("surface at or above z_top — raise z_top\n")
+	case SurfaceUnknownAllAir:
+		sb.WriteString("no surface in this z-window — widen z_bottom (window is entirely open air)\n")
 	}
 	return sb.String()
 }
@@ -201,16 +204,21 @@ func RenderElevation(columns []*ColumnProfile, axis string, fixed int16) string 
 	sb.WriteString("\nlegend: " + Legend + "\n")
 
 	// Per-column surface summary: each column's OWN surface (ColumnSurfaceZ),
-	// never one map-wide proxy stamped across every column swept.
+	// never one map-wide proxy stamped across every column swept. "above"
+	// means the window's top was already solid (raise z_top to confirm);
+	// "none" means the whole window was open air (widen z_bottom).
 	sb.WriteString("surfaces:")
 	for _, c := range columns {
 		coord := c.X
 		if axis == "y" {
 			coord = c.Y
 		}
-		if z, ok := ColumnSurfaceZ(c); ok {
+		switch z, result := ColumnSurfaceZ(c); result {
+		case SurfaceFound:
 			fmt.Fprintf(&sb, " %s=%d:%d", axis, coord, z)
-		} else {
+		case SurfaceAboveWindow:
+			fmt.Fprintf(&sb, " %s=%d:above", axis, coord)
+		default:
 			fmt.Fprintf(&sb, " %s=%d:none", axis, coord)
 		}
 	}

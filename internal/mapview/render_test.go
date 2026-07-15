@@ -237,6 +237,42 @@ func TestRenderColumnFluids(t *testing.T) {
 	}
 }
 
+// TestRenderColumn_TopAlreadySolid: a window whose top level (Levels[0])
+// is already solid stone (e.g. an explicit deep-stone z_top/z_bottom pick,
+// or a hill rising above the sampled window) must NOT be stamped SURFACE —
+// that was the exact live bug (blocking review finding, surface-honesty).
+// It gets the distinct "raise z_top" inconclusive message instead.
+func TestRenderColumn_TopAlreadySolid(t *testing.T) {
+	c := &ColumnProfile{X: 72, Y: 81, Levels: []ColumnLevel{
+		{Z: 111, Glyph: "#", Shape: "wall", Material: "stone"},
+		{Z: 110, Glyph: "#", Shape: "wall", Material: "stone"},
+	}}
+	out := RenderColumn(c)
+	if strings.Contains(out, "SURFACE") {
+		t.Fatalf("solid Levels[0] must never be stamped SURFACE: %q", out)
+	}
+	if !strings.Contains(out, "surface at or above z_top — raise z_top") {
+		t.Fatalf("missing raise-z_top inconclusive message: %q", out)
+	}
+}
+
+// TestRenderColumn_AllAir: a window that never leaves open air gets the
+// distinct "widen z_bottom" inconclusive message (opposite fix from the
+// top-already-solid case above — the two must not share one message).
+func TestRenderColumn_AllAir(t *testing.T) {
+	c := &ColumnProfile{X: 72, Y: 81, Levels: []ColumnLevel{
+		{Z: 111, Glyph: "_", Shape: "open", Material: "air"},
+		{Z: 110, Glyph: "_", Shape: "open", Material: "air"},
+	}}
+	out := RenderColumn(c)
+	if strings.Contains(out, "SURFACE") {
+		t.Fatalf("all-air column must never be stamped SURFACE: %q", out)
+	}
+	if !strings.Contains(out, "no surface in this z-window — widen z_bottom") {
+		t.Fatalf("missing widen-z_bottom inconclusive message: %q", out)
+	}
+}
+
 func TestRenderElevation_XAxisSweep(t *testing.T) {
 	col1 := &ColumnProfile{X: 10, Y: 50, Levels: []ColumnLevel{
 		{Z: 100, Glyph: ".", Shape: "floor", Material: "grass"},
@@ -265,5 +301,31 @@ func TestRenderElevation_XAxisSweep(t *testing.T) {
 	}
 	if !strings.Contains(z99Line, "##") {
 		t.Fatalf("z=99 row must read '##':\n%s", z99Line)
+	}
+}
+
+// TestRenderElevation_SurfacesLine covers the "surfaces:" summary's three
+// distinct outcomes side by side: a confirmed surface, a column whose
+// window-top is already solid (terrain rising above the sweep — "above"),
+// and a column that never leaves open air ("none"). Folding the middle
+// case into a confirmed number was the exact live bug this task fixes.
+func TestRenderElevation_SurfacesLine(t *testing.T) {
+	confirmed := &ColumnProfile{X: 10, Y: 50, Levels: []ColumnLevel{
+		{Z: 100, Glyph: "_", Shape: "open", Material: "air"},
+		{Z: 99, Glyph: "#", Shape: "wall", Material: "stone"},
+	}}
+	above := &ColumnProfile{X: 11, Y: 50, Levels: []ColumnLevel{
+		{Z: 100, Glyph: "#", Shape: "wall", Material: "stone"},
+		{Z: 99, Glyph: "#", Shape: "wall", Material: "stone"},
+	}}
+	allAir := &ColumnProfile{X: 12, Y: 50, Levels: []ColumnLevel{
+		{Z: 100, Glyph: "_", Shape: "open", Material: "air"},
+		{Z: 99, Glyph: "_", Shape: "open", Material: "air"},
+	}}
+	out := RenderElevation([]*ColumnProfile{confirmed, above, allAir}, "x", 50)
+	for _, want := range []string{"x=10:99", "x=11:above", "x=12:none"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing surfaces entry %q:\n%s", want, out)
+		}
 	}
 }

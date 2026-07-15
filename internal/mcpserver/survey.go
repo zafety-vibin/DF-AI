@@ -55,38 +55,48 @@ func aquiferNote(levels []mapview.ColumnLevel) string {
 }
 
 // renderSurfaceRange summarizes a coarse grid of sampled columns into a
-// surface-Z range line. Samples whose queried z-window never left open air
-// (mapview.ColumnSurfaceZ ok=false) are flagged, never folded into the
-// range as a wrong number — a survey that quietly reports "surface z=0"
-// for a column it couldn't actually see is worse than saying so plainly.
+// surface-Z range line. Samples whose queried z-window never confirmed a
+// surface (mapview.ColumnSurfaceZ result != SurfaceFound) are flagged,
+// never folded into the range as a wrong number — a survey that quietly
+// reports "surface z=0" for a column it couldn't actually see, or that
+// folds a sample whose window-top was already solid terrain (a hill rising
+// above the window) into the range as if that were the true surface, is
+// worse than saying so plainly. The two inconclusive causes need opposite
+// fixes, so they are counted and reported separately.
 func renderSurfaceRange(samples []*mapview.ColumnProfile, crewZ int16) string {
 	var sb strings.Builder
-	minZ, maxZ, found, inconclusive := int16(0), int16(0), 0, 0
+	minZ, maxZ, found, aboveWindow, allAir := int16(0), int16(0), 0, 0, 0
 	for _, c := range samples {
-		z, ok := mapview.ColumnSurfaceZ(c)
-		if !ok {
-			inconclusive++
-			continue
+		z, result := mapview.ColumnSurfaceZ(c)
+		switch result {
+		case mapview.SurfaceAboveWindow:
+			aboveWindow++
+		case mapview.SurfaceUnknownAllAir:
+			allAir++
+		default:
+			if found == 0 || z < minZ {
+				minZ = z
+			}
+			if found == 0 || z > maxZ {
+				maxZ = z
+			}
+			found++
 		}
-		if found == 0 || z < minZ {
-			minZ = z
-		}
-		if found == 0 || z > maxZ {
-			maxZ = z
-		}
-		found++
 	}
 	switch {
 	case len(samples) == 0:
 		fmt.Fprintf(&sb, "surface z: no samples taken (embark crew at z=%d)\n", crewZ)
 	case found == 0:
-		fmt.Fprintf(&sb, "surface z: inconclusive — all %d sampled columns were open air across the queried z-window; widen the sample window\n", len(samples))
+		fmt.Fprintf(&sb, "surface z: inconclusive across all %d sampled columns (embark crew at z=%d)\n", len(samples), crewZ)
 	default:
 		fmt.Fprintf(&sb, "surface z ranges %d..%d across %d sampled columns (embark crew at z=%d)\n",
 			minZ, maxZ, found, crewZ)
 	}
-	if inconclusive > 0 {
-		fmt.Fprintf(&sb, "(%d of %d samples inconclusive: open air throughout the queried z-window)\n", inconclusive, len(samples))
+	if aboveWindow > 0 {
+		fmt.Fprintf(&sb, "(%d of %d samples inconclusive: terrain still solid at the sample window's top — raise the window)\n", aboveWindow, len(samples))
+	}
+	if allAir > 0 {
+		fmt.Fprintf(&sb, "(%d of %d samples inconclusive: open air throughout the queried z-window — widen it downward)\n", allAir, len(samples))
 	}
 	return sb.String()
 }
