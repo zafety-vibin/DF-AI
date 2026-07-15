@@ -18,6 +18,16 @@ constexpr uint8_t MSG_TYPE_COMMAND = 0x09;
 constexpr uint8_t MSG_TYPE_COMMAND_ACK = 0x0A;
 constexpr uint8_t MSG_TYPE_QUERY = 0x0B;
 constexpr uint8_t MSG_TYPE_QUERY_RESPONSE = 0x0C;
+// MSG_TYPE_ANNOUNCEMENT_UPDATE payload: [4:Count][N x entry][trailing block].
+// The trailing block is EITHER absent (old format) OR exactly N x [4:
+// RepeatCount uint32], one per entry in the same order -- never interleaved
+// into the per-entry fields, so a decoder can tell the two formats apart
+// unambiguously after parsing exactly Count entries: 0 bytes left over means
+// old format (no repeat_count support), exactly 4*Count bytes left over
+// means new format. See announcements.cpp::send_announcement_update for the
+// encode side and internal/protocol/message.go's AnnouncementInfo /
+// codec.go's deserializeAnnouncementUpdate for the decode side (including
+// the backward-compat default-to-0 rule for old-format messages).
 constexpr uint8_t MSG_TYPE_ANNOUNCEMENT_UPDATE = 0x0D;
 
 // Query response status codes
@@ -79,6 +89,18 @@ constexpr uint8_t COMMAND_TYPE_CREATE_LOCATION   = 0x12;
 constexpr uint8_t COMMAND_TYPE_ASSIGN_LODGING    = 0x13;
 constexpr uint8_t COMMAND_TYPE_UNASSIGN_LODGING  = 0x14;
 constexpr uint8_t COMMAND_TYPE_REMOVE_ZONE       = 0x15;
+constexpr uint8_t COMMAND_TYPE_BUILD_FARM_PLOT   = 0x16;
+constexpr uint8_t COMMAND_TYPE_SET_FARM_CROP     = 0x17;
+
+// Farm season wire values for COMMAND_TYPE_SET_FARM_CROP's Season byte.
+// 0-3 select one of df::building_farmplotst::plant_id[season]'s four
+// slots; SEASON_ALL is a wire-level convenience (write the same crop into
+// all four slots) -- matches internal/protocol/message.go FarmSeason*.
+constexpr uint8_t SEASON_SPRING = 0x00;
+constexpr uint8_t SEASON_SUMMER = 0x01;
+constexpr uint8_t SEASON_AUTUMN = 0x02;
+constexpr uint8_t SEASON_WINTER = 0x03;
+constexpr uint8_t SEASON_ALL    = 0xFF;
 
 // Location types -- DF-AI's own wire values for df::abstract_building_type's
 // INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL. A Location is created FROM an

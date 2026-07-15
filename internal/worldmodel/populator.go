@@ -82,9 +82,11 @@ func (p *Populator) Run(ctx context.Context) {
 	}
 }
 
-// OnAnnouncementUpdate folds a batch of new DF announcements into the
-// world model's AlertStore. Duplicate IDs are silently dropped (the
-// plugin sends only deltas, but the dedup is cheap insurance).
+// OnAnnouncementUpdate folds a batch of new (or repeat-count-bumped) DF
+// announcements into the world model's AlertStore. True duplicates (same
+// ID, same-or-lower RepeatCount) are silently dropped; an existing ID whose
+// RepeatCount grew (the same problem firing again — see AlertStore.Add) is
+// folded into the stored entry and counted as "changed" below.
 func (p *Populator) OnAnnouncementUpdate(msg *protocol.AnnouncementUpdateMessage) {
 	if p == nil || p.wm == nil || msg == nil {
 		return
@@ -92,28 +94,29 @@ func (p *Populator) OnAnnouncementUpdate(msg *protocol.AnnouncementUpdateMessage
 	if p.wm.Observed.Alerts == nil {
 		return
 	}
-	added := 0
+	changed := 0
 	for _, a := range msg.Announcements {
 		alert := Alert{
-			ID:         a.ID,
-			TypeID:     a.TypeID,
-			Severity:   a.Severity,
-			Text:       a.Text,
-			X:          a.X,
-			Y:          a.Y,
-			Z:          a.Z,
-			GameYear:   a.GameYear,
-			GameTick:   a.GameTick,
-			ReceivedAt: time.Now(),
+			ID:          a.ID,
+			TypeID:      a.TypeID,
+			Severity:    a.Severity,
+			Text:        a.Text,
+			X:           a.X,
+			Y:           a.Y,
+			Z:           a.Z,
+			GameYear:    a.GameYear,
+			GameTick:    a.GameTick,
+			ReceivedAt:  time.Now(),
+			RepeatCount: a.RepeatCount,
 		}
 		if p.wm.Observed.Alerts.Add(alert) {
-			added++
+			changed++
 		}
 	}
 	p.wm.markUpdated()
-	if p.logger != nil && added > 0 {
-		p.logger.Info("announcements: added",
-			logging.Field{Key: "count", Value: added})
+	if p.logger != nil && changed > 0 {
+		p.logger.Info("announcements: added or repeat-bumped",
+			logging.Field{Key: "count", Value: changed})
 	}
 }
 

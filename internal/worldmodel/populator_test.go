@@ -224,3 +224,64 @@ func TestOnTileUpdate_DegradedFlags_ReproducesStaleSolidityBug(t *testing.T) {
 		t.Fatalf("expected degraded flags to reproduce the stale-solidity bug (dug room offered as solid candidate), got %+v", sites)
 	}
 }
+
+// TestOnAnnouncementUpdate_RepeatCountBump_SurfacesAsChanged locks in the
+// silent-damp-cancel-blindness fix: DF re-announces a repeated identical
+// cancellation (e.g. a dig blocked by damp stone) by bumping repeat_count
+// on the SAME report id rather than allocating a new one. A pure id-dedup
+// AlertStore would treat the re-send as a no-op duplicate and the LLM would
+// never learn the job is still failing. The plugin re-sends the entry with
+// a higher RepeatCount; OnAnnouncementUpdate must fold that into the stored
+// Alert (bump RepeatCount, refresh ReceivedAt) and report it as "changed" —
+// not silently swallow it as a dupe.
+func TestOnAnnouncementUpdate_RepeatCountBump_SurfacesAsChanged(t *testing.T) {
+	wm := New(nil, nil, nil, nil)
+	pop := NewPopulator(wm, nil, nil)
+
+	first := &protocol.AnnouncementUpdateMessage{
+		Count: 1,
+		Announcements: []protocol.AnnouncementInfo{
+			{ID: 42, TypeID: 1, Severity: 1, X: -1, Y: -1, Z: -1, Text: "Digging designation cancelled: damp stone located.", RepeatCount: 0},
+		},
+	}
+	pop.OnAnnouncementUpdate(first)
+
+	active := wm.Observed.Alerts.Active(0)
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active alert after first send, got %d: %+v", len(active), active)
+	}
+	if active[0].RepeatCount != 0 {
+		t.Fatalf("expected initial RepeatCount 0, got %d", active[0].RepeatCount)
+	}
+	firstSeenAt := active[0].ReceivedAt
+
+	// A true duplicate resend (same ID, same RepeatCount) must NOT bump
+	// anything -- this is the "cheap insurance" no-op path.
+	pop.OnAnnouncementUpdate(first)
+	active = wm.Observed.Alerts.Active(0)
+	if len(active) != 1 || active[0].RepeatCount != 0 {
+		t.Fatalf("true duplicate resend must be a no-op, got %+v", active)
+	}
+
+	// Same report id, repeat_count bumped: DF re-announced the SAME
+	// cancellation again. This must update the stored alert in place (not
+	// add a second entry) and bump RepeatCount + ReceivedAt.
+	repeated := &protocol.AnnouncementUpdateMessage{
+		Count: 1,
+		Announcements: []protocol.AnnouncementInfo{
+			{ID: 42, TypeID: 1, Severity: 1, X: -1, Y: -1, Z: -1, Text: "Digging designation cancelled: damp stone located.", RepeatCount: 3},
+		},
+	}
+	pop.OnAnnouncementUpdate(repeated)
+
+	active = wm.Observed.Alerts.Active(0)
+	if len(active) != 1 {
+		t.Fatalf("repeat-count bump must update the existing alert, not add a new one; got %d alerts: %+v", len(active), active)
+	}
+	if active[0].RepeatCount != 3 {
+		t.Fatalf("expected RepeatCount bumped to 3, got %d", active[0].RepeatCount)
+	}
+	if active[0].ReceivedAt.Before(firstSeenAt) {
+		t.Fatalf("expected ReceivedAt to refresh (or at least not regress) on repeat-count bump")
+	}
+}

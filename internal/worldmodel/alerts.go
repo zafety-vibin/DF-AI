@@ -12,15 +12,16 @@ import (
 // tile location", "construction site occupied", "ambush!", etc. They are the
 // primary signal the LLM should read when work isn't progressing.
 type Alert struct {
-	ID         uint32    // DF report id; stable identifier for dismissal
-	TypeID     uint16    // DF announcement_type enum value
-	Severity   uint8     // 0=info, 1=warn, 2=critical (derived from type)
-	Text       string    // human-readable announcement text
-	X, Y, Z    int16     // position; (-1,-1,-1) if non-positional
-	GameYear   uint32    // DF in-game year
-	GameTick   uint32    // DF in-game tick within year
-	ReceivedAt time.Time // orchestrator wall-clock
-	Dismissed  bool      // true after the LLM (or operator) marks it as seen
+	ID          uint32    // DF report id; stable identifier for dismissal
+	TypeID      uint16    // DF announcement_type enum value
+	Severity    uint8     // 0=info, 1=warn, 2=critical (derived from type)
+	Text        string    // human-readable announcement text
+	X, Y, Z     int16     // position; (-1,-1,-1) if non-positional
+	GameYear    uint32    // DF in-game year
+	GameTick    uint32    // DF in-game tick within year
+	ReceivedAt  time.Time // orchestrator wall-clock
+	Dismissed   bool      // true after the LLM (or operator) marks it as seen
+	RepeatCount uint32    // DF report.repeat_count as of the most recent send; grows when the SAME announcement (e.g. a damp-stone dig cancel) fires again without a new report id — see AlertStore.Add
 }
 
 // HasPosition reports whether the alert has a meaningful (x, y, z).
@@ -55,15 +56,30 @@ func NewAlertStore(capacity int) *AlertStore {
 	}
 }
 
-// Add inserts a new alert. If an alert with the same ID is already present,
-// it's a no-op (DF report IDs are unique and monotonic). Returns true if
-// the alert was newly stored.
+// Add inserts a new alert, or — if an alert with the same ID is already
+// present — folds a repeat-count bump into the existing entry. DF report
+// IDs are unique and monotonic, but the game re-announces a repeated
+// identical event (e.g. "Digging designation cancelled: damp stone
+// located." firing over and over) by bumping repeat_count IN PLACE on the
+// SAME report instead of allocating a new one; the plugin re-sends that
+// entry (same ID, higher RepeatCount) rather than a fresh ID. So an
+// existing ID is not always a true no-op: Add updates RepeatCount and
+// ReceivedAt on the stored entry and returns true ("changed") whenever the
+// incoming RepeatCount is higher than what's stored, so callers (stepReport)
+// can tell "the same problem happened again" from a genuine no-op resend.
+// Returns true if the alert was newly stored OR its repeat count grew;
+// false if this is a true duplicate (same ID, same-or-lower RepeatCount).
 func (s *AlertStore) Add(a Alert) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.byID[a.ID]; exists {
-		return false
+	if idx, exists := s.byID[a.ID]; exists {
+		if a.RepeatCount <= s.entries[idx].RepeatCount {
+			return false
+		}
+		s.entries[idx].RepeatCount = a.RepeatCount
+		s.entries[idx].ReceivedAt = a.ReceivedAt
+		return true
 	}
 
 	if len(s.entries) >= s.capacity {

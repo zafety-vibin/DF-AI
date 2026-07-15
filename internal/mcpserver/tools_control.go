@@ -71,10 +71,21 @@ func frameStr(f int64) string {
 }
 
 // stepReport builds the post-step summary: sim-frame progress (game time,
-// from sim_status), population delta, and new alerts. pushed=false means
-// the world model never received a state push after the step completed —
-// the deltas below would then be computed against frozen data, so say so.
-func stepReport(ticks int, beforeFrame, afterFrame int64, pushed bool, before, after worldmodel.Snapshot, beforeAlerts map[uint32]bool, tripwire bool, tripwireReason string) string {
+// from sim_status), population delta, new alerts, and repeated warnings.
+// pushed=false means the world model never received a state push after the
+// step completed — the deltas below would then be computed against frozen
+// data, so say so.
+//
+// beforeAlerts maps an alert ID present BEFORE the step to its RepeatCount
+// at that time (DF report.repeat_count — see worldmodel.Alert). An ID
+// missing from this map is treated as brand-new this step (reported via the
+// NEW ALERT lines below, never double-counted as a repeat). An ID present
+// in the map whose RepeatCount grew during the step means DF re-announced
+// the SAME cancellation again without a new report id (the plugin resends
+// the entry in place) — that's the "silent damp-cancel blindness" this
+// summation exists to kill: a job that keeps failing must be visible even
+// though its alert ID never changes.
+func stepReport(ticks int, beforeFrame, afterFrame int64, pushed bool, before, after worldmodel.Snapshot, beforeAlerts map[uint32]uint32, tripwire bool, tripwireReason string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "stepped %d ticks (sim frame %s -> %s)\n", ticks, frameStr(beforeFrame), frameStr(afterFrame))
 	if tripwire {
@@ -91,18 +102,40 @@ func stepReport(ticks int, beforeFrame, afterFrame int64, pushed bool, before, a
 		fmt.Fprintf(&sb, "dwarf count change: %+d\n", d)
 	}
 	newAlerts := 0
+	type repeatedWarning struct {
+		id    uint32
+		text  string
+		delta uint32
+	}
+	var repeated []repeatedWarning
 	for _, a := range after.ActiveAlerts {
-		if !beforeAlerts[a.ID] {
+		beforeCount, existed := beforeAlerts[a.ID]
+		if !existed {
 			newAlerts++
 			if newAlerts <= 15 {
 				fmt.Fprintf(&sb, "NEW ALERT [%d] %s\n", a.ID, a.Text)
 			}
+			continue
+		}
+		if a.Severity >= 1 && a.RepeatCount > beforeCount {
+			repeated = append(repeated, repeatedWarning{id: a.ID, text: a.Text, delta: a.RepeatCount - beforeCount})
 		}
 	}
 	if newAlerts == 0 {
 		sb.WriteString("no new alerts\n")
 	} else if newAlerts > 15 {
 		fmt.Fprintf(&sb, "... and %d more new alerts (use alerts tool)\n", newAlerts-15)
+	}
+	if len(repeated) == 0 {
+		sb.WriteString("no repeated warnings this step\n")
+	} else {
+		for i, r := range repeated {
+			if i >= 15 {
+				fmt.Fprintf(&sb, "... and %d more repeated warnings this step (use alerts tool)\n", len(repeated)-15)
+				break
+			}
+			fmt.Fprintf(&sb, "repeated warnings this step: '%s' x%d\n", r.text, r.delta)
+		}
 	}
 	return sb.String()
 }
@@ -147,9 +180,9 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 			in.Ticks = 14400 // cap: ~12 game days per step
 		}
 		before := b.Snapshot()
-		beforeAlerts := map[uint32]bool{}
+		beforeAlerts := map[uint32]uint32{}
 		for _, a := range before.ActiveAlerts {
-			beforeAlerts[a.ID] = true
+			beforeAlerts[a.ID] = a.RepeatCount
 		}
 		// Capture the sim frame before stepping so the report speaks in
 		// SIM FRAMES (game time), not the world model's message counter.

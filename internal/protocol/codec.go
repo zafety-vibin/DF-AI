@@ -1089,6 +1089,34 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		if err := binary.Write(w, binary.BigEndian, msg.OriginZ); err != nil {
 			return err
 		}
+	case CommandTypeBuildFarmPlot:
+		// [2: X1] [2: Y1] [2: Z] [2: X2] [2: Y2] — byte-identical to
+		// CommandTypeStockpile minus the trailing GroupMask.
+		for _, v := range []int16{msg.FarmPlot.X1, msg.FarmPlot.Y1, msg.FarmPlot.Z, msg.FarmPlot.X2, msg.FarmPlot.Y2} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+	case CommandTypeSetFarmCrop:
+		// [2: X] [2: Y] [2: Z] [1: Season] [2: NameLen] [N: CropName]
+		for _, v := range []int16{msg.SetFarmCrop.X, msg.SetFarmCrop.Y, msg.SetFarmCrop.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.SetFarmCrop.Season); err != nil {
+			return err
+		}
+		cropBytes := []byte(msg.SetFarmCrop.CropName)
+		if len(cropBytes) > 255 {
+			return errors.New("set_farm_crop crop name too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(cropBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(cropBytes); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -1337,6 +1365,30 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 		if err := binary.Read(buf, binary.BigEndian, &msg.OriginZ); err != nil {
 			return nil, err
 		}
+	case CommandTypeBuildFarmPlot:
+		for _, p := range []*int16{&msg.FarmPlot.X1, &msg.FarmPlot.Y1, &msg.FarmPlot.Z, &msg.FarmPlot.X2, &msg.FarmPlot.Y2} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+	case CommandTypeSetFarmCrop:
+		for _, p := range []*int16{&msg.SetFarmCrop.X, &msg.SetFarmCrop.Y, &msg.SetFarmCrop.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.SetFarmCrop.Season); err != nil {
+			return nil, err
+		}
+		var cropLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &cropLen); err != nil {
+			return nil, err
+		}
+		cropBytes := make([]byte, cropLen)
+		if _, err := io.ReadFull(buf, cropBytes); err != nil {
+			return nil, err
+		}
+		msg.SetFarmCrop.CropName = string(cropBytes)
 	default:
 		return nil, fmt.Errorf("unknown command type: 0x%02X", msg.CommandType)
 	}
@@ -1583,11 +1635,15 @@ func deserializeQueryResponse(data []byte) (*QueryResponseMessage, error) {
 func (m *QueryResponseMessage) Serialize() ([]byte, error) { return SerializeMessage(m) }
 
 // serializeAnnouncementUpdate encodes AnnouncementUpdateMessage payload:
-// [4: Count] [N × AnnouncementInfo]
+// [4: Count] [N × AnnouncementInfo] [N × RepeatCount]
 //
 // Per-entry layout: [4:ID][2:TypeID][1:Severity][2:X][2:Y][2:Z]
 //
 //	[4:GameYear][4:GameTick][2:TextLen][N:Text]
+//
+// RepeatCount travels in a TRAILING block after all N entries (not
+// interleaved into each entry) — see the AnnouncementInfo doc comment in
+// message.go for why.
 func serializeAnnouncementUpdate(w io.Writer, msg *AnnouncementUpdateMessage) error {
 	if err := binary.Write(w, binary.BigEndian, msg.Count); err != nil {
 		return err
@@ -1625,6 +1681,11 @@ func serializeAnnouncementUpdate(w io.Writer, msg *AnnouncementUpdateMessage) er
 			if _, err := w.Write(textBytes); err != nil {
 				return err
 			}
+		}
+	}
+	for i, a := range msg.Announcements {
+		if err := binary.Write(w, binary.BigEndian, a.RepeatCount); err != nil {
+			return fmt.Errorf("announcement %d repeat_count: %w", i, err)
 		}
 	}
 	return nil
@@ -1676,6 +1737,23 @@ func deserializeAnnouncementUpdate(data []byte) (*AnnouncementUpdateMessage, err
 				return nil, err
 			}
 			a.Text = string(textBytes)
+		}
+	}
+
+	// Trailing RepeatCount block (backward-compat decode): an OLD plugin
+	// (predates this field) sends exactly the N entries above and nothing
+	// more — buf is empty here, and every AnnouncementInfo.RepeatCount stays
+	// at its zero value, which is the correct default (the plugin has no
+	// way to tell us a repeat happened, so treat it as "not observed").
+	// A NEW plugin appends exactly Count × 4 more bytes. Any other leftover
+	// byte count is unexpected framing we don't understand; per the "old-
+	// format messages must not error" rule we deliberately do NOT error in
+	// that case either — we just leave RepeatCount at 0, same as old format.
+	if expected := int(msg.Count) * 4; expected > 0 && buf.Len() == expected {
+		for i := uint32(0); i < msg.Count; i++ {
+			if err := binary.Read(buf, binary.BigEndian, &msg.Announcements[i].RepeatCount); err != nil {
+				return nil, fmt.Errorf("announcement %d repeat_count: %w", i, err)
+			}
 		}
 	}
 	return msg, nil

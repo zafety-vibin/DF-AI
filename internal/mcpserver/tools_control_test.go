@@ -144,7 +144,7 @@ func TestStepReport(t *testing.T) {
 		{ID: 3, Text: "migrants have arrived"},
 		{ID: 1, Text: "old alert"},
 	}
-	out := stepReport(600, 1000, 1600, true, before, after, map[uint32]bool{1: true}, false, "")
+	out := stepReport(600, 1000, 1600, true, before, after, map[uint32]uint32{1: 0}, false, "")
 	for _, want := range []string{
 		"stepped 600 ticks (sim frame 1000 -> 1600)",
 		"dwarf count change: +2",
@@ -160,7 +160,7 @@ func TestStepReport(t *testing.T) {
 	}
 
 	// Unknown before-frame renders "?", and a missing state push warns.
-	out = stepReport(600, -1, 1600, false, before, before, map[uint32]bool{}, false, "")
+	out = stepReport(600, -1, 1600, false, before, before, map[uint32]uint32{}, false, "")
 	if !strings.Contains(out, "(sim frame ? -> 1600)") {
 		t.Fatalf("expected ? for unknown before frame:\n%s", out)
 	}
@@ -170,17 +170,70 @@ func TestStepReport(t *testing.T) {
 	if !strings.Contains(out, "no new alerts") {
 		t.Fatalf("expected no-new-alerts line:\n%s", out)
 	}
+	if !strings.Contains(out, "no repeated warnings this step") {
+		t.Fatalf("expected no-repeated-warnings line:\n%s", out)
+	}
+}
+
+// TestStepReportRepeatedWarnings locks in the fix for the silent
+// damp-cancel-blindness bug: DF re-announces a repeated identical
+// cancellation by bumping repeat_count on the SAME alert ID rather than
+// minting a new one, so it's invisible to a "new alert ID" check alone.
+// stepReport must sum the RepeatCount delta across the step window for
+// severity>=1 alerts and surface it as a distinct line — not fold it into
+// "no new alerts" and not double-count it as a NEW ALERT.
+func TestStepReportRepeatedWarnings(t *testing.T) {
+	var before, after worldmodel.Snapshot
+	// Alert 5 already existed before the step at RepeatCount=2 and severity
+	// warn (1); it fires 3 more times during the step (RepeatCount=5).
+	before.ActiveAlerts = []worldmodel.Alert{
+		{ID: 5, Severity: 1, Text: "Digging designation cancelled: damp stone located.", RepeatCount: 2},
+	}
+	after.ActiveAlerts = []worldmodel.Alert{
+		{ID: 5, Severity: 1, Text: "Digging designation cancelled: damp stone located.", RepeatCount: 5},
+	}
+	beforeAlerts := map[uint32]uint32{5: 2}
+
+	out := stepReport(600, 1000, 1600, true, before, after, beforeAlerts, false, "")
+	if !strings.Contains(out, "repeated warnings this step: 'Digging designation cancelled: damp stone located.' x3") {
+		t.Fatalf("expected repeated-warning line summing the RepeatCount delta (3):\n%s", out)
+	}
+	if strings.Contains(out, "NEW ALERT") {
+		t.Fatalf("a pre-existing alert's repeat bump must never be reported as a NEW ALERT:\n%s", out)
+	}
+	if strings.Contains(out, "no new alerts") == false {
+		t.Fatalf("no brand-new alert IDs appeared this step, expected 'no new alerts':\n%s", out)
+	}
+
+	// An unchanged RepeatCount (no repeat this step) must not appear at all.
+	after.ActiveAlerts[0].RepeatCount = 2
+	out = stepReport(600, 1000, 1600, true, before, after, beforeAlerts, false, "")
+	if !strings.Contains(out, "no repeated warnings this step") {
+		t.Fatalf("expected no-repeated-warnings line when RepeatCount is unchanged:\n%s", out)
+	}
+
+	// Info-severity (0) alerts must never be summed as "repeated warnings"
+	// even if their RepeatCount grows — only severity>=1 is actionable.
+	infoBefore := worldmodel.Snapshot{ActiveAlerts: []worldmodel.Alert{{ID: 9, Severity: 0, Text: "migrants arrived", RepeatCount: 1}}}
+	infoAfter := worldmodel.Snapshot{ActiveAlerts: []worldmodel.Alert{{ID: 9, Severity: 0, Text: "migrants arrived", RepeatCount: 4}}}
+	out = stepReport(600, 1000, 1600, true, infoBefore, infoAfter, map[uint32]uint32{9: 1}, false, "")
+	if strings.Contains(out, "repeated warnings this step: '") {
+		t.Fatalf("severity-0 (info) repeat bumps must not be surfaced as repeated warnings:\n%s", out)
+	}
+	if !strings.Contains(out, "no repeated warnings this step") {
+		t.Fatalf("expected no-repeated-warnings line for a severity-0-only repeat bump:\n%s", out)
+	}
 }
 
 // TestStepReportTripwire: a plugin-initiated early stop is surfaced with
 // its reason (and a fallback when the reason is empty).
 func TestStepReportTripwire(t *testing.T) {
 	var snap worldmodel.Snapshot
-	out := stepReport(1200, 1000, 1300, true, snap, snap, map[uint32]bool{}, true, "water rising in the fort")
+	out := stepReport(1200, 1000, 1300, true, snap, snap, map[uint32]uint32{}, true, "water rising in the fort")
 	if !strings.Contains(out, "step ended EARLY at frame 1300 — tripwire: water rising in the fort") {
 		t.Fatalf("tripwire line missing:\n%s", out)
 	}
-	out = stepReport(1200, 1000, 1300, true, snap, snap, map[uint32]bool{}, true, "")
+	out = stepReport(1200, 1000, 1300, true, snap, snap, map[uint32]uint32{}, true, "")
 	if !strings.Contains(out, "tripwire: unspecified") {
 		t.Fatalf("empty tripwire reason must fall back to 'unspecified':\n%s", out)
 	}

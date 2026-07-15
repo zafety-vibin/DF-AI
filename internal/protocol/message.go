@@ -307,6 +307,21 @@ const (
 	CommandTypeAssignLodging   uint8 = 0x13 // Link a Bedroom civzone as guest lodging for a Tavern Location
 	CommandTypeUnassignLodging uint8 = 0x14 // Remove a Bedroom civzone from lodging duty
 	CommandTypeRemoveZone      uint8 = 0x15 // Deconstruct the civzone at a tile (rejected if it founds a Location)
+	CommandTypeBuildFarmPlot   uint8 = 0x16 // Designate a farm plot rectangle (extent-shaped, like Stockpile)
+	CommandTypeSetFarmCrop   uint8 = 0x17 // Assign a crop (or fallow) to one/all season slots of the farm plot at a tile
+)
+
+// Farm season wire values for CommandTypeSetFarmCrop's Season byte. 0-3
+// select one of the farm plot's four season slots (df::building_farmplotst
+// plant_id[season]); FarmSeasonAll is a wire-level convenience meaning
+// "write this same crop into all four slots" — DF itself has no such mode,
+// the plugin just loops.
+const (
+	FarmSeasonSpring uint8 = 0x00
+	FarmSeasonSummer uint8 = 0x01
+	FarmSeasonAutumn uint8 = 0x02
+	FarmSeasonWinter uint8 = 0x03
+	FarmSeasonAll    uint8 = 0xFF
 )
 
 // Labor constants for the SET_LABOR command. The value IS the real
@@ -611,6 +626,27 @@ type UnassignLodgingDesignation struct {
 	BedroomX, BedroomY, BedroomZ int16
 }
 
+// FarmPlotDesignation designates a rectangular farm plot at (X1,Y1)-(X2,Y2)
+// on level Z. EXTENT-shaped like StockpileDesignation (minus GroupMask) —
+// farm plots are not single-tile builds. A freshly built plot grows
+// NOTHING until SetFarmCropDesignation assigns a crop to at least one
+// season slot.
+type FarmPlotDesignation struct {
+	X1, Y1, Z int16
+	X2, Y2    int16
+}
+
+// SetFarmCropDesignation programs one (or all four, via FarmSeasonAll)
+// season slot(s) of the farm plot at (X,Y,Z) to grow CropName. CropName is
+// either a plant raw token/display name (resolved case-insensitively by
+// the plugin, e.g. "plump_helmet" or "Plump Helmet") or the literal string
+// "fallow" to clear the slot(s).
+type SetFarmCropDesignation struct {
+	X, Y, Z  int16
+	Season   uint8
+	CropName string
+}
+
 // UnsuspendDesignation represents a single-tile unsuspend command, used to
 // resume a stalled construction (wall placement, building, etc.) after the
 // agent has cleared whatever blocker caused DF to auto-suspend it.
@@ -741,6 +777,9 @@ type CommandMessage struct {
 	AssignLodging   AssignLodgingDesignation   // For ASSIGN_LODGING commands
 	UnassignLodging UnassignLodgingDesignation // For UNASSIGN_LODGING commands
 
+	FarmPlot    FarmPlotDesignation    // For BUILD_FARM_PLOT commands
+	SetFarmCrop SetFarmCropDesignation // For SET_FARM_CROP commands
+
 	// Feature 007: Blueprint command fields
 	BlueprintName string // For BLUEPRINT: blueprint filename (without .csv)
 	OriginX       int16  // For BLUEPRINT: placement X coordinate
@@ -752,7 +791,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeRemoveZone {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeSetFarmCrop {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -798,6 +837,17 @@ func (m *CommandMessage) Validate() error {
 		if m.QueueJob.OrderType == OrderTypeCustomReaction && m.QueueJob.ReactionCode == "" {
 			return errors.New("queue_job custom-reaction path (OrderTypeCustomReaction) requires a non-empty ReactionCode")
 		}
+	case CommandTypeBuildFarmPlot:
+		if m.FarmPlot.X2 < m.FarmPlot.X1 || m.FarmPlot.Y2 < m.FarmPlot.Y1 {
+			return errors.New("invalid farm plot region: X2/Y2 must be >= X1/Y1")
+		}
+	case CommandTypeSetFarmCrop:
+		if m.SetFarmCrop.Season > 3 && m.SetFarmCrop.Season != FarmSeasonAll {
+			return fmt.Errorf("invalid farm crop season: 0x%02X (want 0-3 or 0xFF for all)", m.SetFarmCrop.Season)
+		}
+		if m.SetFarmCrop.CropName == "" {
+			return errors.New("set_farm_crop requires a non-empty CropName (a plant token/name, or \"fallow\")")
+		}
 	}
 
 	return nil
@@ -834,20 +884,43 @@ func (m *CommandAckMessage) Validate() error {
 //	[4: GameTick]
 //	[2: TextLen]
 //	[N: Text UTF-8]
+//
+// RepeatCount is NOT part of the per-entry layout above — it travels in a
+// trailing block after all entries (see AnnouncementUpdateMessage). It
+// mirrors df::report.repeat_count: DF 50+ pools a repeated identical
+// announcement (e.g. "Digging designation cancelled: damp stone located."
+// firing over and over) by bumping repeat_count IN PLACE on the same report
+// object rather than allocating a new one, so an id-only cursor can never
+// see the repeat happen — the plugin re-sends the entry (same ID) whenever
+// repeat_count grows, and this field is how the caller tells "the same
+// problem, again" from "a brand-new problem".
 type AnnouncementInfo struct {
-	ID       uint32
-	TypeID   uint16
-	Severity uint8
-	X, Y, Z  int16
-	GameYear uint32
-	GameTick uint32
-	Text     string
+	ID          uint32
+	TypeID      uint16
+	Severity    uint8
+	X, Y, Z     int16
+	GameYear    uint32
+	GameTick    uint32
+	Text        string
+	RepeatCount uint32
 }
 
-// AnnouncementUpdateMessage carries a batch of new DF announcements from
-// the plugin. The plugin sends only NEW entries (delta against the highest
-// previously-sent ID), so the server's AlertStore can dedupe by ID without
-// storing a "last seen" cursor itself.
+// AnnouncementUpdateMessage carries a batch of new (or repeat-count-bumped)
+// DF announcements from the plugin. The plugin sends only NEW/changed
+// entries (delta against the highest previously-sent ID, plus any
+// already-sent entry whose repeat_count has grown), so the server's
+// AlertStore can dedupe/merge by ID without storing its own cursor.
+//
+// Wire layout: [4: Count] [N × AnnouncementInfo per-entry fields above]
+// [trailing block]. The trailing block is EITHER absent (an old plugin that
+// predates RepeatCount) OR exactly N × [4: RepeatCount uint32], one per
+// entry in the SAME order as the entries above — deliberately placed after
+// all N entries, not interleaved into each entry's own fields, so decoding
+// can tell old format from new format unambiguously: after consuming
+// exactly Count entries, 0 bytes left over means old format (every
+// RepeatCount defaults to its zero value), exactly 4*Count bytes left over
+// means new format. See codec.go's deserializeAnnouncementUpdate for the
+// decode side of this backward-compat rule.
 type AnnouncementUpdateMessage struct {
 	Count         uint32
 	Announcements []AnnouncementInfo
