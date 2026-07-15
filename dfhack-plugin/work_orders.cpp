@@ -179,20 +179,20 @@ bool applyWorkOrder(uint8_t orderType, uint16_t quantity, std::string &error)
 // domain knowledge, same as before this change.
 //
 // KNOWN LIMITATION: resolving a name via ORDER_TYPE_BY_NAME does NOT imply
-// it will pass this whitelist. Example: "ConstructHatchCover" resolves
-// cleanly through find_enum_item (job-type resolution works), but isn't
-// listed below, so applyQueueJob still rejects it with "job type not
-// supported at this workshop type" — a real Carpenters/Masons job with no
-// entry here yet. Add an entry (and, if it needs a specific material
-// class, a case in the WOOD/BOULDER filter below) the next time a job
-// type's real workshop/material requirement is confirmed against a live
-// game; this is future work, not solved by this pass.
+// it will pass this whitelist — a resolvable job type still needs an entry
+// below (and, if it needs a specific material class, a case in the
+// WOOD/BOULDER filter further down) before applyQueueJob accepts it. Add
+// entries as each job type's real workshop/material requirement is
+// confirmed. (ConstructHatchCover was the first such addition: grouped
+// with the door/furniture set — same Carpenters/Masons pair, same
+// per-workshop WOOD/BOULDER material class as ConstructDoor.)
 static bool jobTypeAllowedAtWorkshop(df::job_type jobType, df::workshop_type wsType) {
     switch (jobType) {
         case df::job_type::ConstructBed:
         case df::job_type::ConstructTable:
         case df::job_type::ConstructThrone:
         case df::job_type::ConstructDoor:
+        case df::job_type::ConstructHatchCover:
         case df::job_type::ConstructCabinet:
         case df::job_type::ConstructChest:
             return wsType == df::workshop_type::Carpenters || wsType == df::workshop_type::Masons;

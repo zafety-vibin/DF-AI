@@ -1,41 +1,37 @@
 ---
 name: df-farming
-description: Use when food/drink pressure is building on a fort and farm plots feel like the answer, or when reaching for a crop-growing tool — a real farm-plot BUILD/ASSIGN path does not exist yet (verify before promising it), but plant-gathering, a Still workshop, and direct reaction-based brewing via queue_job are real today and should be reached for instead.
+description: Use when food/drink pressure is building on a fort and farm plots are the answer — covers the full plot chain (site -> build_farm_plot -> assign_crop per season -> seed loop) plus the plotless gather/Still/brew chain; the plot tools shipped 2026-07-14 compile-verified only, so live-verify each with one call before leaning on it.
 ---
 
 # DF Farming
 
 Farm-plot agriculture (dig soil room -> build plot -> assign crop per
-season -> harvest) is **not fully buildable today**. Some of the supporting
-tooling has landed since this skill was first written, but the two calls
-that actually make a plot exist and grow something — `build_farm_plot` and
-`assign_crop` — are still missing. Re-verify every claim below against the
-live tool list and the code before trusting it; this file records what was
-true as of the last check, not a promise about tomorrow's build.
+season -> harvest) is buildable end-to-end as of 2026-07-14:
+`build_farm_plot`, `assign_crop`, and `list_crops` all exist through the
+full stack (Go tool -> wire -> plugin handler). **They are compile-verified
+only — no farm plot has ever been built in a live game through these tools.**
+First use in a session: make one cheap discovery call (`list_crops`) and
+read the ACK before building the room; if it errors "unknown query name,"
+the running plugin DLL predates the farm tools and needs a redeploy (DF
+closed) before any of the plot chain works.
 
 ## Tooling reality check — read this before anything else
 
-Verified against `internal/mcpserver` and `dfhack-plugin` source, not
-inferred from the tool list alone (a registered Go tool can still call a
-plugin query that was never implemented — see `list_crops` below):
+Status as of 2026-07-14 (verified against `internal/mcpserver` and
+`dfhack-plugin` source at ship time; re-verify live per the note above):
 
-- **No farm-plot build type exists.** `internal/protocol/message.go` has
-  no `BuildType` constant for a farm plot, `internal/mcpserver`'s `build`
-  tool has no `farmplot` entry in its type vocabulary, and
-  `internal/mcpserver/lenses.go` explicitly comments the case as reserved
-  because it "cannot exist in a fort today." There is no `build_farm_plot`
-  or `assign_crop` tool anywhere. Nothing below about plots is executable.
-- **`list_crops` is registered but non-functional.** The Go tool exists in
-  `internal/mcpserver/tools_state.go` and its description already
-  references `build_farm_plot`/`assign_crop` in anticipation of them — but
-  the DFHack plugin's query dispatcher (`dfhack-plugin/queries.cpp`,
-  `executeQuery`) has no `list_crops` branch. Calling it returns
-  `QUERY_STATUS_UNKNOWN` / "unknown query name: list_crops" every time.
-  Don't trust its presence in a tool list as evidence it works — call it
-  once and read the ACK before relying on it for crop discovery.
-- **`list_reactions` is real and works.** The plugin dispatcher does have
-  a `list_reactions` branch (`handleListReactions`), so this one is
-  genuinely usable today for discovering raw reaction codes.
+- **`build_farm_plot` exists** — extent-shaped like `stockpile`
+  (`x1,y1,x2,y2,z`), consumes no materials, needs no architect. NOT part of
+  the generic `build` tool's vocabulary; it is its own tool.
+- **`assign_crop` exists** — per-season crop assignment on a built plot
+  (`x,y,z` of the plot, `season` spring/summer/autumn/winter/all, `crop`
+  by raw token or display name, or the literal `fallow`). Season-legality
+  and underground/surface checks mirror DFHack's autofarm and error
+  truthfully.
+- **`list_crops` exists** — plantable crops with raw token, display name,
+  underground/surface eligibility, and seeds on hand; substring-filterable.
+- **`list_reactions` exists and works** — discovery for raw reaction codes
+  (e.g. `BREW_DRINK_FROM_PLANT`).
 - **Brewing has a real, working sink — but only through `queue_job`, not
   `order`.** `queue_job`'s `reaction` parameter (e.g.
   `BREW_DRINK_FROM_PLANT`, discovered via `list_reactions`) routes to
@@ -56,13 +52,12 @@ plugin query that was never implemented — see `list_crops` below):
   `plant` and `brew`), but `plant` labor has nothing to act on without a
   farm plot to plant into.
 
-Bottom line: today's real food/drink chain is **gather -> Still -> queue_job
-reaction** (wild plants in, drink out, no plot, no crop assignment, no
-season logic). Everything from Siting onward below is the plot-based chain
-this fort *cannot* run yet — kept here as a design record so implementing
-it later doesn't require re-deriving these traps, and so a live session
-reaches for `gather`/`still`/`queue_job` instead of a tool that doesn't
-exist.
+Two chains, use both: the **plotless chain** (gather -> Still -> queue_job
+reaction: wild plants in, drink out, no seeds needed) is the proven bridge
+while a farm establishes; the **plot chain** (everything from Siting onward)
+is the sustainable engine. Neither replaces the other early on — gathered
+plants also brew, and brewing always returns seeds, which is how a seed
+stock bootstraps.
 
 ## When to farm (food pressure signals)
 
@@ -78,16 +73,15 @@ tend to appear:
    the fort's food-producing capacity, which at this point in tooling
    means outpacing `gather` yield and Still throughput.
 
-Given the tooling gap above, the response to all of these today is the
-real chain (gather -> still -> queue_job) and/or `fort-opening` Gate 5's
-fallback (hunt, trade, a `water_source` zone), **not** standing up a farm
-plot — that path isn't buildable yet no matter how much pressure exists.
+Respond with both chains: keep gather -> Still -> queue_job flowing for
+immediate drink (plus `fort-opening` Gate 5's fallbacks — hunt, trade, a
+`water_source` zone), and stand up the plot chain below for the sustainable
+supply.
 
-## Siting (design-only — no plot to site yet)
+## Siting
 
-These are permanent DF mechanics that will still be true whenever
-`build_farm_plot` lands, so they're worth internalizing now even though
-nothing here is actionable today:
+Permanent DF mechanics — check these before digging the room, not after a
+plot fails:
 
 - Valid ground is soil floor, or stone floor that has been muddied. Bare
   stone refuses the building outright.
@@ -105,18 +99,19 @@ nothing here is actionable today:
   Seeds are the bottleneck at fort start regardless of plot size, so a big
   plot just multiplies how many seeds are needed before any return is seen.
 - `cross_section` (soil vs. stone) and `find_dig_site` (candidate soil
-  layers) are the existing, working tools that would inform this siting
-  call once there's something to site.
+  layers) are the tools that inform this siting call.
 
-## Build (the actual gap)
+## Build
 
-There is no `build_farm_plot` tool and no farm-plot `BuildType` on the
-wire. This step is not partially working or slow to discover — it is
-absent end-to-end. Do not attempt to reach it through the generic `build`
-tool's `type` parameter; `farmplot` is not in its accepted vocabulary and
-the call will fail with "unknown build type."
+`build_farm_plot` takes the plot rectangle (`x1,y1,x2,y2,z`) — it is its
+own tool, NOT a `type` under the generic `build` tool. Zero materials,
+no architect; a dwarf with farming labor constructs it. DF itself enforces
+the ground rules (soil / muddied stone) — a plot on bad ground fails with
+DF's real reason in the ACK, so don't pre-filter beyond the Siting notes
+above. A built plot that is never crop-assigned grows NOTHING, silently —
+go straight from build to Assign, below.
 
-What **is** buildable today and belongs in the same food/drink chain:
+Companion workshops in the same food/drink chain:
 
 - A **Still** (`build` type `still`) — the real target for
   `queue_job`'s `reaction=BREW_DRINK_FROM_PLANT` path.
@@ -127,38 +122,34 @@ What **is** buildable today and belongs in the same food/drink chain:
 Build either with the standard workshop rule: 3x3 footprint, center at
 (x,y), the surrounding 8 tiles must be clear floor.
 
-## Assign (design-only — the silent-failure trap to remember)
+## Assign (the silent-failure trap)
 
-No `assign_crop` tool exists, so nothing in this section is executable
-today. It's recorded because it is DF's single most common and most
-silent farm-plot mistake, and whoever eventually wires up the tool needs
-the workflow ordered around it from day one:
+A farm plot needs a crop assigned **per season, every season** — via
+`assign_crop`. There is no fallback and no default. An unassigned season
+is fallow — silently, permanently for that season, every year — with no
+error raised anywhere. This is DF's single most common and most silent
+farm mistake: check assignment status before checking labor, seeds, or
+ground, because this failure mode produces no alert to point at it.
 
-A farm plot needs a crop assigned **per season, every season**. There is
-no fallback and no default. An unassigned season is fallow — silently,
-permanently for that season, every year — with no error raised anywhere.
-Whatever tool eventually exposes crop assignment, the workflow must check
-assignment status before checking labor, seeds, or ground, because this
-failure mode produces no alert to point at it.
-
-The intended order of operations, once buildable:
+Order of operations:
 
 1. Confirm seeds of the intended crop are on hand (`stocks` with a
    category filter like `seed`) before assigning — assigning a crop with
    no seed stock just produces planting-job cancellation spam later.
 2. Confirm the plot sits on valid ground for that crop (Siting, above).
-3. Assign a crop for **every** season the plot will be active. A
-   deliberately fallow season (chosen because every candidate crop is
-   seed-starved that season) is a decision; an unassigned season left by
-   accident is a bug nobody noticed.
+3. Assign a crop for **every** season the plot will be active
+   (`assign_crop` with `season=all` writes one crop into all four slots in
+   one call; per-season calls override individually; `crop=fallow` clears
+   a slot). A deliberately fallow season (chosen because every candidate
+   crop is seed-starved that season) is a decision; an unassigned season
+   left by accident is a bug nobody noticed.
 4. Confirm grower labor (`set_labor` `plant`) is enabled on someone so a
    dwarf actually walks over and plants.
 
-`list_crops` is the tool meant to inform step 1 and step 3 (crop token,
-underground/surface eligibility, seeds on hand) — but per the tooling
-reality check above, calling it today returns "unknown query name," so
-this discovery step is currently blocked too, not just the build/assign
-steps downstream of it.
+`list_crops` informs step 1 and step 3 (crop token, underground/surface
+eligibility, seeds on hand) — call it first; it is also the cheapest live
+probe that the running plugin actually has the farm handlers (see the
+reality check at the top).
 
 Which specific crop(s) best fit a fort's seed stock and goals is a call
 for the playing session, not a default to bake into this skill — season
@@ -166,22 +157,18 @@ coverage, raw-edibility, and brewability are the criteria that matter.
 
 ## Seed-loop management
 
-Split this into what's real today and what's still design-only:
-
-**Real today**, independent of farm plots:
-- `gather` harvests wild plants directly off the map — this is the actual
-  plant-supply step right now, not a fallback.
+The plotless supply line, independent of farm plots:
+- `gather` harvests wild plants directly off the map.
 - `queue_job` with `reaction=BREW_DRINK_FROM_PLANT` at a built Still
-  consumes gathered plants and produces drink. This is a genuine working
-  sink for wild-gathered plant stock and doesn't need a plot, crop
-  assignment, or seeds to function — it just needs plants and an empty
-  barrel on hand.
+  consumes plants (wild-gathered or farmed) and produces drink; needs
+  plants and an empty barrel on hand, nothing else.
 - `set_labor` `brew` enables the labor that actually walks a dwarf to the
   Still to do the job.
 
-**Design-only** (still needs `build_farm_plot`/`assign_crop` to matter):
+The seed loop itself:
 - Seeds return from eating a crop raw, from brewing (always), from
-  milling, and from Farmer's Workshop processing.
+  milling, and from Farmer's Workshop processing. Brewing gathered wild
+  plants is how a seed stock bootstraps before the first harvest.
 - Seeds are **destroyed** by cooking — a kitchen's cook labor consumes
   both seeds and whole plants when preparing meals. This is the single
   biggest seed-economy risk once a kitchen exists.
@@ -189,10 +176,9 @@ Split this into what's real today and what's still design-only:
   seeds, brewable/plantable plants, and alcohol, set the moment a kitchen
   is built. **No tool exists anywhere in this project to set kitchen
   permissions.** Until one ships, the only available mitigation is to
-  avoid building a kitchen (or avoid queuing cook jobs) while a
-  seed-dependent loop would otherwise be establishing itself — and since
-  there's no farm-plot loop to protect yet anyway, this mainly matters as
-  a warning for the day plots do exist.
+  avoid building a kitchen (or avoid queuing cook jobs) while the
+  seed loop is establishing itself. This is a live constraint now that
+  plots are buildable — a kitchen can silently eat the farm's future.
 - DF caps seed stock (200 per type, 3000 global) — a ceiling to expect,
   not a failure, once a loop is running.
 
@@ -208,8 +194,7 @@ when drink isn't appearing:
 4. `jobs` to confirm the reaction job is actually queued at the Still and
    not silently dropped (queue full, wrong workshop id).
 
-For the plot-based chain, once it exists (design-only order, most-common
-and most-silent first):
+For the plot chain (most-common and most-silent first):
 1. **No crop assigned for the current season.** Silent — check first,
    always.
 2. **No seeds of the assigned crop on hand.** Shows up as planting-job
@@ -233,9 +218,10 @@ has for every other building type today.
 
 ## Re-check before relying on this skill
 
-Re-grep `internal/mcpserver` for `build_farm_plot`/`assign_crop` and
-`dfhack-plugin/queries.cpp` for a `list_crops` branch before treating any
-part of the plot-based chain as executable — and re-test `queue_job`
-`reaction=BREW_DRINK_FROM_PLANT` and `list_reactions` at the start of a
-session rather than assuming last session's working state still holds;
-tool wiring changes fast in this project.
+None of the plot chain has been exercised against a live game yet
+(shipped 2026-07-14, compile-verified). At first live use, treat every
+step as an experiment: read ACKs skeptically, verify the plot appears in
+`buildings`, and record what actually happens in fortress memory — then
+update this skill's claims from PLAUSIBLE to VERIFIED (or file the bug).
+A cheap `list_crops` call at session start is the canonical probe that
+the running DLL has the farm handlers at all.
