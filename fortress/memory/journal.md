@@ -2,6 +2,57 @@
 
 (newest entries on top)
 
+## 2026-07-14 — Fort #2 ("First Fort round 2"), session 1 (Spring y100, day 14→45)
+
+FRESH EMBARK, new world. Session goals: live-verify the new Zones+Locations
+tools, and pierce/seal the aquifer UNSUPERVISED using only these memory files.
+
+- **AQUIFER PIERCED AND SEALED UNSUPERVISED — the protocol worked.** Site:
+  surface z=131, single-layer sand aquifer at z=128 (thinner than Fort #1's),
+  stone from z=126. Timeline: shaft z131→129 (day 14-17), pierce designation
+  day 17, loud damp-cancel day 18, re-designate → pierced to z=126 by day 19,
+  quarry z=126 for mudstone (non-economic layer stone — no bauxite trap this
+  time), 8-tile orthogonal ring mined day 27, ALL 8 walls built by day 29,
+  residual 2-tile puddle fully evaporated by day 38. Zero inflow since.
+  ~11 game-days pierce→seal, zero human coaching. Protocol deviations:
+  ring dig took THREE designation rounds (protocol said expect two) with NO
+  alert feedback (announcement dedup swallows repeat damp-cancels); improved
+  order-of-operations: quarry stone BEFORE mining the ring so walls start
+  instantly.
+- **New tools all live-verified**: designate_zone (bedroom/dormitory/barracks/
+  animal_training/meeting_hall/water_source all placed), assign_zone (coord-
+  addressed; ownership shows in list_zones), unassign_zone (roster cleared),
+  create_location tavern (list_locations correct), assign_lodging (ACK
+  SUCCESS, list_locations shows "1 lodging room(s)"). check_goals
+  has_bedroom_zones went 0→1 (needs a step() after zone creation — stale
+  snapshot reads 0 at first, NOT a broken predicate).
+- **Lodging in-game effect: UNVERIFIED (pending, not null).** Wire path fully
+  works; no visitor has arrived by day 45 (expected — 7-dwarf fort, low
+  wealth, visitors take seasons). Keep watching next session.
+- Error-text quality confirmed excellent: Barracks assign → "uses squads,
+  not units — see future military/squad workstream"; AnimalTraining assign →
+  "labor-driven, no roster". Both accurate and educational.
+- **BrewDrink CONFIRMED still blocked** (live re-test this fort): no job_type
+  named Brew*; brewing is CustomReaction (needs job->reaction_name);
+  queue_job CustomReaction cleanly rejected by workshop whitelist. Drink
+  chain dead until the reaction-based path lands.
+- DISCOVERY: designation overlays now painted in look ('d' glyph) — landed
+  from the 009 wishlist. Caveat: UNDER-REPORTS — tiles with in-flight dig
+  jobs render as plain wall; do not diagnose "cancelled" from a missing 'd'.
+- Fort state at pause (day 45): shaft z131→126 sealed through aquifer;
+  z=130 base room (food stockpile + meeting hall/TAVERN + 2 junk test zones,
+  no zone-delete tool exists) + dorm room (4 beds built: 1 owned by etur,
+  1 tavern-lodging; 3 more beds in stock, unplaced); z=126 quarry (carpenter
+  + still built) + W annex mostly dug; 13 boulders, 22 logs, 12 drinks,
+  food THIN (~12 units + 8 raw fish), farming still tool-blocked (no farm
+  plot build type). Water: 7/7 stream found far W in gully (z=141), water_
+  source zone painted on bank (4-9,71,142). Second miner (meng) enabled
+  pre-emptively at embark — single-miner default-embark pattern confirmed
+  again.
+- Next session: place 3 remaining beds + bedroom zones (goal 7), dining
+  hall (tables/chairs via carpenter queue_job), fishery for the raw fish,
+  watch for migrants/visitors (lodging verification), food pressure watch.
+
 ## 2026-07-12 — First Fort, session 2 continued: pre-009 verification pass (day 103-104)
 
 - Reconnected post pre-009-blocking-fixes wave. Census fix LIVE-VERIFIED

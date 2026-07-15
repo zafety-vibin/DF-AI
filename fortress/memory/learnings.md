@@ -2,6 +2,60 @@
 
 (append-only; never delete)
 
+## Aquifer protocol — refinements from Fort #2 (first unsupervised run, SUCCESS)
+
+- The written protocol below WORKS without coaching — Fort #2's single-layer
+  sand aquifer was pierced and sealed in ~11 game-days solo. Refinements:
+- QUARRY STONE FIRST: dig to stone below the aquifer and quarry boulders
+  BEFORE mining the seal ring, so all 8 walls can be queued the moment the
+  ring opens. Fort #1's seal stalled for days on missing boulders.
+- Ring mining can take THREE designation rounds, not two — and announcement
+  dedup means you get NO alert for repeat damp-cancels. Don't diagnose; just
+  re-designate each turn it hasn't dug. Designations are free.
+- Distinguish the cancel-source: a ring tile adjacent to tiles with ACTUAL
+  water re-cancels each attempt; re-designating is still correct (builders
+  work in ≤3-depth water) but expect more rounds the wetter the shaft is.
+- After a good seal the catch-basin puddle (depth 1-2) fully evaporates in
+  ~5-10 game-days. A dry shaft bottom is the definitive seal-verified signal.
+- Single-layer aquifers (1 z-level) are dramatically easier than multi-layer:
+  same protocol, but the seal ring is one ring, and the basin stays shallow.
+
+## Designation overlay in `look` — it exists now, but UNDER-REPORTS
+
+- 'd' overlay glyphs landed (009 item). But tiles whose dig job is in flight
+  (or shortly queued?) can render as plain wall '%'/'#' with no 'd'. A
+  designation you can't see is NOT necessarily cancelled — check again after
+  a step, or watch whether the tiles eventually dig, before re-designating
+  in a panic. (Misread this twice in one session before catching on.)
+
+## Zones & Locations (first live session with these tools)
+
+- Zone type vocabulary is snake_case lowercase ("meeting_hall",
+  "animal_training", "water_source"); matching is case-insensitive but NOT
+  camelCase-tolerant ("MeetingHall" fails, "meeting_hall"/"Bedroom" work).
+- assign_zone/unassign_zone address the zone by ANY TILE INSIDE IT (x,y,z),
+  not by id. Same pattern for assign_lodging (tavern_* + bedroom_* coords).
+- Zones claim EXISTING carved floor/grass only — painting over open air or
+  undug wall fails per-tile with a truthful error ("zones claim existing
+  space, they don't dig").
+- check_goals reads the world-model snapshot: a zone created while paused
+  shows as 0 in predicates until the next step() refreshes state. Step ~100
+  ticks before trusting predicate counts after zone edits.
+- The tavern flow that works end-to-end: designate_zone meeting_hall →
+  create_location tavern (any tile in the hall) → designate_zone bedroom
+  (with a built bed) → assign_lodging. list_locations then shows
+  "Tavern ... — N lodging room(s)". In-game visitor behavior NOT yet
+  observed (needs seasons + fort wealth); wire path verified only.
+- There is NO zone deletion tool — test zones are permanent squatters.
+  Don't paint junk zones in rooms you care about.
+
+## Default embark: the single-miner pattern is universal
+
+- Second fort in a row: every starting dwarf has ~80 labors EXCEPT mine;
+  exactly one dwarf has MINE. Check the roster at embark and set_labor MINE
+  on a second dwarf (mason/stone-skills types are natural picks) BEFORE the
+  first big dig — done pre-emptively this time and digging never stalled.
+
 ## Designation overlays in `look` — second occurrence
 
 - SECOND live instance of the room/shaft-gap error class (first was

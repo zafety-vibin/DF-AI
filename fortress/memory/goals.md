@@ -1,98 +1,101 @@
-# Goals
+# Goals — Fort #2 (fresh embark, y100; state as of spring day 45)
 
-## NOW (survival) — ALL SATISFIED per check_goals as of day 92 summer
-- [x] Underground shelter: 112 dug tiles, well past the per-dwarf minimum
-- [x] Aquifer at z136 pierced AND sealed (8 constructed walls, all 4 sides;
-      residual pocket drained/dispersed harmlessly through z132 by day 90)
-- [x] Wood chain: carpenter workshop built; chop/gather real (multi-species
-      wood flowing)
-- [x] ALL 7 BEDS BUILT — full coverage for the fort's 7 real dwarves
-- [x] Fishery built, auto-processing raw fish (no job-queue needed for this
-      chain — confirmed automatic once the workshop exists)
-- [x] Food/general stockpiles placed (z134 food-only + z132 "everything"
-      per overseer's centralize-underground-storage tip)
+## OVERSEER DIRECTION (2026-07-15): a NEW MAP is coming — Fort #3 will be
+## a fresh embark. Open it with the fort-planning skill (level categories,
+## dig-ahead, confirmed taste canon) + fort-opening. First planning act:
+## look scope=elevation for the whole-map layout pass, then scope=fort for
+## routine reviews. Blueprint capture (save_blueprint) is live for pods.
+## Fort #2's remaining verification items below still apply to whichever
+## save runs next with the new DLL.
+
+## NOW (survival)
+- [ ] NEXT SESSION FIRST: deploy the freshly built plugin DLL (DF must be
+      CLOSED; artifact at ../dfhack-build/build/plugins/df_ai_protocol/
+      Release/df_ai_protocol.plug.dll → Steam DF hack/plugins/), reconnect,
+      then live-verify the 2026-07-14 wave in this order: list_crops (DLL
+      freshness probe) → brew at the still (drink chain!) → farm plot +
+      crops → hatch the shaft top → remove_zone on the junk zones →
+      confirm 'd' overlay persistence + repeat-warning step lines.
+- [x] Aquifer (z=128, single-layer sand) pierced AND sealed — 8 walls, dry
+      shaft bottom verified. UNSUPERVISED — the protocol held.
+- [x] Underground shelter: base room + dorm z=130, quarry/workshops z=126
+- [x] Wood chain: 22 logs, carpenter workshop built (z=126)
+- [ ] FOOD IS THIN: ~12 edible + 8 raw fish, no farming possible (tool gap),
+      no gatherable shrubs in revealed area. Fishery next (raw fish x8);
+      watch stocks every session.
+- [ ] Drinks: 12 left day 45; brewing BLOCKED (see gaps). Fallback: 7/7
+      stream far W (water_source zone painted at (4-9,71,142)). Watch for
+      "thirsty" unhappiness, not just dehydration.
 - [x] no_active_hostiles
 
 ## SOON (headroom)
-- [ ] Drink: 9 drinks (draining slowly). Still BUILT at (45,49,134) but
-      BLOCKED — BrewDrink has no job_type mapping in order/queue_job
-      (protocolToJobType returns -1); needs a DFHack reaction-based
-      lookup, not a plain enum value. Water is a fallback (unhappy
-      thought, not fatal) if this runs dry before the fix lands.
-- [ ] Dining hall (has_dining_hall predicate) — table+chair buildable
-      today, needs the same room-assignment gap as bedroom zones below.
-- [ ] Bedroom zone assignment (has_bedroom_zones_7/15) — beds exist and
-      are usable, but formal zone/room assignment needs either the zone
-      civzone fix or a new room-assignment tool; neither exists yet.
-- [ ] Survive first migrant wave
-- [ ] Office (chair+table+door, all buildable today) + eventually a
-      Manager noble once that tooling exists — unlocks bulk `order` orders
-- [x] GENERALIZE item construction — SHIPPED 2026-07-12 in the pre-009
-      blocking-fixes wave. queue_job's wire payload gained an optional
-      job-type NAME string (ORDER_TYPE_BY_NAME sentinel), resolved via
-      DFHack's find_enum_item<df::job_type> — no C++ addition needed for
-      any job_type DFHack already knows. New `job_types` discovery tool
-      (filterable, NOT baked into orders/queue_job's hot path). NOT
-      generalized (confirmed underivable from DFHack enum metadata, see
-      decisions.md): jobTypeAllowedAtWorkshop's workshop-compatibility
-      table and the WOOD/BOULDER material filter stay hand-maintained —
-      a name-resolved job_type can still be rejected by that whitelist.
-- [ ] BrewDrink job_type mapping (engineering) — unblocks the still. The
-      name-based path can now RESOLVE "BrewDrink" but per
-      constructionResearch BrewDrink isn't its own job_type at all — it's
-      a CustomReaction dispatched via job->reaction_name, so name
-      resolution alone won't be enough; still needs the reaction-based
-      lookup originally scoped.
-- [ ] Hatch cover job_type mapping — SMALLER NOW than before generalized
-      construction shipped: "ConstructHatchCover" resolves cleanly via
-      the new name path, the ONLY remaining gap is one entry in
-      jobTypeAllowedAtWorkshop's hand-maintained whitelist (Carpenters,
-      matching the door/furniture group). 4 hatches at the main shaft's
-      surface opening (46-47,50-51,140) are dead plans until this lands.
-      Bedroom hall's west wall (48,50/51,139) can't be retrofitted with a
-      door there without relocating 2 already-built beds — minor design
-      debt, resolve when doors land.
-- [ ] stocks category filter is case-SENSITIVE against the plugin
-      (needs "DRINK" not "drink") — minor, normalize with strings.ToUpper
-      in Go before querying; tool description's lowercase examples are
-      wrong until fixed.
-- [x] set_labor tool — SHIPPED + LIVE-VERIFIED 2026-07-12. Write confirmed
-      via read-back (Solon gained MINE). ROOT CAUSE turned out sharper
-      than first diagnosed: this is a DEFAULT-EMBARK DESIGN fact, not a
-      quirk — every dwarf starts with every labor EXCEPT mine except
-      Doren, who alone has it. Applied the fix live: enabled MINE on
-      Solon (idle, stone-working skills) as a second miner so digging
-      doesn't fully gate on Doren's other ~80 labors (incl. CLEAN_FISH,
-      the actual collision — not a narrow specialization as first
-      assumed, just one of many generalist labors that happened to grab
-      him). General lesson for future forts: check for this exact
-      single-miner pattern early and spread MINE to a second dwarf
-      pre-emptively, don't wait for a stall.
-- [x] Dwarf-vs-animal census filter — SHIPPED + LIVE-VERIFIED 2026-07-12.
-      `dwarves` now reports 7, exactly matching the manual census.
-      Root cause: entities.cpp classified via Units::isFortControlled()
-      (true for ANY tame unit) instead of Units::isCitizen(); fixed with
-      a Units::isAnimal() check inserted before the fort-controlled
-      branch.
-- [x] find_dig_site stale-solidity bug (engineering) — CLOSED 2026-07-12.
-      Root cause: `tile_updates.cpp` hardcoded TILE_UPDATE delta flags to
-      FLAG_DISCOVERED instead of computing them; fixed via
-      `compute_tile_flags()` in commit 062455f. See docs/decisions.md
-      2026-07-12 entry and fortress/memory/learnings.md's
-      "find_dig_site reliability" follow-up for detail.
-- [ ] Named gaps from the 2026-07-12 skills-proposal research (not yet
-      scoped, filed for future engineering — none block current play):
-      trade-depot build type + caravan/broker tooling (blocks liquidating
-      wealth — production works, selling doesn't); created-wealth
-      query/predicate (no way to measure fort value, fits 009 workstream
-      4); lever/mechanism/drawbridge build types (blocks a full
-      mechanical entrance seal beyond door+hatch); military/squad/burrow
-      tooling (blocks any active defense response — architecture is the
-      only lever today); farm-plot build type (blocks farming
-      independently of the zone civzone stub — even a fixed zone tool
-      needs somewhere to designate a farm plot onto).
+- [ ] Place 3 remaining beds (in stock) + bedroom zones toward
+      has_bedroom_zones_7 (currently 2 zones: etur's + tavern lodging)
+- [ ] Dining hall: queue tables+chairs at carpenter, designate dining_hall
+      zone (type exists in vocabulary, untested)
+- [ ] Fishery workshop (annex at z=126 has space once fully dug)
+- [ ] Watch lodging: tavern exists w/ 1 guest room; first visitor/migrant
+      wave will be the real assign_lodging verification
+- [ ] Survive first migrant wave (none yet at day 45)
 
 ## EVENTUAL (trajectory)
 - [ ] Survive year 1 (zero starvation/dehydration deaths)
-- [ ] Defensible single entrance
-- [ ] Cistern from the sealed wet column (46-50,50-51 area, z133-136)
+- [ ] Defensible single entrance (shaft top at (49-50,47-48,131) is the only
+      way in; hatch covers still tool-blocked)
+- [ ] Trade depot before first caravan (tool-blocked)
+
+## Tool gaps (engineering queue — logged 2026-07-14, updated same day
+## after the ultracode wave; SHIPPED = compile/test-verified, NOT yet
+## live-verified — the running DF still has the OLD plugin DLL)
+- [x] SHIPPED: reaction-based brewing — queue_job gained `reaction` param
+      (e.g. BREW_DRINK_FROM_PLANT) + list_reactions discovery tool.
+      LIVE-VERIFY FIRST: needs DLL redeploy (DF closed), then queue one
+      brew at the still and confirm drink appears + seeds return.
+- [x] SHIPPED: remove_zone (by coordinate; refuses zones that found a
+      Location, with a named error). Live-verify on the 2 junk zones in
+      Fort #2's tavern: Barracks (51,49)-(52,50), animal_training
+      (55,49)-(56,50) z=130.
+- [x] SHIPPED: connector-suggestion fixes (diagonal suggestions no longer
+      emit bounding-box rectangles; vertical adjacency now seen by the
+      "not yet connected" check — both false positives from this session
+      should be gone).
+- [x] SHIPPED: list_zones "animals" label fix (roster phrasing now only
+      for Pen/Pond) + designate_zone unknown-type error lists the full
+      snake_case vocabulary.
+- [x] SHIPPED: look designation overlay now includes in-flight dig jobs
+      (plugin-side job-list merge, both full-state and delta paths).
+      Live-verify: designate, step until a miner claims the job, look —
+      'd' should persist.
+- [x] SHIPPED: repeated-announcement visibility — step reports now carry
+      "repeated warnings this step: ... xN" (DF pools repeats in-place;
+      the old id cursor never saw them). Ends the silent damp-cancel
+      blindness during aquifer work.
+- [x] SHIPPED: farm plots — build_farm_plot (extent-shaped, own tool, NOT
+      a `build` type) + assign_crop (per-season incl. fallow/all) +
+      list_crops. A plot with no crop for the current season grows
+      NOTHING, silently. list_crops is the canonical probe that the
+      running DLL has the farm handlers. See .claude/skills/df-farming.
+- [x] SHIPPED: ConstructHatchCover in the queue_job whitelist — hatch the
+      shaft top (46-47,50-51 area) once the DLL is deployed.
+- [x] SHIPPED: dwarves verbose census mode + dwarf_detail include_labors
+      opt-in (default now a count, not the 80-line list); look radius cap
+      23 + scope=overview (whole-map downsample); SURFACE is now a
+      per-column fact and survey_site reports a min..max range (ground
+      ABOVE spawn elevation is normal and workable).
+- [ ] kitchen_permissions tool — the ONLY mitigation for cooking
+      destroying the farm seed loop; until it ships, don't build a
+      kitchen / don't queue cook jobs while the seed loop establishes.
+- [ ] well / floodgate / lever build types + linking — blocks
+      aquifer-water-infrastructure (see the PLANNED skill stub).
+- [ ] Farm-plot state visibility: buildings can't show per-season crop
+      assignments — track in memory until a query exposes it.
+- [ ] `jobs` tool is workshop-only; still no global "what is everyone
+      doing" query (dwarves verbose covers the census case per-call).
+- [ ] stocks category "FOOD" isn't a real category (MEAT/FISH/PLANT/DRINK
+      are) — returns empty silently; could suggest valid categories.
+- [ ] find_dig_site called surface grass/walkable tiles "fully solid" on
+      the fresh embark (pre-first-dig) — wrong solidity claim on initial
+      full-state; NOT addressed by this wave, still open.
+- [ ] Plugin-side batch dwarf-detail query (one round trip for the whole
+      roster) — dwarves verbose fans out up to 50 queries; fine for now,
+      wasteful at migrant-wave scale.
