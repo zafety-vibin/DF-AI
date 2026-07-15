@@ -182,7 +182,7 @@ func TestRenderColumn(t *testing.T) {
 		{Z: 109, Glyph: "?", Shape: "wall", Material: "soil", Hidden: true},
 		{Z: 108, Glyph: "?", Shape: "wall", Material: "stone", Hidden: true},
 	}}
-	out := RenderColumn(c, 110)
+	out := RenderColumn(c)
 	if !strings.Contains(out, "column (72,81)") {
 		t.Fatalf("header missing: %q", out)
 	}
@@ -215,7 +215,7 @@ func TestRenderColumnFluids(t *testing.T) {
 		{Z: 108, Glyph: "?", Shape: "wall", Material: "stone", Hidden: true, Damp: true},
 		{Z: 107, Glyph: "?", Shape: "wall", Material: "stone", Hidden: true},
 	}}
-	out := RenderColumn(c, 110)
+	out := RenderColumn(c)
 	lines := strings.Split(out, "\n")
 	if !strings.Contains(lines[1], "~4/7 water") {
 		t.Fatalf("water depth annotation missing on z=110: %q", lines[1])

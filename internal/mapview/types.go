@@ -54,6 +54,27 @@ type ColumnProfile struct {
 	Levels []ColumnLevel `json:"levels"`
 }
 
+// ColumnSurfaceZ finds THIS column's own surface: the first level (Levels is
+// already ordered top-to-bottom) whose Shape/Material isn't open air. Two
+// live incidents traced back to callers instead using one map-wide proxy
+// (highest dwarf Z) and stamping it onto every column queried, which drifts
+// as dwarves walk and is simply wrong for any column whose real ground sits
+// at a different Z (a hill, a valley, anywhere off the exact dwarf tile).
+// ok=false means the entire queried z-window was open air — the window
+// needs to be widened, not that the column has no surface.
+func ColumnSurfaceZ(c *ColumnProfile) (z int16, ok bool) {
+	if c == nil {
+		return 0, false
+	}
+	for _, lv := range c.Levels {
+		if lv.Shape == "open" || lv.Material == "air" {
+			continue
+		}
+		return lv.Z, true
+	}
+	return 0, false
+}
+
 func DecodeSlice(raw []byte) (*Slice, error) {
 	var s Slice
 	if err := json.Unmarshal(raw, &s); err != nil {

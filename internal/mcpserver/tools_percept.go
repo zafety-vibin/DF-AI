@@ -78,7 +78,6 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 		Description: "Vertical slice at column (x,y): one line per z-level showing surface, soil bands, stone, and hidden layers. THE tool for judging how deep to dig stairs and where soil ends.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in xsecIn) (*mcp.CallToolResult, any, error) {
 		snap := b.Snapshot()
-		surfaceZ := int16(0)
 		minDZ, maxDZ := int16(32767), int16(-32768)
 		for _, d := range snap.Entities.Dwarves {
 			if d.Z < minDZ {
@@ -87,9 +86,6 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 			if d.Z > maxDZ {
 				maxDZ = d.Z
 			}
-		}
-		if len(snap.Entities.Dwarves) > 0 {
-			surfaceZ = maxDZ
 		}
 		zt, zb := int16(in.ZTop), int16(in.ZBottom)
 		if in.ZTop == 0 && len(snap.Entities.Dwarves) > 0 {
@@ -105,7 +101,12 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 		if err != nil {
 			return withDash(b, ctx, "cross_section failed: "+err.Error()), nil, nil
 		}
-		return withDash(b, ctx, mapview.RenderColumn(c, surfaceZ)), nil, nil
+		// RenderColumn now computes THIS column's own surface (ColumnSurfaceZ)
+		// instead of trusting a map-wide proxy passed in from here — that
+		// proxy (highest dwarf Z) was live-observed drifting between calls
+		// as dwarves walked uphill, and was wrong for any column whose real
+		// ground isn't at the exact dwarf tile.
+		return withDash(b, ctx, mapview.RenderColumn(c)), nil, nil
 	})
 
 	type elevationIn struct {
@@ -184,22 +185,45 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 			return withDash(b, ctx, "survey unavailable: waiting for full state / dwarves (is ai-connect done?)"), nil, nil
 		}
 		w, h, d := topo.GetDimensions()
-		surfaceZ := snap.Entities.Dwarves[0].Z
+		// crewZ anchors z-window sampling; it is NOT "the surface" — real
+		// ground height varies per column (hills, valleys). See SurveyData.
+		crewZ := snap.Entities.Dwarves[0].Z
 		cx, cy := snap.Entities.Dwarves[0].X, snap.Entities.Dwarves[0].Y
 		for _, e := range snap.Entities.Dwarves {
-			if e.Z > surfaceZ {
-				surfaceZ, cx, cy = e.Z, e.X, e.Y
+			if e.Z > crewZ {
+				crewZ, cx, cy = e.Z, e.X, e.Y
 			}
 		}
-		data := SurveyData{MapW: w, MapH: h, MapD: d, SurfaceZ: surfaceZ, Dwarves: snap.Entities.Dwarves}
-		// Three stratigraphy samples: at the crew and two offsets.
+		data := SurveyData{MapW: w, MapH: h, MapD: d, CrewZ: crewZ, Dwarves: snap.Entities.Dwarves}
+		// Close-in stratigraphy: crew position and two offsets.
 		for _, off := range [][2]int16{{0, 0}, {12, 0}, {0, 12}} {
-			c, err := b.ColumnProfile(ctx, cx+off[0], cy+off[1], surfaceZ+2, surfaceZ-25)
+			c, err := b.ColumnProfile(ctx, cx+off[0], cy+off[1], crewZ+2, crewZ-25)
 			if err == nil {
 				data.Columns = append(data.Columns, c)
 			}
 		}
-		if s, err := b.MapSlice(ctx, cx-15, cy-15, surfaceZ, cx+15, cy+15); err == nil {
+		// Coarse 3x3 grid spread across the whole map, purely to find each
+		// sampled column's own surface Z and report the range — a single
+		// dwarf-Z proxy stamped onto every column is the exact bug this
+		// replaces. Window is capped at 60 z-levels per column_profile call
+		// (queries.cpp:837), so the requested crewZ+20/-40 anchor is
+		// trimmed by one level (crewZ-39, not crewZ-40) to fit.
+		zTop, zBottom := crewZ+20, crewZ-39
+		if zBottom < 0 {
+			zBottom = 0
+		}
+		const gridDivisions = 4 // 3x3 interior grid points at w/4, 2w/4, 3w/4 etc.
+		for gx := 1; gx < gridDivisions; gx++ {
+			for gy := 1; gy < gridDivisions; gy++ {
+				sx := int16(int(w) * gx / gridDivisions)
+				sy := int16(int(h) * gy / gridDivisions)
+				c, err := b.ColumnProfile(ctx, sx, sy, zTop, zBottom)
+				if err == nil {
+					data.SurfaceSamples = append(data.SurfaceSamples, c)
+				}
+			}
+		}
+		if s, err := b.MapSlice(ctx, cx-15, cy-15, crewZ, cx+15, cy+15); err == nil {
 			data.SurfaceSlice = s
 		}
 		return withDash(b, ctx, renderSurvey(data)), nil, nil

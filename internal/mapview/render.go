@@ -109,18 +109,24 @@ func RenderCrop(s *Slice, overlays []Overlay, legendExtra string) string {
 	return sb.String()
 }
 
-// RenderColumn renders a ColumnProfile as one line per Z, annotated
-// relative to the surface.
-func RenderColumn(c *ColumnProfile, surfaceZ int16) string {
+// RenderColumn renders a ColumnProfile as one line per Z, annotated relative
+// to THIS column's own surface (see ColumnSurfaceZ) — never a value computed
+// elsewhere and passed in, which is how a global proxy silently drifted
+// between calls and mislabeled columns whose real ground sits at a
+// different Z.
+func RenderColumn(c *ColumnProfile) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "column (%d,%d), top to bottom:\n", c.X, c.Y)
+	surfaceZ, ok := ColumnSurfaceZ(c)
 	for _, lv := range c.Levels {
 		rel := ""
-		switch {
-		case lv.Z == surfaceZ:
-			rel = "  <- SURFACE"
-		case lv.Z == surfaceZ-1:
-			rel = "  <- first layer below surface"
+		if ok {
+			switch {
+			case lv.Z == surfaceZ:
+				rel = "  <- SURFACE"
+			case lv.Z == surfaceZ-1:
+				rel = "  <- first layer below surface"
+			}
 		}
 		hidden := ""
 		if lv.Hidden {
@@ -137,6 +143,9 @@ func RenderColumn(c *ColumnProfile, surfaceZ int16) string {
 			fluids += " DAMP"
 		}
 		fmt.Fprintf(&sb, "z=%d %s %s/%s%s%s%s\n", lv.Z, lv.Glyph, lv.Shape, lv.Material, hidden, fluids, rel)
+	}
+	if !ok {
+		sb.WriteString("no surface in this z-window — widen z_top/z_bottom\n")
 	}
 	return sb.String()
 }
@@ -190,5 +199,21 @@ func RenderElevation(columns []*ColumnProfile, axis string, fixed int16) string 
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\nlegend: " + Legend + "\n")
+
+	// Per-column surface summary: each column's OWN surface (ColumnSurfaceZ),
+	// never one map-wide proxy stamped across every column swept.
+	sb.WriteString("surfaces:")
+	for _, c := range columns {
+		coord := c.X
+		if axis == "y" {
+			coord = c.Y
+		}
+		if z, ok := ColumnSurfaceZ(c); ok {
+			fmt.Fprintf(&sb, " %s=%d:%d", axis, coord, z)
+		} else {
+			fmt.Fprintf(&sb, " %s=%d:none", axis, coord)
+		}
+	}
+	sb.WriteString("\n")
 	return sb.String()
 }

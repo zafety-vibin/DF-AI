@@ -10,10 +10,22 @@ import (
 
 type SurveyData struct {
 	MapW, MapH, MapD uint16
-	SurfaceZ         int16
-	Dwarves          []protocol.EntityInfo
-	Columns          []*mapview.ColumnProfile
-	SurfaceSlice     *mapview.Slice
+	// CrewZ is the highest dwarf Z at embark — an anchor for sampling
+	// z-windows, NOT the map's surface. A single Z stamped across every
+	// column as "the surface" is the exact bug this survey used to have
+	// (surface height varies per column: hills, valleys, ramps down to
+	// water). Use SurfaceSamples for the real, per-column surface picture.
+	CrewZ int16
+	// Dwarves is the embark crew's cluster (for the position summary).
+	Dwarves []protocol.EntityInfo
+	// Columns are close-in stratigraphy samples (crew position + two
+	// offsets) — soil/stone/aquifer detail near the crew.
+	Columns []*mapview.ColumnProfile
+	// SurfaceSamples are a coarse grid of columns spread across the whole
+	// map, sampled purely to find each column's own surface Z
+	// (mapview.ColumnSurfaceZ) and report the range.
+	SurfaceSamples []*mapview.ColumnProfile
+	SurfaceSlice   *mapview.Slice
 }
 
 // aquiferNote summarizes aquifer layers in a sampled column: ", AQUIFER at
@@ -42,6 +54,43 @@ func aquiferNote(levels []mapview.ColumnLevel) string {
 	return fmt.Sprintf(", AQUIFER at z=%d", zs[0])
 }
 
+// renderSurfaceRange summarizes a coarse grid of sampled columns into a
+// surface-Z range line. Samples whose queried z-window never left open air
+// (mapview.ColumnSurfaceZ ok=false) are flagged, never folded into the
+// range as a wrong number — a survey that quietly reports "surface z=0"
+// for a column it couldn't actually see is worse than saying so plainly.
+func renderSurfaceRange(samples []*mapview.ColumnProfile, crewZ int16) string {
+	var sb strings.Builder
+	minZ, maxZ, found, inconclusive := int16(0), int16(0), 0, 0
+	for _, c := range samples {
+		z, ok := mapview.ColumnSurfaceZ(c)
+		if !ok {
+			inconclusive++
+			continue
+		}
+		if found == 0 || z < minZ {
+			minZ = z
+		}
+		if found == 0 || z > maxZ {
+			maxZ = z
+		}
+		found++
+	}
+	switch {
+	case len(samples) == 0:
+		fmt.Fprintf(&sb, "surface z: no samples taken (embark crew at z=%d)\n", crewZ)
+	case found == 0:
+		fmt.Fprintf(&sb, "surface z: inconclusive — all %d sampled columns were open air across the queried z-window; widen the sample window\n", len(samples))
+	default:
+		fmt.Fprintf(&sb, "surface z ranges %d..%d across %d sampled columns (embark crew at z=%d)\n",
+			minZ, maxZ, found, crewZ)
+	}
+	if inconclusive > 0 {
+		fmt.Fprintf(&sb, "(%d of %d samples inconclusive: open air throughout the queried z-window)\n", inconclusive, len(samples))
+	}
+	return sb.String()
+}
+
 // renderSurvey composes the embark orientation report: dimensions, the
 // surface Z, where everyone is, and what the sampled stratigraphy looks
 // like. This is the model's first read of a new map.
@@ -49,7 +98,7 @@ func renderSurvey(d SurveyData) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "EMBARK SURVEY\nmap %dx%dx%d (x east, y south, z up; z=%d is map top)\n",
 		d.MapW, d.MapH, d.MapD, int(d.MapD)-1)
-	fmt.Fprintf(&sb, "surface z=%d (highest dwarf z on a fresh embark)\n", d.SurfaceZ)
+	sb.WriteString(renderSurfaceRange(d.SurfaceSamples, d.CrewZ))
 	if len(d.Dwarves) > 0 {
 		minX, maxX, minY, maxY := d.Dwarves[0].X, d.Dwarves[0].X, d.Dwarves[0].Y, d.Dwarves[0].Y
 		for _, e := range d.Dwarves {
@@ -115,6 +164,7 @@ func renderSurvey(d SurveyData) string {
 		fmt.Fprintf(&sb, "surface sample: %d tree/sapling tiles, %d grass tiles in a %dx%d crop around the crew\n",
 			trees, grass, len(d.SurfaceSlice.Rows[0]), len(d.SurfaceSlice.Rows))
 	}
-	sb.WriteString("\nOpening reminders: dig a 2x2 stair shaft down into stone, carve rooms BESIDE the shaft (never on top of it), keep the surface exposure small.\n")
+	sb.WriteString("\nOpening reminders: dig a 2x2 stair shaft down into stone, carve rooms BESIDE the shaft (never on top of it), keep the surface exposure small. " +
+		"Sampled columns above the crew's z are normal terrain (hills/mountains), not a gap in the world — that ground is real, solid, and just as diggable; only fog ('?') means undug, never elevation.\n")
 	return sb.String()
 }

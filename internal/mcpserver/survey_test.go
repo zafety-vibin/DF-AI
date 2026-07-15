@@ -8,10 +8,20 @@ import (
 	"github.com/df-ai/orchestrator/internal/protocol"
 )
 
+// surfaceSampleAt builds a minimal single-level ColumnProfile whose surface
+// (mapview.ColumnSurfaceZ) is exactly z — enough to drive the survey's
+// surface-range line in tests without needing a full stratigraphy.
+func surfaceSampleAt(x, y, z int16) *mapview.ColumnProfile {
+	return &mapview.ColumnProfile{X: x, Y: y, Levels: []mapview.ColumnLevel{
+		{Z: z, Glyph: ",", Shape: "floor", Material: "grass"},
+	}}
+}
+
 func TestRenderSurvey(t *testing.T) {
 	data := SurveyData{
-		MapW: 192, MapH: 192, MapD: 130, SurfaceZ: 111,
-		Dwarves: []protocol.EntityInfo{{ID: 1, X: 95, Y: 95, Z: 111}},
+		MapW: 192, MapH: 192, MapD: 130, CrewZ: 111,
+		Dwarves:        []protocol.EntityInfo{{ID: 1, X: 95, Y: 95, Z: 111}},
+		SurfaceSamples: []*mapview.ColumnProfile{surfaceSampleAt(95, 95, 111)},
 		Columns: []*mapview.ColumnProfile{{
 			X: 95, Y: 95,
 			Levels: []mapview.ColumnLevel{
@@ -24,7 +34,7 @@ func TestRenderSurvey(t *testing.T) {
 	out := renderSurvey(data)
 	// The sampled column has no visible stone: say so instead of the
 	// nonsense sentinel "first exposed stone at z=-1".
-	for _, want := range []string{"192x192x130", "surface z=111", "(95,95)",
+	for _, want := range []string{"192x192x130", "surface z ranges 111..111 across 1 sampled columns (embark crew at z=111)", "(95,95)",
 		"no stone in sampled range"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("survey missing %q:\n%s", want, out)
@@ -37,8 +47,9 @@ func TestRenderSurvey(t *testing.T) {
 
 func TestRenderSurveyExposedStone(t *testing.T) {
 	data := SurveyData{
-		MapW: 192, MapH: 192, MapD: 130, SurfaceZ: 111,
-		Dwarves: []protocol.EntityInfo{{ID: 1, X: 95, Y: 95, Z: 111}},
+		MapW: 192, MapH: 192, MapD: 130, CrewZ: 111,
+		Dwarves:        []protocol.EntityInfo{{ID: 1, X: 95, Y: 95, Z: 111}},
+		SurfaceSamples: []*mapview.ColumnProfile{surfaceSampleAt(95, 95, 111)},
 		Columns: []*mapview.ColumnProfile{{
 			X: 95, Y: 95,
 			Levels: []mapview.ColumnLevel{
@@ -58,8 +69,9 @@ func TestRenderSurveyFogStone(t *testing.T) {
 	// Post-truthful-classification, hidden layers carry real materials;
 	// stone under fog must not be called "exposed".
 	data := SurveyData{
-		MapW: 192, MapH: 192, MapD: 130, SurfaceZ: 111,
-		Dwarves: []protocol.EntityInfo{{ID: 1, X: 95, Y: 95, Z: 111}},
+		MapW: 192, MapH: 192, MapD: 130, CrewZ: 111,
+		Dwarves:        []protocol.EntityInfo{{ID: 1, X: 95, Y: 95, Z: 111}},
+		SurfaceSamples: []*mapview.ColumnProfile{surfaceSampleAt(95, 95, 111)},
 		Columns: []*mapview.ColumnProfile{{
 			X: 95, Y: 95,
 			Levels: []mapview.ColumnLevel{
@@ -110,8 +122,9 @@ func TestAquiferNote(t *testing.T) {
 
 func TestRenderSurveyAquiferColumn(t *testing.T) {
 	data := SurveyData{
-		MapW: 192, MapH: 192, MapD: 130, SurfaceZ: 111,
-		Dwarves: []protocol.EntityInfo{{ID: 1, X: 95, Y: 95, Z: 111}},
+		MapW: 192, MapH: 192, MapD: 130, CrewZ: 111,
+		Dwarves:        []protocol.EntityInfo{{ID: 1, X: 95, Y: 95, Z: 111}},
+		SurfaceSamples: []*mapview.ColumnProfile{surfaceSampleAt(95, 95, 111)},
 		Columns: []*mapview.ColumnProfile{{
 			X: 95, Y: 95,
 			Levels: []mapview.ColumnLevel{
