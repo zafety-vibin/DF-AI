@@ -10,25 +10,48 @@ import (
 	"github.com/df-ai/orchestrator/internal/mapview"
 )
 
+// clampLookRadius applies look's radius default/cap: 0 (or unset) becomes
+// the 12-tile default; anything above 23 is clamped down. 23 is the largest
+// radius whose 47x47 crop still fits under the plugin's 48x48 map_slice
+// region cap (queries.cpp) — going wider needs a plugin change, not just a
+// client-side raise.
+func clampLookRadius(r int) int {
+	if r <= 0 {
+		return 12
+	}
+	if r > 23 {
+		return 23
+	}
+	return r
+}
+
 func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 	type lookIn struct {
 		X      int    `json:"x" jsonschema:"center x"`
 		Y      int    `json:"y" jsonschema:"center y"`
 		Z      int    `json:"z" jsonschema:"z-level to view"`
-		Radius int    `json:"radius,omitempty" jsonschema:"half-width of the crop, default 12, max 15"`
+		Radius int    `json:"radius,omitempty" jsonschema:"radius 12 (25x25) default; up to 23 (47x47, ~2.3k tokens). For whole-fort orientation use scope=overview instead."`
 		Lens   string `json:"lens,omitempty" jsonschema:"optional overlay: buildings|designations. Paints one annotation layer onto the terrain grid; omit for the plain terrain view (which still shows dig designations as 'd'). Exact building/zone types via buildings/building_status."`
+		Scope  string `json:"scope,omitempty" jsonschema:"local (default): terrain crop around (x,y) at radius. overview: downsampled whole-map orientation view at z (ignores x/y/radius/lens) rendered instantly from resident state, no plugin round-trip."`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "look",
-		Description: "Render a small annotated map crop of one z-level around (x,y). Glyph grid with legend; dwarves marked @, dig designations marked d. Pass lens=buildings or lens=designations for detail overlays. '?' tiles are hidden fog — solid undug ground you CAN designate digging into. Use for local layout checks; use find_dig_site for choosing dig locations.",
+		Description: "Render a small annotated map crop of one z-level around (x,y). Glyph grid with legend; dwarves marked @, dig designations marked d. Pass lens=buildings or lens=designations for detail overlays. '?' tiles are hidden fog — solid undug ground you CAN designate digging into. Use for local layout checks; use find_dig_site for choosing dig locations. Pass scope=overview for a whole-map orientation view instead of a local crop.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in lookIn) (*mcp.CallToolResult, any, error) {
-		r := in.Radius
-		if r <= 0 {
-			r = 12
+		if in.Scope == "overview" {
+			topo := b.Topo()
+			if topo == nil {
+				return withDash(b, ctx, "overview unavailable: topology not built yet (waiting for full state)"), nil, nil
+			}
+			var dwarfXY [][2]int16
+			for _, dw := range b.Snapshot().Entities.Dwarves {
+				if dw.Z == int16(in.Z) {
+					dwarfXY = append(dwarfXY, [2]int16{dw.X, dw.Y})
+				}
+			}
+			return withDash(b, ctx, mapview.RenderOverview(topo, int16(in.Z), dwarfXY)), nil, nil
 		}
-		if r > 15 {
-			r = 15
-		}
+		r := clampLookRadius(in.Radius)
 		x1, y1 := int16(in.X-r), int16(in.Y-r)
 		x2, y2 := int16(in.X+r), int16(in.Y+r)
 		if x1 < 0 {

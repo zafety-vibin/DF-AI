@@ -171,3 +171,67 @@ func TestLook_UnknownLensReturnsRegisteredNames(t *testing.T) {
 		t.Fatalf("expected an 'unknown lens' message, got %q", got)
 	}
 }
+
+// TestClampLookRadius covers the default/cap arithmetic look's radius
+// parameter uses, including the raised 23 cap (up from 15) — 47x47 is the
+// largest crop that still fits under the plugin's 48x48 map_slice region
+// cap without a plugin-side change.
+func TestClampLookRadius(t *testing.T) {
+	cases := []struct{ in, want int }{
+		{0, 12},   // unset -> default
+		{-5, 12},  // negative -> default
+		{1, 1},    // pass-through below the cap
+		{23, 23},  // exactly at the cap
+		{24, 23},  // one over -> clamped
+		{40, 23},  // scout note's example
+		{1000, 23},
+	}
+	for _, c := range cases {
+		if got := clampLookRadius(c.in); got != c.want {
+			t.Errorf("clampLookRadius(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+// TestLookScopeOverview_NilBridgeReadable exercises look's scope=overview
+// branch against a nil bridge: b.Topo() must nil-safely report "not built
+// yet" instead of panicking, matching the harness-wide nil-bridge contract
+// (TestEveryToolNilBridge in server_test.go covers every tool's default
+// path; this covers the scope=overview branch specifically since it isn't
+// in minToolArgs).
+func TestLookScopeOverview_NilBridgeReadable(t *testing.T) {
+	out := callTool(t, nil, "look", map[string]any{"x": 10, "y": 10, "z": 5, "scope": "overview"})
+	if !strings.Contains(out, "topology not built yet") {
+		t.Fatalf("expected a readable 'not built yet' message, got: %q", out)
+	}
+}
+
+// TestLookScopeOverview_RendersFromResidentTopology asserts scope=overview
+// renders a whole-map view straight from the Bridge's resident
+// TopologyOverlay, with no plugin round-trip required (solidTestBridge has
+// no Client wired at all — MapSlice would fail "plugin not connected" if
+// this path touched it).
+func TestLookScopeOverview_RendersFromResidentTopology(t *testing.T) {
+	b := solidTestBridge(t) // 20x20x2, all solid/closed
+	out := callTool(t, b, "look", map[string]any{"x": 10, "y": 10, "z": 1, "scope": "overview"})
+	if !strings.Contains(out, "orientation overview") {
+		t.Fatalf("expected overview header, got: %q", out)
+	}
+	if !strings.Contains(out, "20x20 map downsampled") {
+		t.Fatalf("expected map dimensions in header, got: %q", out)
+	}
+	if strings.Contains(out, "plugin not connected") {
+		t.Fatalf("overview scope made a plugin round-trip, it shouldn't: %q", out)
+	}
+}
+
+// TestLookScopeOverview_RejectsOutOfRangeZ asserts the same z bounds
+// checking find_dig_site does, so overview never fabricates a grid for a
+// nonexistent level.
+func TestLookScopeOverview_RejectsOutOfRangeZ(t *testing.T) {
+	b := solidTestBridge(t) // depth 2: valid z is 0..1
+	out := callTool(t, b, "look", map[string]any{"x": 10, "y": 10, "z": 99, "scope": "overview"})
+	if !strings.Contains(out, "out of range") {
+		t.Fatalf("expected out-of-range rejection, got: %q", out)
+	}
+}
