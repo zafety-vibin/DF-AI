@@ -209,6 +209,25 @@ constexpr uint8_t ORDER_TYPE_MAKE_CRAFTS   = 0x0C;
 // material-class filtering are not, this pass).
 constexpr uint8_t ORDER_TYPE_BY_NAME       = 0x00;
 
+// Sentinel OrderType for COMMAND_TYPE_QUEUE_JOB's reaction-based path:
+// reach a raw-defined df::reaction directly by its reaction CODE (e.g.
+// "BREW_DRINK_FROM_PLANT" — df::reaction.code, NOT the display name)
+// instead of by df::job_type. This is how queue_job reaches reactions that
+// have no job_type mapping at all -- BrewDrink is the motivating case
+// (protocolToJobType(ORDER_TYPE_BREW_DRINK) returns -1 in work_orders.cpp).
+// Shares ORDER_TYPE_BY_NAME's trailing [2:NameLen][N:Name] wire shape (see
+// that constant's comment above) — when a QUEUE_JOB payload's OrderType
+// byte equals THIS constant, the trailing name is a reaction code, resolved
+// via a linear scan of df::global::world->raws.reactions.reactions
+// (work_orders.cpp: applyQueueReactionJob) instead of find_enum_item.
+// Workshop/reaction compatibility is derived from the reaction's own
+// building.type/subtype/custom parallel arrays (df/reaction.h) — no
+// hand-maintained workshop table needed for this path, unlike
+// jobTypeAllowedAtWorkshop. Matches internal/protocol/message.go
+// OrderTypeCustomReaction. Discover valid codes via the list_reactions
+// query/tool.
+constexpr uint8_t ORDER_TYPE_CUSTOM_REACTION = 0x0D;
+
 // BuildType constants — kept in sync with internal/protocol/message.go.
 // Ranges: 0x01-0x0F constructions, 0x10-0x2F workshops, 0x30-0x4F furniture,
 // 0x50-0x6F doors/hatches.

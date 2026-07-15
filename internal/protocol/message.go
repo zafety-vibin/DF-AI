@@ -444,6 +444,19 @@ const (
 	OrderTypeMakeBlocks  uint8 = 0x0B
 	OrderTypeMakeCrafts  uint8 = 0x0C
 
+	// OrderTypeCustomReaction is the sentinel for QueueJobDesignation's
+	// reaction-based path — reach ANY raw-defined df::reaction a workshop
+	// supports (e.g. BREW_DRINK_FROM_PLANT), keyed by its reaction CODE
+	// (df::reaction.code, NOT the display name) rather than by
+	// df::job_type. This is how queue_job reaches reactions like brewing
+	// that have no job_type mapping at all (protocolToJobType returns -1
+	// for OrderTypeBrewDrink — see work_orders.cpp). Only
+	// CommandTypeQueueJob understands this sentinel, same scope
+	// restriction as OrderTypeByName below. Matches dfhack-plugin/
+	// protocol.h ORDER_TYPE_CUSTOM_REACTION. Discover valid codes via the
+	// list_reactions query/tool.
+	OrderTypeCustomReaction uint8 = 0x0D
+
 	// OrderTypeByName is not one of the hand-maintained order types above —
 	// it's the sentinel for QueueJobDesignation's generalized name-based
 	// path (see that type's doc comment). Only CommandTypeQueueJob
@@ -617,12 +630,19 @@ type RemoveBuildingDesignation struct {
 // via DFHack's find_enum_item) — no new OrderType byte or plugin rebuild
 // needed for a job_type DFHack already knows about. JobTypeName is the
 // DFHack job_type enum key name (e.g. "ConstructHatchCover", not the raw
-// bay12 token) and is ignored unless OrderType == OrderTypeByName. Only
-// QueueJobDesignation supports this; WorkOrderDesignation does not.
+// bay12 token) and is ignored unless OrderType == OrderTypeByName.
+//
+// Set OrderType to OrderTypeCustomReaction instead to reach a raw-defined
+// df::reaction directly by its reaction CODE (e.g.
+// "BREW_DRINK_FROM_PLANT") — the mechanism behind brewing, and anything
+// else with no job_type mapping at all. ReactionCode is ignored unless
+// OrderType == OrderTypeCustomReaction. Only QueueJobDesignation supports
+// either generalized path; WorkOrderDesignation does not.
 type QueueJobDesignation struct {
-	X, Y, Z     int16
-	OrderType   uint8  // What to produce (OrderTypeMakeBed etc.), or OrderTypeByName
-	JobTypeName string // DFHack job_type enum key name; only used when OrderType == OrderTypeByName
+	X, Y, Z      int16
+	OrderType    uint8  // What to produce (OrderTypeMakeBed etc.), OrderTypeByName, or OrderTypeCustomReaction
+	JobTypeName  string // DFHack job_type enum key name; only used when OrderType == OrderTypeByName
+	ReactionCode string // df::reaction.code; only used when OrderType == OrderTypeCustomReaction
 }
 
 // SetLaborDesignation represents a single labor toggle on one unit.
@@ -762,6 +782,9 @@ func (m *CommandMessage) Validate() error {
 	case CommandTypeQueueJob:
 		if m.QueueJob.OrderType == OrderTypeByName && m.QueueJob.JobTypeName == "" {
 			return errors.New("queue_job by-name path (OrderTypeByName) requires a non-empty JobTypeName")
+		}
+		if m.QueueJob.OrderType == OrderTypeCustomReaction && m.QueueJob.ReactionCode == "" {
+			return errors.New("queue_job custom-reaction path (OrderTypeCustomReaction) requires a non-empty ReactionCode")
 		}
 	}
 

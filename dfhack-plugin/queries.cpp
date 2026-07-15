@@ -56,6 +56,12 @@
 #include "df/abstract_building.h"
 #include "df/abstract_building_inn_tavernst.h"
 #include "df/rental_roomst.h"
+#include "df/reaction.h"
+#include "df/reaction_reagent.h"
+#include "df/reaction_reagent_itemst.h"
+#include "df/reaction_reagent_type.h"
+#include "df/reaction_flags.h"
+#include "df/workshop_type.h"
 
 #include "protocol.h"
 
@@ -219,6 +225,89 @@ static std::string handleListOrders(const std::string &args, uint8_t &status) {
            << ",\"category\":" << jsonStr(category) << "}";
     }
     os << "]}";
+    status = QUERY_STATUS_SUCCESS;
+    return os.str();
+}
+
+// handleListReactions is the discovery half of queue_job's reaction-based
+// path (ORDER_TYPE_CUSTOM_REACTION, work_orders.cpp applyQueueReactionJob)
+// -- enumerates every FORTRESS_MODE_ENABLED df::reaction from the raws, the
+// same vector applyQueueReactionJob linear-scans by code. Every code shown
+// here round-trips into queue_job's reaction path verbatim. Exposed on the
+// Go side as the standalone `list_reactions` tool (see internal/mcpserver/
+// tools_state.go), same pattern as job_types/list_orders above -- kept out
+// of the cheap-per-call tools (orders/queue_job) on purpose.
+static std::string handleListReactions(const std::string &args, uint8_t &status) {
+    if (!df::global::world) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("world is null");
+    }
+
+    // filter is an optional case-insensitive SUBSTRING match against either
+    // the reaction's code or its display name -- mirrors job_types' filter
+    // param (handleListOrders below).
+    std::string filter = jsonGetString(args, "filter");
+    std::string lfilter = filter;
+    for (auto &c : lfilter) c = tolower(c);
+
+    std::ostringstream os;
+    os << "{\"reactions\":[";
+    int count = 0;
+    bool truncated = false;
+
+    for (auto *reaction : df::global::world->raws.reactions.reactions) {
+        if (!reaction) continue;
+        if (!reaction->flags.is_set(df::reaction_flags::FORTRESS_MODE_ENABLED)) continue;
+
+        std::string lcode = reaction->code;
+        for (auto &c : lcode) c = tolower(c);
+        std::string lname = reaction->name;
+        for (auto &c : lname) c = tolower(c);
+        if (!lfilter.empty() &&
+            lcode.find(lfilter) == std::string::npos &&
+            lname.find(lfilter) == std::string::npos) {
+            continue;
+        }
+
+        if (count >= 200) { truncated = true; break; }
+        if (count) os << ",";
+        count++;
+
+        os << "{\"code\":" << jsonStr(reaction->code)
+           << ",\"name\":" << jsonStr(reaction->name)
+           << ",\"buildings\":[";
+        size_t nAlt = reaction->building.type.size();
+        for (size_t k = 0; k < nAlt; k++) {
+            if (k) os << ",";
+            int32_t altBuildingType = (int32_t)reaction->building.type[k];
+            int32_t altSubtype = (k < reaction->building.subtype.size()) ? reaction->building.subtype[k] : -1;
+            if (altBuildingType == (int32_t)df::building_type::Workshop) {
+                os << jsonStr(altSubtype == -1 ? "any workshop" : ENUM_KEY_STR(workshop_type, (df::workshop_type)altSubtype));
+            } else if (altBuildingType == -1) {
+                os << jsonStr("any building");
+            } else {
+                os << jsonStr(ENUM_KEY_STR(building_type, (df::building_type)altBuildingType));
+            }
+        }
+        os << "],\"reagents\":[";
+        for (size_t r = 0; r < reaction->reagents.size(); r++) {
+            df::reaction_reagent *reagent = reaction->reagents[r];
+            if (!reagent) continue;
+            if (r) os << ",";
+            os << "{\"code\":" << jsonStr(reagent->code)
+               << ",\"quantity\":" << jsonInt(reagent->quantity);
+            if (reagent->getType() == df::reaction_reagent_type::item) {
+                df::reaction_reagent_itemst *ri = (df::reaction_reagent_itemst*)reagent;
+                os << ",\"item_type\":" << jsonStr(ri->item_type == df::item_type::NONE
+                                                        ? "any" : ENUM_KEY_STR(item_type, ri->item_type));
+            }
+            os << "}";
+        }
+        os << "]}";
+    }
+    os << "]";
+    if (truncated) os << ",\"truncated\":true";
+    os << "}";
     status = QUERY_STATUS_SUCCESS;
     return os.str();
 }
@@ -909,6 +998,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
     try {
         if (name == "list_orders") {
             data = handleListOrders(args, status);
+        } else if (name == "list_reactions") {
+            data = handleListReactions(args, status);
         } else if (name == "manager_orders") {
             data = handleManagerOrders(args, status);
         } else if (name == "dwarf_detail") {

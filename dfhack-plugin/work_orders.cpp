@@ -30,8 +30,15 @@
 #include "df/manager_order.h"
 #include "df/world.h"
 #include "df/building.h"
+#include "df/building_type.h"
 #include "df/building_workshopst.h"
 #include "df/workshop_type.h"
+#include "df/reaction.h"
+#include "df/reaction_reagent.h"
+#include "df/reaction_reagent_itemst.h"
+#include "df/reaction_reagent_type.h"
+#include "df/reaction_flags.h"
+#include "df/builtin_mats.h"
 
 #include "protocol.h"
 
@@ -210,6 +217,185 @@ static bool jobTypeAllowedAtWorkshop(df::job_type jobType, df::workshop_type wsT
     // material filter is the problem.
 }
 
+// applyQueueReactionJob queues a job for a raw-defined df::reaction
+// directly at the workshop occupying (x,y,z), keyed by the reaction's CODE
+// (e.g. "BREW_DRINK_FROM_PLANT" — df::reaction.code, NOT the display name)
+// rather than a df::job_type. This is the path ORDER_TYPE_CUSTOM_REACTION
+// routes to from applyQueueJob below — the only way to reach reactions
+// like brewing that have no job_type mapping at all
+// (protocolToJobType(ORDER_TYPE_BREW_DRINK) returns -1 above).
+//
+// Recipe confirmed against DFHack's own library/lua/dfhack/workshops.lua
+// (addReactionJobs/reagentToJobItem, scanRawsReaction/matchIds): no by-code
+// finder exists for df::reaction (only find(int id), by raw index), so
+// this does the same linear scan scanRawsReaction does in Lua, then builds
+// one df::job_item per reaction_reagent using the same field-overlay
+// convention that function uses.
+//
+// SCOPE BOUNDARY: workshop/reaction compatibility is fully derived from
+// the reaction's own building.type/subtype/custom arrays (df/reaction.h)
+// — unlike jobTypeAllowedAtWorkshop above, no hand-maintained workshop
+// table is needed for this path. Only reaction_reagent_itemst (getType()
+// == item) reagents are supported; this DFHack version's
+// reaction_reagent_type enum has no other concrete reagent subclass to
+// handle (confirmed against df/reaction_reagent_type.h — "item" is the
+// only non-NONE value), so failing loudly on anything else costs nothing
+// today but keeps the door open if a future DFHack version adds one.
+static bool applyQueueReactionJob(int16_t x, int16_t y, int16_t z, const std::string &reactionCode, std::string &error)
+{
+    if (!df::global::world) {
+        error = "world is null";
+        return false;
+    }
+    if (!Maps::isValidTilePos(x, y, z)) {
+        error = "Coordinates out of map bounds";
+        return false;
+    }
+
+    df::coord pos(x, y, z);
+    df::building *bld = Buildings::findAtTile(pos);
+    if (!bld) {
+        std::ostringstream os;
+        os << "no building at (" << x << "," << y << "," << z << ")";
+        error = os.str();
+        return false;
+    }
+    df::building_workshopst *ws = strict_virtual_cast<df::building_workshopst>(bld);
+    if (!ws) {
+        error = "building at that location is not a workshop";
+        return false;
+    }
+
+    // No by-code finder exists on df::reaction -- linear scan over the raws
+    // vector, same lookup DFHack's own scanRawsReaction does in Lua.
+    df::reaction *reaction = nullptr;
+    for (auto *r : df::global::world->raws.reactions.reactions) {
+        if (r && r->code == reactionCode) {
+            reaction = r;
+            break;
+        }
+    }
+    if (!reaction) {
+        error = "unrecognized reaction code: '" + reactionCode +
+                "' (use the list_reactions query/tool to look up valid codes)";
+        return false;
+    }
+
+    if (!reaction->flags.is_set(df::reaction_flags::FORTRESS_MODE_ENABLED)) {
+        error = "reaction '" + reactionCode + "' is not enabled in fortress mode";
+        return false;
+    }
+
+    // Workshop compatibility: reaction->building.type/subtype/custom are
+    // PARALLEL ARRAYS of alternative buildings the reaction can run at
+    // (df/reaction.h T_building) -- a value of -1 in the type or subtype
+    // slot means "any" (DF's own wildcard convention for these enums, see
+    // df/building_type.h / df/workshop_type.h NONE=-1). Mirrors DFHack's
+    // own matchIds/scanRawsReaction (library/lua/dfhack/workshops.lua) --
+    // custom is not checked here, same scope as that scout note.
+    bool compatible = false;
+    std::ostringstream wants;
+    size_t nAlt = reaction->building.type.size();
+    for (size_t k = 0; k < nAlt; k++) {
+        int32_t altBuildingType = (int32_t)reaction->building.type[k];
+        int32_t altSubtype = (k < reaction->building.subtype.size()) ? reaction->building.subtype[k] : -1;
+        if (k > 0) wants << ", ";
+        if (altBuildingType == (int32_t)df::building_type::Workshop) {
+            wants << (altSubtype == -1 ? "any workshop" : ENUM_KEY_STR(workshop_type, (df::workshop_type)altSubtype));
+        } else {
+            wants << ENUM_KEY_STR(building_type, (df::building_type)altBuildingType);
+        }
+        if (altBuildingType != -1 && altBuildingType != (int32_t)df::building_type::Workshop) continue;
+        if (altSubtype != -1 && altSubtype != (int32_t)ws->type) continue;
+        compatible = true;
+    }
+    if (!compatible) {
+        error = "reaction '" + reactionCode + "' does not run at this workshop ("
+                + ENUM_KEY_STR(workshop_type, ws->type) + ") -- it wants: " + wants.str();
+        return false;
+    }
+
+    if (ws->jobs.size() >= 10) {
+        error = "workshop job queue is full (10 jobs)";
+        return false;
+    }
+
+    // Build one job_item per reagent BEFORE allocating the df::job itself,
+    // so a mid-loop failure only needs to clean up loose job_items, never a
+    // half-built (not yet linked into world) job.
+    std::vector<df::job_item*> jobItems;
+    for (size_t reagentIdx = 0; reagentIdx < reaction->reagents.size(); reagentIdx++) {
+        df::reaction_reagent *reagent = reaction->reagents[reagentIdx];
+        if (!reagent) continue;
+        if (reagent->getType() != df::reaction_reagent_type::item) {
+            std::ostringstream os;
+            os << "reaction '" << reactionCode << "' reagent '" << reagent->code
+               << "' is not an item reagent -- not yet supported by queue_job";
+            error = os.str();
+            for (auto *ji : jobItems) delete ji;
+            return false;
+        }
+        df::reaction_reagent_itemst *ri = (df::reaction_reagent_itemst*)reagent;
+
+        df::job_item *ji = new df::job_item();
+        // Defaults per DFHack's own dfhack/workshops.lua
+        // input_filter_defaults (library/lua/dfhack/workshops.lua:5-25),
+        // then overlaid with the reagent's own matching fields below --
+        // reaction_reagent_itemst shares these field names 1:1 with
+        // job_item.
+        ji->item_type = df::item_type::NONE;
+        ji->item_subtype = -1;
+        ji->mat_type = -1;
+        ji->mat_index = -1;
+        ji->flags2.bits.allow_artifact = true;
+        ji->reaction_class = "";
+        ji->has_material_reaction_product = "";
+        ji->metal_ore = -1;
+        ji->min_dimension = -1;
+        ji->has_tool_use = df::tool_uses::NONE;
+        ji->quantity = 1;
+
+        ji->item_type = ri->item_type;
+        ji->item_subtype = ri->item_subtype;
+        ji->mat_type = ri->mat_type;
+        ji->mat_index = ri->mat_index;
+        ji->reaction_class = ri->reaction_class;
+        ji->has_material_reaction_product = ri->has_material_reaction_product;
+        ji->metal_ore = ri->metal_ore;
+        ji->min_dimension = ri->min_dimension;
+        ji->has_tool_use = ri->has_tool_use;
+        ji->quantity = ri->quantity;
+
+        ji->reaction_id = reaction->index;
+        ji->reagent_index = (int32_t)reagentIdx;
+
+        jobItems.push_back(ji);
+    }
+
+    if (reaction->flags.is_set(df::reaction_flags::FUEL)) {
+        df::job_item *fuelItem = new df::job_item();
+        fuelItem->item_type = df::item_type::BAR;
+        fuelItem->mat_type = df::builtin_mats::COAL;
+        jobItems.push_back(fuelItem);
+    }
+
+    df::job *job = new df::job();
+    job->job_type = df::job_type::CustomReaction;
+    job->reaction_name = reaction->code;
+    for (auto *ji : jobItems) {
+        job->job_items.elements.push_back(ji);
+    }
+
+    Job::linkIntoWorld(job, true);
+    if (!Job::assignToWorkshop(job, ws)) {
+        Job::removeJob(job);
+        error = "failed to attach job to workshop (queue full or invalid workshop)";
+        return false;
+    }
+
+    return true;
+}
+
 // applyQueueJob queues a job DIRECTLY at an existing workshop — the same
 // underlying mechanism DF uses when a player right-clicks a workshop and
 // picks a task from its build menu. Unlike applyWorkOrder above (which adds
@@ -230,6 +416,18 @@ static bool jobTypeAllowedAtWorkshop(df::job_type jobType, df::workshop_type wsT
 // above jobTypeAllowedAtWorkshop).
 bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std::string &jobTypeName, std::string &error)
 {
+    // ORDER_TYPE_CUSTOM_REACTION bypasses job-type resolution entirely --
+    // it's keyed by reaction code, not df::job_type -- and its
+    // workshop-compatibility check is derived from the reaction's own raws
+    // data (see applyQueueReactionJob above), so jobTypeAllowedAtWorkshop
+    // and the WOOD/BOULDER material filter further down do not apply to
+    // this path. jobTypeName doubles as the trailing wire field for both
+    // sentinels (df_ai_protocol.cpp decodes one trailing string regardless
+    // of which sentinel triggered it); here it holds the reaction code.
+    if (orderType == ORDER_TYPE_CUSTOM_REACTION) {
+        return applyQueueReactionJob(x, y, z, jobTypeName, error);
+    }
+
     int jobTypeInt;
     if (orderType == ORDER_TYPE_BY_NAME) {
         jobTypeInt = resolveJobTypeByName(jobTypeName, error);

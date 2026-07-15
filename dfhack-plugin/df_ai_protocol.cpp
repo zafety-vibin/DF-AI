@@ -780,8 +780,9 @@ void executeCommand(const std::vector<uint8_t> &payload)
         case COMMAND_TYPE_QUEUE_JOB: {
             // Payload: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z] [1: OrderType]
             //          [2: NameLen][N: Name]  -- the name tail is present
-            //          ONLY when OrderType == ORDER_TYPE_BY_NAME (0x00).
-            //          Mirrors BLUEPRINT's (case 0x07 above) trailing
+            //          ONLY when OrderType == ORDER_TYPE_BY_NAME (0x00) or
+            //          ORDER_TYPE_CUSTOM_REACTION (0x0D). Mirrors
+            //          BLUEPRINT's (case 0x07 above) trailing
             //          length-prefixed name. Old 12-byte payloads
             //          (OrderType 0x01-0x0C) parse exactly as before —
             //          this is purely additive.
@@ -794,7 +795,7 @@ void executeCommand(const std::vector<uint8_t> &payload)
             int16_t z = ((int16_t)payload[9] << 8) | payload[10];
             uint8_t orderType = payload[11];
             std::string jobTypeName;
-            if (orderType == ORDER_TYPE_BY_NAME) {
+            if (orderType == ORDER_TYPE_BY_NAME || orderType == ORDER_TYPE_CUSTOM_REACTION) {
                 if (payload.size() < 14) {  // 12 existing + NameLen(2)
                     sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid QUEUE_JOB by-name payload");
                     return;

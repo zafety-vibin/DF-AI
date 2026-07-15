@@ -99,6 +99,59 @@ func TestQueueJobByNameEmptyNameRejected(t *testing.T) {
 	}
 }
 
+// TestQueueJobCustomReactionRoundTrip covers the reaction-based path
+// (OrderTypeCustomReaction + ReactionCode) — mirrors
+// TestQueueJobByNameRoundTrip above, which covers the job-type-by-name
+// path. Both sentinels share the same trailing length-prefixed-string wire
+// shape; this confirms the reaction code lands in ReactionCode, not
+// JobTypeName.
+func TestQueueJobCustomReactionRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   14,
+		CommandType: CommandTypeQueueJob,
+		QueueJob: QueueJobDesignation{
+			X: 50, Y: 50, Z: 139,
+			OrderType:    OrderTypeCustomReaction,
+			ReactionCode: "BREW_DRINK_FROM_PLANT",
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 14 || got.CommandType != CommandTypeQueueJob || got.QueueJob != orig.QueueJob {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+	if got.QueueJob.ReactionCode != "BREW_DRINK_FROM_PLANT" {
+		t.Fatalf("reaction code lost in round-trip: %+v", got.QueueJob)
+	}
+	if got.QueueJob.JobTypeName != "" {
+		t.Fatalf("reaction code path must not populate JobTypeName: %+v", got.QueueJob)
+	}
+}
+
+// TestQueueJobCustomReactionEmptyCodeRejected ensures Validate() catches
+// the footgun of sending OrderTypeCustomReaction with no code — mirrors
+// TestQueueJobByNameEmptyNameRejected above.
+func TestQueueJobCustomReactionEmptyCodeRejected(t *testing.T) {
+	msg := &CommandMessage{
+		CommandID:   15,
+		CommandType: CommandTypeQueueJob,
+		QueueJob:    QueueJobDesignation{X: 1, Y: 1, Z: 1, OrderType: OrderTypeCustomReaction},
+	}
+	if _, err := SerializeMessage(msg); err == nil {
+		t.Fatal("expected validation error for empty ReactionCode with OrderTypeCustomReaction")
+	}
+}
+
 // TestQueueJobOldPayloadStillDecodes constructs a raw QUEUE_JOB payload in
 // the EXACT pre-this-change wire shape (12 bytes: no trailing name) and
 // confirms it still decodes correctly — the backward-compat guarantee this

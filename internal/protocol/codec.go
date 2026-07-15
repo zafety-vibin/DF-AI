@@ -1014,10 +1014,11 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		}
 	case CommandTypeQueueJob:
 		// [2: X] [2: Y] [2: Z] [1: OrderType] [2: NameLen][N: Name]
-		// The name tail is present ONLY when OrderType == OrderTypeByName —
-		// mirrors CommandTypeBlueprint's length-prefixed name below.
-		// Existing byte-vocabulary callers (OrderType 0x01-0x0C) produce
-		// the exact same 12-byte payload as before this change.
+		// The name tail is present ONLY when OrderType == OrderTypeByName or
+		// OrderTypeCustomReaction — mirrors CommandTypeBlueprint's
+		// length-prefixed name below. Existing byte-vocabulary callers
+		// (OrderType 0x01-0x0C) produce the exact same 12-byte payload as
+		// before this change.
 		for _, v := range []int16{msg.QueueJob.X, msg.QueueJob.Y, msg.QueueJob.Z} {
 			if err := binary.Write(w, binary.BigEndian, v); err != nil {
 				return err
@@ -1026,10 +1027,17 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		if err := binary.Write(w, binary.BigEndian, msg.QueueJob.OrderType); err != nil {
 			return err
 		}
-		if msg.QueueJob.OrderType == OrderTypeByName {
-			nameBytes := []byte(msg.QueueJob.JobTypeName)
+		var queueJobTrailingName string
+		switch msg.QueueJob.OrderType {
+		case OrderTypeByName:
+			queueJobTrailingName = msg.QueueJob.JobTypeName
+		case OrderTypeCustomReaction:
+			queueJobTrailingName = msg.QueueJob.ReactionCode
+		}
+		if msg.QueueJob.OrderType == OrderTypeByName || msg.QueueJob.OrderType == OrderTypeCustomReaction {
+			nameBytes := []byte(queueJobTrailingName)
 			if len(nameBytes) > 255 {
-				return errors.New("queue_job job type name too long (max 255 bytes)")
+				return errors.New("queue_job job type/reaction name too long (max 255 bytes)")
 			}
 			if err := binary.Write(w, binary.BigEndian, uint16(len(nameBytes))); err != nil {
 				return err
@@ -1263,10 +1271,10 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 		if err := binary.Read(buf, binary.BigEndian, &msg.QueueJob.OrderType); err != nil {
 			return nil, err
 		}
-		// Name tail present ONLY when OrderType == OrderTypeByName — a
-		// pre-existing byte-vocabulary payload (0x01-0x0C) ends here, same
-		// as before this change.
-		if msg.QueueJob.OrderType == OrderTypeByName {
+		// Name tail present ONLY when OrderType == OrderTypeByName or
+		// OrderTypeCustomReaction — a pre-existing byte-vocabulary payload
+		// (0x01-0x0C) ends here, same as before this change.
+		if msg.QueueJob.OrderType == OrderTypeByName || msg.QueueJob.OrderType == OrderTypeCustomReaction {
 			var nameLen uint16
 			if err := binary.Read(buf, binary.BigEndian, &nameLen); err != nil {
 				return nil, err
@@ -1275,7 +1283,12 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 			if _, err := io.ReadFull(buf, nameBytes); err != nil {
 				return nil, err
 			}
-			msg.QueueJob.JobTypeName = string(nameBytes)
+			switch msg.QueueJob.OrderType {
+			case OrderTypeByName:
+				msg.QueueJob.JobTypeName = string(nameBytes)
+			case OrderTypeCustomReaction:
+				msg.QueueJob.ReactionCode = string(nameBytes)
+			}
 		}
 	case CommandTypeSetLabor:
 		if err := binary.Read(buf, binary.BigEndian, &msg.SetLabor.UnitID); err != nil {
