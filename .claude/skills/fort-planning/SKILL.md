@@ -11,10 +11,12 @@ checklist), `aquifer-piercing` (descending through a wet layer), and
 shape is and WHEN each part gets built; hand off to those skills for HOW
 to execute the pieces they own.
 
-Every section below marked **[OVERSEER-TASTE — default pending
-confirmation]** is a judgment call this skill is taking a stance on so
-planning isn't blocked, not a settled rule — confirm or override it with
-the playing session before treating it as fixed.
+Sections below marked **[OVERSEER-CONFIRMED 2026-07-15]** carry taste
+defaults the overseer explicitly confirmed — treat them as settled canon
+for this project's forts unless the overseer revises them. One further
+confirmed stance: run a SOFT POPULATION CAP around 60-80 (not v50's
+default 200) so year-2 housing/tavern capacity stays inside what
+dig-ahead delivers; revisit when defense and food tooling mature.
 
 ## Why plan (the waves math)
 
@@ -99,9 +101,8 @@ multi-z shaft in ONE `designate_dig type=stairs` call rather than
 level-by-level.
 
 Dreamfort's own variant is an undug-center 3×3 spiral stair (bigger
-footprint, decorative undug core). **[OVERSEER-TASTE — default pending
-confirmation: the plain 2×2 spine is the default here, not the spiral,
-until confirmed otherwise.]**
+footprint, decorative undug core). **[OVERSEER-CONFIRMED 2026-07-15:
+the plain 2×2 spine is this project's standard, not the spiral.]**
 
 The stair-top (surface entry) is the single most defense-critical tile in
 the whole fort. Enclose it with a surface perimeter BEFORE any other
@@ -189,20 +190,20 @@ the dig-ahead doctrine above; only the actual seal MECHANISM (the bridge
 and its lever) is blocked on tooling. Dig the earthworks now; the bridge
 waits for the tooling.
 
-**Interim seal policy [OVERSEER-TASTE — default pending confirmation]:**
+**Interim seal policy [OVERSEER-CONFIRMED 2026-07-15]:**
 default is an undug solid plug at the choke point — leave the last tile
 or two of the connecting corridor unopened, and use a miner-on-demand as
 the "lever" tooling doesn't provide yet: mine it open when passage is
 needed, wall it shut again (queued `build`) when a threat is sensed.
 
-**Topology [OVERSEER-TASTE — default pending confirmation]:** default is
+**Topology [OVERSEER-CONFIRMED 2026-07-15]:** the confirmed choice is
 hybrid — loop layouts (multiple connecting corridors) for
 industry/stockpile clusters so hauling traffic isn't funneled through one
 corridor, dead-end isolation for housing/noble clusters so a breach
 doesn't cascade through the whole living-quarters population.
 
-**Dig-ahead horizon [OVERSEER-TASTE — default pending confirmation]:**
-default is to rough-dig the NEXT level's footprint while idle-miner
+**Dig-ahead horizon [OVERSEER-CONFIRMED 2026-07-15]:**
+the confirmed doctrine is to rough-dig the NEXT level's footprint while idle-miner
 smoothing trails one level behind the excavation front on the CURRENT
 level — excavation always stays one level ahead of polish.
 
@@ -214,9 +215,9 @@ level — excavation always stays one level ahead of polish.
 - **Symmetry is self-documenting.** A bilaterally symmetric layout off
   the main spine communicates its own logic to a future session picking
   the fort back up cold, with no notes required.
-  **[OVERSEER-TASTE — default pending confirmation: bilateral symmetry
-  off the spine + odd widths for centered doors is the default aesthetic
-  canon here.]**
+  **[OVERSEER-CONFIRMED 2026-07-15: bilateral symmetry off the spine +
+  odd widths for centered doors IS the aesthetic canon — enforce it;
+  mixing canons is what reads as ugly.]**
 - **Finish order is not reversible mid-sequence: smooth → engrave →
   THEN furniture.** You cannot smooth a tile that already has furniture
   on it, and engraving needs an already-smoothed wall. Get the sequence
