@@ -49,21 +49,62 @@ func connectorSuggestion(topo *topology.TopologyOverlay, x1, y1, z1, x2, y2, z2 
 			}
 		}
 	}
+	// Vertical footprint scan: the ring above only ever checks the same
+	// swept Z levels, so a designation whose ONLY connection is straight
+	// up or down — a surface shaft's open top, a room dug directly over
+	// or under already-open space — false-positived as disconnected.
+	// Check the FOOTPRINT itself (not a padded ring) one Z above the top
+	// and one Z below the bottom.
+	for x := x1; x <= x2; x++ {
+		for y := y1; y <= y2; y++ {
+			if topo.GetTileState(x, y, z1-1) == topology.StateOpen {
+				return ""
+			}
+			if topo.GetTileState(x, y, z2+1) == topology.StateOpen {
+				return ""
+			}
+		}
+	}
 	centerX, centerY, centerZ := (x1+x2)/2, (y1+y2)/2, z1
 	_, target, _, ok := rg.NearestRegion(topology.Coord{X: centerX, Y: centerY, Z: centerZ})
 	if !ok {
 		return ""
 	}
-	// Suggest a 1-wide connector from the rectangle's center toward the
-	// nearest actual tile in the nearest region — a heuristic starting
-	// point, not a guaranteed-optimal path; the model refines it with
-	// look. Must be a real tile the region's flood-fill actually visited:
-	// a non-rectangular region's bounding-box corner (e.g. an L-shaped
-	// corridor) is frequently NOT a member tile, which would suggest a
-	// connector terminating outside the region entirely.
-	return fmt.Sprintf(
-		"not yet connected to existing space — suggested connector: designate_dig default (%d,%d,%d)->(%d,%d,%d)",
-		centerX, centerY, centerZ, target.X, target.Y, target.Z)
+	// The nearest actual tile in the nearest region — a heuristic
+	// starting point, not a guaranteed-optimal path; the model refines it
+	// with look. Must be a real tile the region's flood-fill actually
+	// visited: a non-rectangular region's bounding-box corner (e.g. an
+	// L-shaped corridor) is frequently NOT a member tile, which would
+	// suggest a connector terminating outside the region entirely.
+	switch {
+	case centerZ != target.Z:
+		// Any Z difference means a straight designate_dig line can't
+		// reach it at all — a real DF connector needs a vertical shaft
+		// (stairs dig type) plus a corridor, not a single line. Describe
+		// it rather than emit a designation that's simply wrong.
+		return fmt.Sprintf(
+			"not yet connected to existing space — nearest open tile is at (%d,%d,%d), on a different z-level from the new designation — connect with a vertical stairway (designate_dig type=stairs) plus a corridor, not a single designate_dig line",
+			target.X, target.Y, target.Z)
+	case centerX == target.X || centerY == target.Y:
+		// Collinear on x or y at the same z: the center and target already
+		// share one axis, so a single designate_dig line is a straight
+		// corridor, not a box.
+		return fmt.Sprintf(
+			"not yet connected to existing space — suggested connector: designate_dig default (%d,%d,%d)->(%d,%d,%d)",
+			centerX, centerY, centerZ, target.X, target.Y, target.Z)
+	default:
+		// Same z, but neither x nor y matches: designate_dig's two
+		// endpoints define a RECTANGLE, not a line — a single naive
+		// suggestion here would designate a giant bounding box across
+		// both axes instead of a corridor. Break it into two straight
+		// legs sharing a corner tile instead.
+		cornerX, cornerY := target.X, centerY
+		return fmt.Sprintf(
+			"not yet connected to existing space — nearest open tile is at (%d,%d,%d), diagonal from center (%d,%d,%d): a single designate_dig line would box in unwanted tiles — connect with an L-shaped corridor instead (two straight legs, not one rectangle): leg 1 designate_dig default (%d,%d,%d)->(%d,%d,%d), leg 2 designate_dig default (%d,%d,%d)->(%d,%d,%d)",
+			target.X, target.Y, target.Z, centerX, centerY, centerZ,
+			centerX, centerY, centerZ, cornerX, cornerY, centerZ,
+			cornerX, cornerY, centerZ, target.X, target.Y, target.Z)
+	}
 }
 
 // ackText renders a command result truthfully: the plugin's error text is

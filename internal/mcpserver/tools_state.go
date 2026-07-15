@@ -354,6 +354,58 @@ func renderReactions(raw []byte, filtered bool) string {
 	return sb.String()
 }
 
+// cropEntry is one entry from the plugin's list_crops query — a plant
+// raw's token/display name (either round-trips into assign_crop's crop
+// param, resolved case-insensitively), whether it's a subterranean crop,
+// and how many seeds are on hand right now.
+type cropEntry struct {
+	Token       string `json:"token"`
+	Name        string `json:"name"`
+	Underground bool   `json:"underground"`
+	SeedsOnHand int    `json:"seeds_on_hand"`
+}
+
+// maxCropsList caps the list_crops tool's output, same rationale as
+// maxReactionsList above.
+const maxCropsList = 60
+
+// renderCrops renders the list_crops response for the discovery tool.
+func renderCrops(raw []byte, filtered bool) string {
+	var resp struct {
+		Crops     []cropEntry `json:"crops"`
+		Truncated bool        `json:"truncated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Sprintf("unparseable list_crops response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	if len(resp.Crops) == 0 {
+		return "No crops matched that filter."
+	}
+	entries := resp.Crops
+	truncated := resp.Truncated
+	if len(entries) > maxCropsList {
+		entries = entries[:maxCropsList]
+		truncated = true
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d crops", len(resp.Crops))
+	if truncated {
+		fmt.Fprintf(&sb, " (showing first %d — pass filter to narrow)", len(entries))
+	}
+	sb.WriteString(":\n")
+	for _, c := range entries {
+		where := "surface"
+		if c.Underground {
+			where = "underground"
+		}
+		fmt.Fprintf(&sb, "- %s (%s) [%s] seeds on hand: %d\n", c.Token, c.Name, where, c.SeedsOnHand)
+	}
+	if !filtered && !truncated {
+		sb.WriteString("(pass filter next time to narrow this list)\n")
+	}
+	return sb.String()
+}
+
 // renderDwarfList renders the id/position roster, capped at maxDwarfList.
 func renderDwarfList(dwarves []protocol.EntityInfo) string {
 	var sb strings.Builder
@@ -364,6 +416,161 @@ func renderDwarfList(dwarves []protocol.EntityInfo) string {
 			break
 		}
 		fmt.Fprintf(&sb, "- id=%d @(%d,%d,%d)\n", d.ID, d.X, d.Y, d.Z)
+	}
+	return sb.String()
+}
+
+// dwarfSkillEntry is one skill summary from the plugin's dwarf_detail
+// query's top_skills array.
+type dwarfSkillEntry struct {
+	Skill      string `json:"skill"`
+	Level      int    `json:"level"`
+	Experience int    `json:"experience"`
+}
+
+// dwarfDetailResp is the full wire shape of the plugin's dwarf_detail
+// response (queries.cpp handleDwarfDetail). Shared between renderDwarfDetail
+// (the single-dwarf tool) and the dwarves tool's verbose fan-out so both
+// parse the exact same shape once.
+type dwarfDetailResp struct {
+	ID       int `json:"id"`
+	Position struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+		Z int `json:"z"`
+	} `json:"position"`
+	FirstName  string            `json:"first_name"`
+	TopSkills  []dwarfSkillEntry `json:"top_skills"`
+	CurrentJob *string           `json:"current_job"`
+	Mood       int               `json:"mood"`
+	Labors     []string          `json:"labors"`
+}
+
+// parseDwarfDetail unmarshals one dwarf_detail query response.
+func parseDwarfDetail(raw []byte) (dwarfDetailResp, error) {
+	var d dwarfDetailResp
+	err := json.Unmarshal(raw, &d)
+	return d, err
+}
+
+// moodNames maps df::mood_type (df.d_basics.xml, int16, None=-1) to a
+// readable label. Every non-"none" value is a strange mood in progress —
+// rendered upper-case so it's impossible to miss in a scan of dwarf lines.
+var moodNames = map[int]string{
+	-1: "none",
+	0:  "FEY MOOD",
+	1:  "SECRETIVE MOOD",
+	2:  "POSSESSED",
+	3:  "MACABRE MOOD",
+	4:  "FELL MOOD",
+	5:  "MELANCHOLY MOOD",
+	6:  "RAVING INSANE",
+	7:  "BERSERK",
+	8:  "baby",
+	9:  "TRAUMATIZED",
+}
+
+func moodLabel(m int) string {
+	if name, ok := moodNames[m]; ok {
+		return name
+	}
+	return fmt.Sprintf("unknown(%d)", m)
+}
+
+func dwarfDisplayName(d dwarfDetailResp) string {
+	if d.FirstName == "" {
+		return fmt.Sprintf("dwarf#%d", d.ID)
+	}
+	return d.FirstName
+}
+
+func dwarfCurrentJobLabel(d dwarfDetailResp) string {
+	if d.CurrentJob == nil || *d.CurrentJob == "" {
+		return "idle"
+	}
+	return *d.CurrentJob
+}
+
+func dwarfTopSkillLabel(d dwarfDetailResp) string {
+	if len(d.TopSkills) == 0 {
+		return "no skills"
+	}
+	top := d.TopSkills[0]
+	return fmt.Sprintf("%s Lvl%d", top.Skill, top.Level)
+}
+
+// renderDwarfDetail renders the dwarf_detail response as compact text
+// lines instead of passing the raw JSON through verbatim (the plugin's
+// enabled-only labors list still runs 15-25 lines on its own). Labors are
+// spelled out only when includeLabors is set — otherwise just the count,
+// with a pointer at how to get the rest.
+func renderDwarfDetail(raw []byte, includeLabors bool) string {
+	d, err := parseDwarfDetail(raw)
+	if err != nil {
+		return fmt.Sprintf("unparseable dwarf_detail response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s (id=%d) @(%d,%d,%d)\n", dwarfDisplayName(d), d.ID, d.Position.X, d.Position.Y, d.Position.Z)
+	fmt.Fprintf(&sb, "current job: %s\n", dwarfCurrentJobLabel(d))
+	fmt.Fprintf(&sb, "mood: %s\n", moodLabel(d.Mood))
+	if len(d.TopSkills) == 0 {
+		sb.WriteString("top skills: none\n")
+	} else {
+		sb.WriteString("top skills:\n")
+		for _, s := range d.TopSkills {
+			fmt.Fprintf(&sb, "- %s Lvl%d (xp %d)\n", s.Skill, s.Level, s.Experience)
+		}
+	}
+	if includeLabors {
+		if len(d.Labors) == 0 {
+			sb.WriteString("labors: none enabled\n")
+		} else {
+			fmt.Fprintf(&sb, "labors (%d enabled): %s\n", len(d.Labors), strings.Join(d.Labors, ", "))
+		}
+	} else {
+		fmt.Fprintf(&sb, "labors: %d enabled (pass include_labors=true to list)\n", len(d.Labors))
+	}
+	return sb.String()
+}
+
+// dwarfSummaryLine renders one dwarf_detail response as a single census
+// line: name | current job | top skill Lvl | labor count.
+func dwarfSummaryLine(d dwarfDetailResp) string {
+	return fmt.Sprintf("- %s (id=%d): %s | top: %s | labors=%d",
+		dwarfDisplayName(d), d.ID, dwarfCurrentJobLabel(d), dwarfTopSkillLabel(d), len(d.Labors))
+}
+
+// renderDwarvesVerbose fans out one dwarf_detail query per dwarf (capped
+// at maxDwarfList) and renders one summary line each. This is the
+// expensive path — see the dwarves tool's verbose param description.
+func renderDwarvesVerbose(ctx context.Context, b *Bridge, dwarves []protocol.EntityInfo) string {
+	if len(dwarves) == 0 {
+		return "0 dwarves."
+	}
+	n := len(dwarves)
+	capped := n
+	if capped > maxDwarfList {
+		capped = maxDwarfList
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d dwarves (verbose — one dwarf_detail query per dwarf):\n", capped)
+	for i := 0; i < capped; i++ {
+		d := dwarves[i]
+		raw, err := b.Query(ctx, "dwarf_detail", fmt.Sprintf(`{"id":%d}`, d.ID))
+		if err != nil {
+			fmt.Fprintf(&sb, "- id=%d: query failed: %v\n", d.ID, err)
+			continue
+		}
+		detail, perr := parseDwarfDetail(raw)
+		if perr != nil {
+			fmt.Fprintf(&sb, "- id=%d: unparseable detail: %v\n", d.ID, perr)
+			continue
+		}
+		sb.WriteString(dwarfSummaryLine(detail))
+		sb.WriteString("\n")
+	}
+	if n > capped {
+		fmt.Fprintf(&sb, "... and %d more not queried (verbose caps at %d — use dwarf_detail by id for the rest)\n", n-capped, maxDwarfList)
 	}
 	return sb.String()
 }
@@ -436,25 +643,33 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 		return withDash(b, ctx, msg), nil, nil
 	})
 
+	type dwarvesIn struct {
+		Verbose bool `json:"verbose,omitempty" jsonschema:"when true, render one line per dwarf (name | current job | top skill | labor count) by querying dwarf_detail for every dwarf — verbose issues one query per dwarf (capped at 50), so use it for censuses, not every turn"`
+	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "dwarves",
-		Description: "List all dwarves with id and position. Use dwarf_detail for skills/mood/job of one dwarf.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
-		return withDash(b, ctx, renderDwarfList(b.Snapshot().Entities.Dwarves)), nil, nil
+		Description: "List all dwarves with id and position. Use dwarf_detail for skills/mood/job of one dwarf, or verbose=true here for a one-line-per-dwarf census (costs one extra query per dwarf — see verbose's schema note).",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in dwarvesIn) (*mcp.CallToolResult, any, error) {
+		dwarves := b.Snapshot().Entities.Dwarves
+		if !in.Verbose {
+			return withDash(b, ctx, renderDwarfList(dwarves)), nil, nil
+		}
+		return withDash(b, ctx, renderDwarvesVerbose(ctx, b, dwarves)), nil, nil
 	})
 
 	type dwarfDetailIn struct {
-		ID int `json:"id" jsonschema:"the dwarf's id from the dwarves tool"`
+		ID            int  `json:"id" jsonschema:"the dwarf's id from the dwarves tool"`
+		IncludeLabors bool `json:"include_labors,omitempty" jsonschema:"true to list every currently-enabled labor by name; default just shows the count (pass true when you actually need to check/change labors)"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "dwarf_detail",
-		Description: "One dwarf's full record: skills, labors, mood, current job.",
+		Description: "One dwarf's full record: skills, mood, current job, and labor count. Pass include_labors=true to also list enabled labor names (omitted by default — it's boilerplate most calls don't need).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in dwarfDetailIn) (*mcp.CallToolResult, any, error) {
 		raw, err := b.Query(ctx, "dwarf_detail", fmt.Sprintf(`{"id":%d}`, in.ID))
 		if err != nil {
 			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
 		}
-		return withDash(b, ctx, string(raw)), nil, nil
+		return withDash(b, ctx, renderDwarfDetail(raw, in.IncludeLabors)), nil, nil
 	})
 
 	type stocksIn struct {
@@ -561,5 +776,24 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
 		}
 		return withDash(b, ctx, renderReactions(raw, in.Filter != "")), nil, nil
+	})
+
+	type listCropsIn struct {
+		Filter string `json:"filter,omitempty" jsonschema:"optional case-insensitive substring filter against the crop's raw token or display name (e.g. 'helmet', 'sweet_pod') — narrows the plantable-crop catalog instead of dumping all of it"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_crops",
+		Description: "Look up plantable crops (plants with seeds) for build_farm_plot/assign_crop — each entry's token or name round-trips into assign_crop's crop param verbatim, resolved case-insensitively. Reports underground vs surface eligibility and current seeds on hand. Call this before assign_crop if you don't already know a valid crop name. Pass filter to narrow.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in listCropsIn) (*mcp.CallToolResult, any, error) {
+		args := "{}"
+		if in.Filter != "" {
+			argBytes, _ := json.Marshal(map[string]string{"filter": in.Filter})
+			args = string(argBytes)
+		}
+		raw, err := b.Query(ctx, "list_crops", args)
+		if err != nil {
+			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+		}
+		return withDash(b, ctx, renderCrops(raw, in.Filter != "")), nil, nil
 	})
 }

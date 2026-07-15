@@ -182,16 +182,18 @@ func TestConnectorSuggestion_TargetIsARealRegionTile(t *testing.T) {
 		t.Fatal("expected a connector suggestion for a disconnected designation")
 	}
 
-	arrow := strings.Index(got, "->")
-	if arrow == -1 {
-		t.Fatalf("expected a suggestion with a -> connector, got %q", got)
+	// Whether this renders as one straight leg or an L-shaped pair of
+	// legs (see TestConnectorSuggestion_NonCollinearSuggestsLShape), the
+	// FINAL destination named in the suggestion must be a real tile the
+	// flood-fill actually visited — never a synthesized bounding-box
+	// corner. Parse the last "(...)" tuple in the string, whichever shape
+	// the message took.
+	lastOpen := strings.LastIndex(got, "(")
+	lastClose := strings.LastIndex(got, ")")
+	if lastOpen == -1 || lastClose == -1 || lastClose < lastOpen {
+		t.Fatalf("could not find a target coordinate tuple in %q", got)
 	}
-	rest := got[arrow+2:]
-	open, closeIdx := strings.Index(rest, "("), strings.Index(rest, ")")
-	if open == -1 || closeIdx == -1 || closeIdx < open {
-		t.Fatalf("could not find target coordinate tuple in %q", got)
-	}
-	parts := strings.Split(rest[open+1:closeIdx], ",")
+	parts := strings.Split(got[lastOpen+1:lastClose], ",")
 	if len(parts) != 3 {
 		t.Fatalf("expected 3 coordinate parts, got %d in %q", len(parts), got)
 	}
@@ -205,6 +207,52 @@ func TestConnectorSuggestion_TargetIsARealRegionTile(t *testing.T) {
 	target := topology.Coord{X: int16(tx), Y: int16(ty), Z: int16(tz)}
 	if _, ok := topology.BuildRegionGraph(topo).RegionAt(target); !ok {
 		t.Fatalf("suggested connector target %+v is not a member of any real region — flood-fill never visited it (parsed from %q)", target, got)
+	}
+}
+
+// TestConnectorSuggestion_NonCollinearSuggestsLShape is the regression test
+// for bug (a): designate_dig's two endpoints define a RECTANGLE, so a
+// single suggestion from a disconnected designation's center straight to a
+// diagonally-placed nearest tile would designate a giant bounding box
+// instead of a corridor. When center and target share neither x nor y (and
+// are on the same z), the suggestion must break into two axis-aligned legs
+// instead of one naive box.
+func TestConnectorSuggestion_NonCollinearSuggestsLShape(t *testing.T) {
+	topo := topology.NewTopologyOverlay(20, 20, 5)
+	for x := int16(0); x <= 2; x++ {
+		for y := int16(0); y <= 2; y++ {
+			_ = topo.SetTileState(x, y, 0, topology.StateOpen)
+		}
+	}
+	// Center of this designation is (11,7,0); nearest open tile is (2,2,0)
+	// — differs in both x and y, so this must NOT collapse to one line.
+	got := connectorSuggestion(topo, 10, 6, 0, 12, 8, 0)
+	if got == "" {
+		t.Fatal("expected a connector suggestion for a disconnected designation")
+	}
+	if n := strings.Count(got, "designate_dig default"); n != 2 {
+		t.Fatalf("expected a two-leg L-shaped suggestion (2 designate_dig calls), got %d in %q", n, got)
+	}
+	if !strings.Contains(got, "L-shaped") {
+		t.Fatalf("expected the suggestion to name itself L-shaped, got %q", got)
+	}
+}
+
+// TestConnectorSuggestion_VerticallyAdjacentReturnsEmpty is the regression
+// test for bug (b): the connectivity scan only checked the lateral ring at
+// each swept Z, never the footprint tiles directly above/below — so a
+// designation whose only connection is vertical (a surface shaft's open
+// top, a room dug directly over open space) false-positived as
+// disconnected. An open tile directly above the footprint must suppress
+// the suggestion entirely.
+func TestConnectorSuggestion_VerticallyAdjacentReturnsEmpty(t *testing.T) {
+	topo := topology.NewTopologyOverlay(20, 20, 10)
+	// Open tile directly above the designation's 1x1 footprint — nowhere
+	// near its lateral ring, only reachable by looking straight up.
+	_ = topo.SetTileState(5, 5, 4, topology.StateOpen)
+	got := connectorSuggestion(topo, 5, 5, 5, 5, 5, 5)
+	if got != "" {
+		t.Fatalf("expected no suggestion for a vertically-adjacent footprint, got %q", got)
 	}
 }
 

@@ -206,6 +206,88 @@ func TestRenderJobTypesBadJSON(t *testing.T) {
 	}
 }
 
+func TestRenderDwarfDetail(t *testing.T) {
+	raw := []byte(`{
+		"id":5,
+		"position":{"x":23,"y":45,"z":138},
+		"first_name":"Urist",
+		"top_skills":[
+			{"skill":"MINING","level":4,"experience":120},
+			{"skill":"FIGHTER","level":1,"experience":30}
+		],
+		"current_job":"Mine",
+		"mood":-1,
+		"labors":["MINE","CUTWOOD","HAUL_STONE"]
+	}`)
+
+	out := renderDwarfDetail(raw, false)
+	if !strings.Contains(out, "Urist (id=5) @(23,45,138)") {
+		t.Fatalf("missing name/position line:\n%s", out)
+	}
+	if !strings.Contains(out, "current job: Mine") {
+		t.Fatalf("missing current job line:\n%s", out)
+	}
+	if !strings.Contains(out, "mood: none") {
+		t.Fatalf("mood=-1 must render as 'none':\n%s", out)
+	}
+	if !strings.Contains(out, "- MINING Lvl4 (xp 120)") || !strings.Contains(out, "- FIGHTER Lvl1 (xp 30)") {
+		t.Fatalf("missing per-skill lines:\n%s", out)
+	}
+	if !strings.Contains(out, "labors: 3 enabled (pass include_labors=true to list)") {
+		t.Fatalf("default view must summarize labor count, not spell them out:\n%s", out)
+	}
+	if strings.Contains(out, "CUTWOOD") {
+		t.Fatalf("default view must not leak labor names:\n%s", out)
+	}
+
+	withLabors := renderDwarfDetail(raw, true)
+	if !strings.Contains(withLabors, "labors (3 enabled): MINE, CUTWOOD, HAUL_STONE") {
+		t.Fatalf("include_labors=true must list every labor name:\n%s", withLabors)
+	}
+}
+
+func TestRenderDwarfDetailNoJobNoSkillsNoLabors(t *testing.T) {
+	raw := []byte(`{"id":9,"position":{"x":1,"y":2,"z":3},"first_name":"","top_skills":[],"current_job":null,"mood":0,"labors":[]}`)
+	out := renderDwarfDetail(raw, true)
+	if !strings.Contains(out, "dwarf#9 (id=9)") {
+		t.Fatalf("empty first_name must fall back to a synthesized name:\n%s", out)
+	}
+	if !strings.Contains(out, "current job: idle") {
+		t.Fatalf("null current_job must render as idle:\n%s", out)
+	}
+	if !strings.Contains(out, "mood: FEY MOOD") {
+		t.Fatalf("mood=0 must render as FEY MOOD:\n%s", out)
+	}
+	if !strings.Contains(out, "top skills: none") {
+		t.Fatalf("empty top_skills must say none:\n%s", out)
+	}
+	if !strings.Contains(out, "labors: none enabled") {
+		t.Fatalf("empty labors with include_labors=true must say none enabled:\n%s", out)
+	}
+}
+
+func TestRenderDwarfDetailBadJSON(t *testing.T) {
+	if out := renderDwarfDetail([]byte(`not json`), false); !strings.Contains(out, "unparseable") {
+		t.Fatalf("bad JSON must be reported, got: %q", out)
+	}
+}
+
+func TestDwarfSummaryLine(t *testing.T) {
+	d, err := parseDwarfDetail([]byte(`{
+		"id":5,"position":{"x":1,"y":1,"z":1},"first_name":"Urist",
+		"top_skills":[{"skill":"MINING","level":4,"experience":120}],
+		"current_job":"Mine","mood":-1,"labors":["MINE","CUTWOOD"]
+	}`))
+	if err != nil {
+		t.Fatalf("parseDwarfDetail: %v", err)
+	}
+	line := dwarfSummaryLine(d)
+	if !strings.Contains(line, "Urist (id=5)") || !strings.Contains(line, "Mine") ||
+		!strings.Contains(line, "MINING Lvl4") || !strings.Contains(line, "labors=2") {
+		t.Fatalf("census line missing expected fields: %q", line)
+	}
+}
+
 func TestRenderDwarfListCap(t *testing.T) {
 	few := []protocol.EntityInfo{{ID: 7, X: 1, Y: 2, Z: 3}}
 	out := renderDwarfList(few)
