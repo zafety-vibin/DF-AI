@@ -61,8 +61,10 @@ bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error);
 bool applyRemoveZone(int16_t x, int16_t y, int16_t z, std::string &error);
 bool applySetLabor(int32_t unitID, uint8_t laborID, bool enable, std::string &error);
 
-// Forward declaration for function in buildings.cpp
+// Forward declarations for functions in buildings.cpp
 bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint32_t groupMask, std::string &error);
+bool placeFarmPlot(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
+bool applySetFarmCrop(int16_t x, int16_t y, int16_t z, uint8_t season, const std::string &cropName, std::string &error);
 
 // Forward declarations for functions from zones.cpp
 bool applyDesignateZone(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
@@ -907,6 +909,40 @@ void executeCommand(const std::vector<uint8_t> &payload)
             int16_t by = ((int16_t)payload[7] << 8) | payload[8];
             int16_t bz = ((int16_t)payload[9] << 8) | payload[10];
             success = applyUnassignLodging(bx, by, bz, error);
+            break;
+        }
+        case COMMAND_TYPE_BUILD_FARM_PLOT: {
+            // Payload: [4: cmdID] [1: cmdType] [2: X1] [2: Y1] [2: Z] [2: X2] [2: Y2]
+            // Byte-identical to STOCKPILE minus the trailing GroupMask.
+            if (payload.size() < 15) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid BUILD_FARM_PLOT payload");
+                return;
+            }
+            int16_t x1 = ((int16_t)payload[5]  << 8) | payload[6];
+            int16_t y1 = ((int16_t)payload[7]  << 8) | payload[8];
+            int16_t z  = ((int16_t)payload[9]  << 8) | payload[10];
+            int16_t x2 = ((int16_t)payload[11] << 8) | payload[12];
+            int16_t y2 = ((int16_t)payload[13] << 8) | payload[14];
+            success = placeFarmPlot(x1, y1, z, x2, y2, error);
+            break;
+        }
+        case COMMAND_TYPE_SET_FARM_CROP: {
+            // Payload: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z] [1: Season] [2: NameLen] [N: CropName]
+            if (payload.size() < 14) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SET_FARM_CROP payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            uint8_t season = payload[11];
+            uint16_t nameLen = ((uint16_t)payload[12] << 8) | payload[13];
+            if (payload.size() < 14 + nameLen) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SET_FARM_CROP payload size");
+                return;
+            }
+            std::string cropName(payload.begin() + 14, payload.begin() + 14 + nameLen);
+            success = applySetFarmCrop(x, y, z, season, cropName, error);
             break;
         }
         default:

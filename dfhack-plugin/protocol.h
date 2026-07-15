@@ -89,6 +89,8 @@ constexpr uint8_t COMMAND_TYPE_CREATE_LOCATION   = 0x12;
 constexpr uint8_t COMMAND_TYPE_ASSIGN_LODGING    = 0x13;
 constexpr uint8_t COMMAND_TYPE_UNASSIGN_LODGING  = 0x14;
 constexpr uint8_t COMMAND_TYPE_REMOVE_ZONE       = 0x15;
+constexpr uint8_t COMMAND_TYPE_BUILD_FARM_PLOT   = 0x16;
+constexpr uint8_t COMMAND_TYPE_SET_FARM_CROP     = 0x17;
 
 // Location types -- DF-AI's own wire values for df::abstract_building_type's
 // INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL. A Location is created FROM an
@@ -102,6 +104,16 @@ constexpr uint8_t LOCATION_TYPE_TAVERN    = 0x01;
 constexpr uint8_t LOCATION_TYPE_TEMPLE    = 0x02;
 constexpr uint8_t LOCATION_TYPE_LIBRARY   = 0x03;
 constexpr uint8_t LOCATION_TYPE_GUILDHALL = 0x04;
+
+// Season byte for the SET_FARM_CROP command. 0-3 target one of
+// building_farmplotst::plant_id's four season slots (matches df::season:
+// Spring/Summer/Autumn/Winter). 0xFF is a wire-level convenience with no DF
+// equivalent -- write the same crop into all four slots in one call.
+constexpr uint8_t SEASON_SPRING = 0x00;
+constexpr uint8_t SEASON_SUMMER = 0x01;
+constexpr uint8_t SEASON_AUTUMN = 0x02;
+constexpr uint8_t SEASON_WINTER = 0x03;
+constexpr uint8_t SEASON_ALL    = 0xFF;
 
 // Pause modes (payload byte after cmdType): matches internal/protocol/message.go.
 constexpr uint8_t PAUSE_MODE_UNPAUSE = 0x00;

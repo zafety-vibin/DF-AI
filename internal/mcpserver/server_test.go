@@ -76,6 +76,9 @@ var minToolArgs = map[string]map[string]any{
 	"name_place":         {"x": 1, "y": 1, "z": 1, "name": "test"},
 	// list_places has no required fields — {} default is fine, no entry needed.
 	// list_reactions has no required fields — {} default is fine, no entry needed.
+	"build_farm_plot": {"x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
+	"assign_crop":     {"x": 1, "y": 1, "z": 1, "season": "spring", "crop": "fallow"},
+	// list_crops has no required fields — {} default is fine, no entry needed.
 }
 
 // TestEveryToolNilBridge lists every registered tool and calls each one

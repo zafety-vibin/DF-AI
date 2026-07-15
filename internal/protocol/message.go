@@ -307,6 +307,8 @@ const (
 	CommandTypeAssignLodging   uint8 = 0x13 // Link a Bedroom civzone as guest lodging for a Tavern Location
 	CommandTypeUnassignLodging uint8 = 0x14 // Remove a Bedroom civzone from lodging duty
 	CommandTypeRemoveZone      uint8 = 0x15 // Deconstruct the civzone at a tile (rejected if it founds a Location)
+	CommandTypeBuildFarmPlot   uint8 = 0x16 // Designate a rectangular farm plot (extent-shaped, like a stockpile)
+	CommandTypeSetFarmCrop     uint8 = 0x17 // Assign a crop (or clear) to one or all season slots of a farm plot
 )
 
 // Labor constants for the SET_LABOR command. The value IS the real
@@ -428,6 +430,19 @@ const (
 	LocationTypeTemple    uint8 = 0x02
 	LocationTypeLibrary   uint8 = 0x03
 	LocationTypeGuildhall uint8 = 0x04 // requires CreateLocationDesignation.Profession
+)
+
+// FarmSeason constants for the SET_FARM_CROP command's Season byte. 0-3
+// target one of building_farmplotst::plant_id's four season slots (matches
+// dfhack-plugin/protocol.h SEASON_* and df::season Spring/Summer/Autumn/
+// Winter). FarmSeasonAll is a wire-level convenience with no DF
+// equivalent — write the same crop into all four slots in one call.
+const (
+	FarmSeasonSpring uint8 = 0x00
+	FarmSeasonSummer uint8 = 0x01
+	FarmSeasonAutumn uint8 = 0x02
+	FarmSeasonWinter uint8 = 0x03
+	FarmSeasonAll    uint8 = 0xFF
 )
 
 // OrderType constants for manager work orders.
@@ -588,6 +603,27 @@ type RemoveZoneDesignation struct {
 	X, Y, Z int16
 }
 
+// FarmPlotDesignation designates a rectangular farm plot at (X1,Y1)-(X2,Y2)
+// on level Z — extent-shaped like a stockpile (StockpileDesignation minus
+// GroupMask), NOT a single-tile build. Needs open, non-aquatic soil or mud
+// floor; DF itself enforces that at placement time. A freshly built plot
+// grows NOTHING until SetFarmCropDesignation assigns a crop to at least one
+// season slot.
+type FarmPlotDesignation struct {
+	X1, Y1, Z int16
+	X2, Y2    int16
+}
+
+// SetFarmCropDesignation programs one (Season != FarmSeasonAll) or all four
+// (Season == FarmSeasonAll) season slots of the farm plot at (X,Y,Z) to
+// grow CropName — a plant raw token or display name (see the list_crops
+// query), or the literal string "fallow" to clear the slot(s).
+type SetFarmCropDesignation struct {
+	X, Y, Z  int16
+	Season   uint8
+	CropName string
+}
+
 // CreateLocationDesignation targets the MeetingHall civzone at (X,Y,Z)
 // and converts it into a Location of LocationType. Profession is
 // required only when LocationType is LocationTypeGuildhall.
@@ -736,6 +772,8 @@ type CommandMessage struct {
 	AssignZone   AssignZoneDesignation     // For ASSIGN_ZONE commands
 	UnassignZone UnassignZoneDesignation   // For UNASSIGN_ZONE commands
 	RemoveZone   RemoveZoneDesignation     // For REMOVE_ZONE commands
+	FarmPlot     FarmPlotDesignation       // For BUILD_FARM_PLOT commands
+	SetFarmCrop  SetFarmCropDesignation    // For SET_FARM_CROP commands
 
 	CreateLocation  CreateLocationDesignation  // For CREATE_LOCATION commands
 	AssignLodging   AssignLodgingDesignation   // For ASSIGN_LODGING commands
@@ -752,7 +790,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeRemoveZone {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeSetFarmCrop {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -797,6 +835,17 @@ func (m *CommandMessage) Validate() error {
 		}
 		if m.QueueJob.OrderType == OrderTypeCustomReaction && m.QueueJob.ReactionCode == "" {
 			return errors.New("queue_job custom-reaction path (OrderTypeCustomReaction) requires a non-empty ReactionCode")
+		}
+	case CommandTypeBuildFarmPlot:
+		if m.FarmPlot.X2 < m.FarmPlot.X1 || m.FarmPlot.Y2 < m.FarmPlot.Y1 {
+			return errors.New("invalid region: end coordinates must be >= start coordinates")
+		}
+	case CommandTypeSetFarmCrop:
+		if m.SetFarmCrop.Season > 3 && m.SetFarmCrop.Season != FarmSeasonAll {
+			return fmt.Errorf("invalid season: 0x%02X (want 0-3 or FarmSeasonAll)", m.SetFarmCrop.Season)
+		}
+		if m.SetFarmCrop.CropName == "" {
+			return errors.New("set_farm_crop requires a non-empty CropName (a plant raw token/display name, or \"fallow\")")
 		}
 	}
 

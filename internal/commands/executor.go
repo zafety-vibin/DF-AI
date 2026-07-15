@@ -354,6 +354,40 @@ func (e *CommandExecutor) SendStockpileCommand(x1, y1, z, x2, y2 int16, groupMas
 	return e.SendCommand(cmd)
 }
 
+// SendBuildFarmPlot designates a rectangular farm plot at (x1,y1)-(x2,y2)
+// on level z. Extent-shaped like a stockpile — must sit on open,
+// non-aquatic soil or mud floor. A freshly built plot grows NOTHING until
+// SendSetFarmCrop assigns a crop to at least one season slot.
+func (e *CommandExecutor) SendBuildFarmPlot(x1, y1, z, x2, y2 int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeBuildFarmPlot,
+		FarmPlot: protocol.FarmPlotDesignation{
+			X1: x1, Y1: y1, Z: z,
+			X2: x2, Y2: y2,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendSetFarmCrop programs the farm plot at (x,y,z) to grow cropName in
+// one season slot (protocol.FarmSeasonSpring..FarmSeasonWinter) or all
+// four (protocol.FarmSeasonAll). cropName is a plant raw token/display
+// name (see the list_crops query) or the literal string "fallow" to clear
+// the slot(s).
+func (e *CommandExecutor) SendSetFarmCrop(x, y, z int16, season uint8, cropName string) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeSetFarmCrop,
+		SetFarmCrop: protocol.SetFarmCropDesignation{
+			X: x, Y: y, Z: z,
+			Season:   season,
+			CropName: cropName,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
 // SendSmoothCommand designates a rectangular region for smoothing or
 // engraving. smoothType is protocol.SmoothTypeSmooth (1) or
 // SmoothTypeEngrave (2). Only natural stone walls/floors will be acted on

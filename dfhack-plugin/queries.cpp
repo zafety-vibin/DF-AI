@@ -62,6 +62,11 @@
 #include "df/reaction_reagent_type.h"
 #include "df/reaction_flags.h"
 #include "df/workshop_type.h"
+#include "df/plant_raw.h"
+#include "df/plant_raw_flags.h"
+#include "df/item_seedsst.h"
+#include "df/items_other_id.h"
+#include "df/item_flags.h"
 
 #include "protocol.h"
 
@@ -663,6 +668,81 @@ static std::string handleListLocations(const std::string &args, uint8_t &status)
     return os.str();
 }
 
+// handleListCrops enumerates plantable crops (plant raws carrying the SEED
+// flag) for the build_farm_plot/assign_crop workflow -- each entry's
+// "token" round-trips verbatim into SET_FARM_CROP's CropName field
+// (buildings.cpp resolvePlantRaw matches it case-insensitively, same as
+// "name"). Filterable by substring against either field, capped like
+// list_reactions above. Seed-on-hand tally mirrors DFHack's autofarm
+// plugin (plugins/autofarm.cpp find_plantable_plants): live, non-forbidden
+// SEEDS items tallied by mat_index (== plant raw index).
+static std::string handleListCrops(const std::string &args, uint8_t &status) {
+    if (!df::global::world) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("world is null");
+    }
+
+    std::string filter = jsonGetString(args, "filter");
+    std::string lfilter = filter;
+    for (auto &c : lfilter) c = tolower(c);
+
+    // Same bad-flags mask and vector as autofarm's find_plantable_plants --
+    // dumped/forbidden/rotten/etc seeds don't count as usable stock.
+    const uint32_t badFlags =
+        (uint32_t)df::item_flags::Mask::mask_dump |
+        (uint32_t)df::item_flags::Mask::mask_forbid |
+        (uint32_t)df::item_flags::Mask::mask_garbage_collect |
+        (uint32_t)df::item_flags::Mask::mask_hostile |
+        (uint32_t)df::item_flags::Mask::mask_on_fire |
+        (uint32_t)df::item_flags::Mask::mask_rotten |
+        (uint32_t)df::item_flags::Mask::mask_trader |
+        (uint32_t)df::item_flags::Mask::mask_in_building |
+        (uint32_t)df::item_flags::Mask::mask_construction |
+        (uint32_t)df::item_flags::Mask::mask_artifact;
+    std::map<int32_t, int32_t> seedCounts;
+    for (auto *item : df::global::world->items.other[df::items_other_id::SEEDS]) {
+        auto *seed = strict_virtual_cast<df::item_seedsst>(item);
+        if (seed && (seed->flags.whole & badFlags) == 0)
+            seedCounts[seed->mat_index] += seed->stack_size;
+    }
+
+    std::ostringstream os;
+    os << "{\"crops\":[";
+    int count = 0;
+    bool truncated = false;
+    for (df::plant_raw *raw : df::global::world->raws.plants.all) {
+        if (!raw) continue;
+        if (!raw->flags.is_set(df::plant_raw_flags::SEED)) continue;
+
+        std::string ltoken = raw->id;
+        for (auto &c : ltoken) c = tolower(c);
+        std::string lname = raw->name;
+        for (auto &c : lname) c = tolower(c);
+        if (!lfilter.empty() &&
+            ltoken.find(lfilter) == std::string::npos &&
+            lname.find(lfilter) == std::string::npos) {
+            continue;
+        }
+
+        if (count >= 200) { truncated = true; break; }
+        if (count) os << ",";
+        count++;
+
+        auto it = seedCounts.find(raw->index);
+        int32_t seedsOnHand = (it != seedCounts.end()) ? it->second : 0;
+
+        os << "{\"token\":" << jsonStr(raw->id)
+           << ",\"name\":" << jsonStr(raw->name)
+           << ",\"underground\":" << (raw->underground_depth_max > 0 ? "true" : "false")
+           << ",\"seeds_on_hand\":" << jsonInt(seedsOnHand) << "}";
+    }
+    os << "]";
+    if (truncated) os << ",\"truncated\":true";
+    os << "}";
+    status = QUERY_STATUS_SUCCESS;
+    return os.str();
+}
+
 static std::string handleStockpileInventory(const std::string &args, uint8_t &status) {
     if (!df::global::world) {
         status = QUERY_STATUS_ERROR;
@@ -1016,6 +1096,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = handleListZones(args, status);
         } else if (name == "list_locations") {
             data = handleListLocations(args, status);
+        } else if (name == "list_crops") {
+            data = handleListCrops(args, status);
         } else if (name == "stockpile_inventory") {
             data = handleStockpileInventory(args, status);
         } else if (name == "sim_status") {

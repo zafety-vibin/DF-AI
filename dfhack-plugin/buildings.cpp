@@ -60,6 +60,7 @@
 
 #include "df/building.h"
 #include "df/building_stockpilest.h"
+#include "df/building_farmplotst.h"
 #include "df/building_type.h"
 #include "df/workshop_type.h"
 #include "df/construction_type.h"
@@ -68,12 +69,16 @@
 #include "df/job_item.h"
 #include "df/job_item_vector_id.h"
 #include "df/item_type.h"
+#include "df/plant_raw.h"
+#include "df/plant_raw_flags.h"
+#include "df/world.h"
 
 #include "protocol.h"
 
 #include <vector>
 #include <string>
 #include <cstdio>
+#include <cctype>
 
 using namespace DFHack;
 
@@ -383,6 +388,184 @@ bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, u
         error = "Buildings::constructAbstract failed for stockpile";
         destroyUnlinked(bld);
         return false;
+    }
+    return true;
+}
+
+// placeFarmPlot designates a rectangular farm plot at (x1,y1)-(x2,y2) on
+// level z. FarmPlot is unusual among ACTUAL buildings (isActual()==true):
+// it is the ONLY such type besides RoadDirt with needsItems()==false
+// (Buildings.cpp:1154-1168), so it must go through
+// Buildings::constructWithFilters with an explicitly EMPTY filter vector
+// -- NOT constructAbstract (that throws for anything with
+// isActual()==true, Buildings.cpp:1089) and NOT the placeBuilding() helper
+// above (which rejects empty filters outright, since every OTHER type it
+// places needs items). getCorrectSize groups FarmPlot with
+// Stockpile/Civzone/Bridge/RoadDirt/RoadPaved -- rectangle-sized, no
+// forced footprint (Buildings.cpp:601-608) -- so this mirrors
+// placeStockpile's alloc->setSize sequence above, just finishing with
+// constructWithFilters instead of constructAbstract.
+//
+// A freshly placed plot grows NOTHING until applySetFarmCrop assigns a
+// crop to at least one season slot. DF itself enforces the soil/mud tile
+// requirement at setSize time; we do not pre-validate ground type here --
+// a bad-ground failure surfaces as DF's own truthful rejection, not a
+// plugin guess.
+bool placeFarmPlot(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error)
+{
+    if (!Maps::isValidTilePos(x1, y1, z) || !Maps::isValidTilePos(x2, y2, z)) {
+        error = "Coordinates out of map bounds";
+        return false;
+    }
+    if (x2 < x1 || y2 < y1) {
+        error = "Invalid region (x2<x1 or y2<y1)";
+        return false;
+    }
+
+    df::coord pos(x1, y1, z);
+    df::building *bld = Buildings::allocInstance(pos, df::building_type::FarmPlot, -1, -1);
+    if (!bld) {
+        error = "Buildings::allocInstance returned null for farm plot";
+        return false;
+    }
+
+    int width  = (x2 - x1) + 1;
+    int height = (y2 - y1) + 1;
+    df::coord2d size((int16_t)width, (int16_t)height);
+    // setSize validates the tiles itself (Buildings.cpp:986); like
+    // stockpiles, farm plots are extent-shaped so blocked/unsuitable tiles
+    // are excluded from the extents rather than failing the whole call.
+    if (!Buildings::setSize(bld, size)) {
+        error = "Buildings::setSize failed for farm plot (no usable tiles -- "
+                "farm plots need open, non-aquatic soil or mud floor)";
+        destroyUnlinked(bld);
+        return false;
+    }
+
+    // FarmPlot needsItems()==false: constructWithFilters REQUIRES the
+    // filters vector be empty here (CHECK_INVALID_ARGUMENT(!items.empty()
+    // == needsItems(bld)), Buildings.cpp:1214) -- passing any filter would
+    // throw. This is the one case in this file where an empty vector is
+    // correct, not a bug.
+    std::vector<df::job_item*> noFilters;
+    if (!Buildings::constructWithFilters(bld, noFilters)) {
+        destroyUnlinked(bld);
+        error = "constructWithFilters failed for farm plot (tiles no longer free)";
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Farm crop assignment (SET_FARM_CROP).
+// ---------------------------------------------------------------------------
+
+// resolvePlantRaw looks up a plant raw by its token (df::plant_raw::id,
+// e.g. "PLUMP_HELMET") or its display name (df::plant_raw::name, e.g.
+// "plump helmet"), case-insensitively -- either form round-trips back from
+// the list_crops query's "token"/"name" fields. Returns the raw's index
+// (the same value autofarm.cpp stores directly into
+// building_farmplotst::plant_id, see plugins/autofarm.cpp set_farms), or
+// -1 with a truthful, example-bearing error if nothing matches.
+static int32_t resolvePlantRaw(const std::string &name, std::string &error)
+{
+    std::string lname = name;
+    for (auto &c : lname) c = (char)tolower((unsigned char)c);
+
+    for (df::plant_raw *raw : df::global::world->raws.plants.all) {
+        if (!raw) continue;
+        std::string ltoken = raw->id;
+        for (auto &c : ltoken) c = (char)tolower((unsigned char)c);
+        if (ltoken == lname)
+            return raw->index;
+        std::string ldisplay = raw->name;
+        for (auto &c : ldisplay) c = (char)tolower((unsigned char)c);
+        if (ldisplay == lname)
+            return raw->index;
+    }
+
+    std::string examples;
+    int shown = 0;
+    for (df::plant_raw *raw : df::global::world->raws.plants.all) {
+        if (!raw) continue;
+        if (raw->underground_depth_max <= 0) continue;
+        if (!raw->flags.is_set(df::plant_raw_flags::SEED)) continue;
+        if (shown > 0) examples += ", ";
+        examples += raw->id;
+        if (++shown >= 5) break;
+    }
+    error = "unknown crop \"" + name + "\" (not a plant raw token or display name; use list_crops to discover valid names)";
+    if (!examples.empty())
+        error += " -- some subterranean crops available: " + examples;
+    return -1;
+}
+
+// applySetFarmCrop programs one (season != SEASON_ALL) or all four
+// (season == SEASON_ALL) season slots of the farm plot at (x,y,z) to grow
+// cropName, or clears them (-1, "fallow"). Precedent: DFHack's autofarm
+// plugin set_farm (plugins/autofarm.cpp:197-201) assigns
+// farm->plant_id[season] directly the same way.
+bool applySetFarmCrop(int16_t x, int16_t y, int16_t z, uint8_t season, const std::string &cropName, std::string &error)
+{
+    if (!Maps::isValidTilePos(x, y, z)) {
+        error = "Coordinates out of map bounds";
+        return false;
+    }
+    if (season > 3 && season != SEASON_ALL) {
+        error = "invalid season byte (want 0-3 for spring/summer/autumn/winter, or 0xFF for all four)";
+        return false;
+    }
+    if (cropName.empty()) {
+        error = "crop name required (a plant raw token/display name, or \"fallow\")";
+        return false;
+    }
+
+    df::building *bld = Buildings::findAtTile(df::coord(x, y, z));
+    if (!bld) {
+        error = "no building at that tile";
+        return false;
+    }
+    df::building_farmplotst *farm = strict_virtual_cast<df::building_farmplotst>(bld);
+    if (!farm) {
+        error = "building at that tile is not a farm plot";
+        return false;
+    }
+
+    std::string lname = cropName;
+    for (auto &c : lname) c = (char)tolower((unsigned char)c);
+
+    int32_t plantID = -1;
+    if (lname != "fallow") {
+        plantID = resolvePlantRaw(cropName, error);
+        if (plantID < 0)
+            return false;
+
+        // Simple season-legality check, mirrored from DFHack's autofarm
+        // plugin (plugins/autofarm.cpp is_plantable): a crop's raw flags
+        // record which of the 4 seasons it grows in. SEASON_ALL writes the
+        // same crop into every slot regardless -- that mode is a wire-level
+        // convenience with no DF equivalent, not something to gate on any
+        // one season's flag.
+        if (season != SEASON_ALL) {
+            df::plant_raw *raw = df::plant_raw::find(plantID);
+            static const df::plant_raw_flags seasonFlags[4] = {
+                df::plant_raw_flags::SPRING, df::plant_raw_flags::SUMMER,
+                df::plant_raw_flags::AUTUMN, df::plant_raw_flags::WINTER
+            };
+            if (raw && !raw->flags.is_set(seasonFlags[season])) {
+                static const char *seasonNames[4] = {"spring", "summer", "autumn", "winter"};
+                error = cropName + std::string(" does not grow in ") + seasonNames[season] +
+                        " (check its season raw flags via list_crops, or pass season=all)";
+                return false;
+            }
+        }
+    }
+
+    if (season == SEASON_ALL) {
+        for (int s = 0; s < 4; s++)
+            farm->plant_id[s] = (int16_t)plantID;
+    } else {
+        farm->plant_id[season] = (int16_t)plantID;
     }
     return true;
 }
