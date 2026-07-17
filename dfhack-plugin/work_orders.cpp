@@ -38,6 +38,9 @@
 #include "df/reaction_reagent_itemst.h"
 #include "df/reaction_reagent_type.h"
 #include "df/reaction_flags.h"
+#include "df/plotinfost.h"
+#include "df/historical_entity.h"
+#include "df/entity_raw.h"
 #include "df/builtin_mats.h"
 
 #include "protocol.h"
@@ -183,9 +186,13 @@ bool applyWorkOrder(uint8_t orderType, uint16_t quantity, std::string &error)
 // below (and, if it needs a specific material class, a case in the
 // WOOD/BOULDER filter further down) before applyQueueJob accepts it. Add
 // entries as each job type's real workshop/material requirement is
-// confirmed. (ConstructHatchCover was the first such addition: grouped
-// with the door/furniture set — same Carpenters/Masons pair, same
-// per-workshop WOOD/BOULDER material class as ConstructDoor.)
+// confirmed. (ConstructHatchCover and ConstructFloodgate were both grouped
+// with the door/furniture set on later passes — same Carpenters/Masons
+// pair, same per-workshop WOOD/BOULDER material class as ConstructDoor;
+// ConstructFloodgate was live-verified missing from this switch entirely
+// 2026-07-17 — ACK read "job type not supported at this workshop type" at
+// Mechanics, Carpenters, AND Masons, since the default case rejects
+// anything absent here regardless of which workshop is correct in DF.)
 static bool jobTypeAllowedAtWorkshop(df::job_type jobType, df::workshop_type wsType) {
     switch (jobType) {
         case df::job_type::ConstructBed:
@@ -193,6 +200,7 @@ static bool jobTypeAllowedAtWorkshop(df::job_type jobType, df::workshop_type wsT
         case df::job_type::ConstructThrone:
         case df::job_type::ConstructDoor:
         case df::job_type::ConstructHatchCover:
+        case df::job_type::ConstructFloodgate:
         case df::job_type::ConstructCabinet:
         case df::job_type::ConstructChest:
             return wsType == df::workshop_type::Carpenters || wsType == df::workshop_type::Masons;
@@ -205,6 +213,12 @@ static bool jobTypeAllowedAtWorkshop(df::job_type jobType, df::workshop_type wsT
             return wsType == df::workshop_type::Craftsdwarfs;
         case df::job_type::PrepareMeal:
             return wsType == df::workshop_type::Kitchen;
+        case df::job_type::ConstructMechanisms:
+            // Confirmed via library/lua/dfhack/workshops.lua:360-366 and
+            // stockflow.lua:692 (reaction_entry under materials.rock.
+            // management) -- Mechanic's workshop only, 1x BOULDER in,
+            // TRAPPARTS ("mechanism") out.
+            return wsType == df::workshop_type::Mechanics;
         default:
             return false;
     }
@@ -215,6 +229,42 @@ static bool jobTypeAllowedAtWorkshop(df::job_type jobType, df::workshop_type wsT
     // and there is no verified replacement filter yet. The workshop mapping
     // above is correct DF domain knowledge on its own; only the downstream
     // material filter is the problem.
+}
+
+// isReactionPermittedForCiv reports whether reactionCode is in this fort's
+// controlling civ's permitted-reaction allow-list, plus any game-generated
+// reactions attached to the civ itself (reaction.source_enid == civ id).
+//
+// Reads entity_raw.workshops.permitted_reaction_id — the RESOLVED index
+// vector (ref-target='reaction', df.entity.xml:705) — never
+// permitted_reaction_str. The _str vector is raw-load staging that is
+// empty in a live game (checking it made every reaction look unavailable,
+// live-confirmed 2026-07-15), just as an earlier revision's
+// df::reaction_flags::FORTRESS_MODE_ENABLED bitfield was dead. DFHack's
+// own consumer (plugins/lua/stockflow.lua:418-428) iterates
+// permitted_reaction_id and the source_enid loop exactly as done here.
+//
+// Not static: shared with handleListReactions in queries.cpp so the
+// discovery tool (list_reactions) and the execution gate (queue_job's
+// reaction path) always agree on what's runnable.
+bool isReactionPermittedForCiv(const std::string &reactionCode)
+{
+    if (!df::global::world || !df::global::plotinfo) return false;
+    df::historical_entity *civ = df::historical_entity::find(df::global::plotinfo->civ_id);
+    if (!civ) return false;
+    auto &reactions = df::global::world->raws.reactions.reactions;
+    if (df::entity_raw *er = civ->entity_raw) {
+        for (int32_t id : er->workshops.permitted_reaction_id) {
+            if (id >= 0 && (size_t)id < reactions.size() && reactions[id]
+                && reactions[id]->code == reactionCode)
+                return true;
+        }
+    }
+    for (auto *r : reactions) {
+        if (r && r->source_enid == civ->id && r->code == reactionCode)
+            return true;
+    }
+    return false;
 }
 
 // applyQueueReactionJob queues a job for a raw-defined df::reaction
@@ -281,7 +331,7 @@ static bool applyQueueReactionJob(int16_t x, int16_t y, int16_t z, const std::st
         return false;
     }
 
-    if (!reaction->flags.is_set(df::reaction_flags::FORTRESS_MODE_ENABLED)) {
+    if (!isReactionPermittedForCiv(reactionCode)) {
         error = "reaction '" + reactionCode + "' is not enabled in fortress mode";
         return false;
     }
@@ -529,16 +579,20 @@ bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std
     // "queue one job" model; call again to queue more.
 
     // Material filter: this job CONSUMES a raw item (a log at Carpenters, a
-    // boulder at Masons) to produce its output — a different DF mechanism
-    // from placeBuilding's makeBuildMatFilter() in buildings.cpp, which
-    // constrains what item class gets bound to a BUILDING PLACEMENT job
-    // (job_item flags2.bits.building_material), not a workshop reaction's
-    // raw-material input. Filter by item_type instead, matching the
-    // workshop's material class. non_economic mirrors DFHack's own default
-    // for unrestricted stone requests (Constructions::designateNew,
-    // Constructions.cpp:102-103) — harmless for non-boulder item types.
+    // boulder at Masons/Mechanics) to produce its output — a different DF
+    // mechanism from placeBuilding's makeBuildMatFilter() in buildings.cpp,
+    // which constrains what item class gets bound to a BUILDING PLACEMENT
+    // job (job_item flags2.bits.building_material), not a workshop
+    // reaction's raw-material input. Filter by item_type instead, matching
+    // the workshop's material class. Mechanics joins Masons on the
+    // BOULDER side for ConstructMechanisms (1x BOULDER -> 1x TRAPPARTS,
+    // workshops.lua:363-364) — every other job_type reaching this filter
+    // is still furniture-domain (WOOD at Carpenters, BOULDER at Masons).
+    // non_economic mirrors DFHack's own default for unrestricted stone
+    // requests (Constructions::designateNew, Constructions.cpp:102-103) —
+    // harmless for non-boulder item types.
     df::job_item *ji = new df::job_item();
-    ji->item_type = (ws->type == df::workshop_type::Masons)
+    ji->item_type = (ws->type == df::workshop_type::Masons || ws->type == df::workshop_type::Mechanics)
                         ? df::item_type::BOULDER
                         : df::item_type::WOOD;
     ji->flags2.bits.non_economic = true;

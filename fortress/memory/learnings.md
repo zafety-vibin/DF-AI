@@ -2,6 +2,265 @@
 
 (append-only; never delete)
 
+## Fort #4 (2026-07-16): a `mine` designation can silently destroy an existing stair's up-component
+
+- Designating `type=mine` over a region that overlaps an already-carved
+  2x2 up/down stair core converts the overlapped tiles' `UpDownStair` to
+  plain `DownStair` — no warning, no alert, just a severed connection to
+  everything above the level you're digging. Caught only because the
+  overseer was watching the live game and noticed dwarves stranded.
+  RULE: when designating a room/hub that might touch an existing stair
+  shaft, explicitly carve AROUND the 2x2 core (exclude those exact tiles
+  from the mine rectangle), never assume overlap is a safe no-op the way
+  it is for re-designating already-open plain floor.
+- If it happens anyway: re-issuing `designate_dig type=stairs` on the
+  broken tiles does NOT fix it (ACK: "already carved", 0 designated —
+  the plugin's re-designation check is carved-or-not, not stair
+  sub-type-aware). The real fix is `build type=updownstair` (the
+  registered build-tool name; "stairs" alone is not recognized) directly
+  on the broken tile — converts it to a real, functioning up/down stair
+  using one boulder. Verified end-to-end this session: tested clean on
+  virgin floor first, then applied to the actually-broken tiles, full
+  shaft connectivity confirmed via cross_section afterward.
+
+## Fort #4 (2026-07-16): bore-check the actual room footprint, not one representative point
+
+- Bore-checking ONE central point per cardinal direction (e.g. one tile
+  south of a planned cluster) is not enough — this map had a genuine
+  aquifer pocket sitting under a room whose footprint was offset just
+  2-3 tiles from the single point that had tested clean. Second
+  independent incident of "aquifer patchiness" this project (see the
+  Fort #3 "aquifers come in pairs" entry below) — the practical fix is
+  the same: bore EVERY room's actual corners/center before digging it,
+  not a single sample for the whole direction.
+- A stone-aquifer-adjacent leak that appears AFTER a room is dug (a
+  water tile showing inside an already-carved, previously-dry-testing
+  room) can be sealed with `smooth mode=wall` on the exposed damp/
+  aquifer-flagged wall tiles bordering it — no boulders or construction
+  needed, matching the stone-aquifer branch of the aquifer-piercing
+  protocol, just applied reactively instead of as part of a planned
+  pierce. Confirmed this stops the leak from spreading further (tile
+  count stopped growing after smoothing), though full evaporation of an
+  already-formed puddle still takes the usual several game-days.
+  CAVEAT: `look`/`cross_section` never visually confirm a `smooth` call
+  succeeded — the wall renders identically before and after. Trust the
+  ACK and the leak's behavior (stopped spreading), not the overlay.
+- Overall verdict on a level sitting only 1-2 z below a freshly-sealed
+  aquifer: usable, but expect to lose some fraction of rooms to real
+  wetness no matter how careful the bore-checks are. For the NEXT
+  housing cluster, go several levels further down for a firmer buffer
+  rather than fighting this level tile-by-tile.
+
+## Fort #4 (2026-07-16): `stocks` counts built-in furniture as available stock
+
+- `stocks category=bed` (or door, table, etc.) reports the TOTAL count of
+  that item type across the fort, including ones already incorporated
+  into built furniture — not just free/loose/haulable stock. Led to
+  repeated confusion this session: saw "BED: willow x7", assumed spares
+  existed, placed a `build type=bed` plan, and it sat cancelling "needs
+  bed" indefinitely because all 7 were already built into other rooms
+  and zero were actually free. The only way to know true free stock right
+  now is indirect: if a placed building keeps cancelling on "needs X"
+  despite `stocks` showing count > 0, assume zero real spares and queue
+  fresh crafting via `queue_job` rather than trusting the number.
+  Flagged as a tool bug (docs/decisions.md) — `stocks` should exclude
+  incorporated items or expose a separate in-use count.
+- General pattern reconfirmed hard this session: `build` plans die
+  SILENTLY after repeated material-shortage cancels, exactly as the
+  Construction-materials entry below already warned — but this time the
+  shortage was invisible because `stocks` lied about availability. Stay
+  ahead on furniture production (queue crafting BEFORE placing, keep a
+  buffer of spares) rather than placing first and discovering the
+  shortage via a cancel loop — this is a real DF-wide pattern the
+  overseer hits in normal play too, not unique to this tooling.
+
+## Fort #4 (2026-07-16): dig-ahead can starve — and endanger — single-miner aquifer work
+
+- With only one effective miner (the "one pick = one miner" constraint,
+  still in force), queuing an UNRELATED bulk designation (a bedroom
+  cluster) at the same time as an active aquifer pierce/seal doesn't just
+  slow the aquifer down — the miner's nearest-job dispatch can genuinely
+  interleave the two, leaving the aquifer half-sealed and leaking longer
+  than necessary. Worse: the competing dig was sited without re-checking
+  for hazards and came within one row of breaching a separate 7/7-depth
+  standing-water pocket — a second instance of the "creek near-miss"
+  failure class, this time self-inflicted by not bore-checking a new
+  room's far edge before designating it.
+  RULE: while a single miner is mid-aquifer (from first pierce through
+  final wall), do not queue ANY other mine-type designation. Cancel
+  anything competing immediately if caught mid-flight
+  (`cancel_designation` is free and instant). Only resume unrelated
+  digging once the ring is fully walled and confirmed dry.
+- Confirmed live: a STACKED multi-layer aquifer (two independent soil
+  layers, z=116 and z=115, each individually flagged AQUIFER DAMP) takes
+  the exact same pierce→ring→wall cycle as a single-layer aquifer,
+  just repeated once per layer — no protocol changes needed, per
+  aquifer-piercing skill §8. Quarry-then-ring-then-wall order held for
+  both layers using one shared boulder bank (12 mudstone covered both
+  8-tile rings with room to spare).
+- A designate_dig ACK's "already carved" skip count is not fully
+  trustworthy at the single-tile level: one core shaft tile
+  (46,44,114) was silently left un-carved despite its neighbors in the
+  same 2x2 core completing normally, with no error surfaced anywhere —
+  only caught by noticing a residual water tile at (46,44,115) refusing
+  to fully drain days after the rings around it were sealed. Fix: if a
+  supposedly-sealed aquifer keeps one damp tile alive well past the
+  usual 5-10 day evaporation window, cross_section EVERY tile of the
+  shaft core individually (not just one representative corner) before
+  assuming the seal failed — it may just be one skipped tile needing a
+  direct single-tile re-designation.
+
+## Fort #4 (2026-07-16): stockpile/workshop/build tool-occupancy gaps
+
+- A `stockpile` designation and a `build` workshop placement fight over
+  the same tiles depending on ORDER: placing the stockpile first and
+  then trying to `build` a workshop on part of its rectangle FAILS
+  ("tiles blocked, occupied, or unsuitable") even though vanilla DF
+  allows building on a stockpile tile. Workaround: always `build`
+  workshops FIRST, then designate the stockpile over the remainder —
+  the stockpile tool correctly skips tiles already occupied by a
+  building, but build does not reciprocate.
+- `remove_building` addresses by a single (x,y,z) coordinate, and when a
+  stockpile's designated rectangle and a workshop's 3x3 footprint happen
+  to share that exact tile, it can resolve to the WRONG building — in
+  this session it deconstructed a Still workshop when the intent was to
+  shrink an overlapping Stockpile at the same reported anchor tile.
+  Confirmed by the building list showing the Still degrade from
+  "built" → "under construction (stage 0/3)" → gone entirely, while the
+  Stockpile it was meant to target stayed listed as built the whole
+  time. Mitigation until fixed upstream: pick a removal coordinate that
+  is UNAMBIGUOUSLY inside only the intended building's own footprint,
+  never a shared/boundary tile, and re-check `buildings` immediately
+  after any remove_building call to confirm the right thing disappeared.
+- Loose items sitting on the floor (e.g. goods already hauled into a
+  stockpile) are INVISIBLE to `look` — the tile renders as plain floor —
+  but still block a new `build` placement with the same generic "tiles
+  blocked, occupied, or unsuitable" error as an actual building conflict.
+  There is no tool today to query item-on-tile occupancy directly.
+  Workaround: if `build` fails on a tile that `look` shows as clean open
+  floor and no building is listed there either, suspect item clutter and
+  try a tile that was NEVER inside any stockpile designation, rather than
+  waiting for hauling to clear it.
+
+## Fort #4 (2026-07-15): brooks hide their water one level down
+
+- A brook renders as walkable surface (grass/floor at surface z) with its
+  actual 7/7 water channel HIDDEN one z below. Surface looks and even a
+  direct cross_section bore can read the channel as "dry hidden soil"
+  (tool gap, fix in flight) — the only honest views were look/elevation
+  AFTER nearby digging revealed the tiles, and DF's own "Dangerous
+  terrain" miner refusal. RULE until the bore fix is live-verified: on
+  any map with open water, elevation-view EVERY z-level you plan to dig
+  (water renders as digits there once revealed) and treat "Dangerous
+  terrain" cancels as a WATER alarm, not an anomaly. Keep a >=2-tile
+  undug bank buffer; never designate adjacent to a known channel.
+- Breaching a river/brook is WORSE than an aquifer pierce: infinite flow,
+  no seep delay. The aquifer protocol does not apply to rivers.
+
+## Fort #4: DFHack updates arrive silently via Steam
+
+- The plugin loader's exact version-string match means a Steam DFHack
+  auto-update (53.15-r1 → r2 mid-day) bricks the plugin with a bare
+  "load failed". stderr.log in the DF folder names both versions —
+  read it FIRST on any load failure. Rebuild = retarget checkout tag +
+  submodule update + rebuild + redeploy (~10 min). A HOT SWAP works
+  with DF running: unload plugin in console → copy DLL → load → connect.
+
+## Caravan access (overseer doctrine, 2026-07-15 — for future fort design)
+
+- The FIRST caravans arrive with pack animals (horses/mules) that can use
+  stairs — an early underground depot reachable only by stairs still
+  trades with them. A full WAGON caravan cannot use stairs at all: it
+  needs a true excavated RAMP path (3-wide, wagon-passable slopes) from
+  the surface down to the depot. Advanced fort design therefore puts the
+  trade depot INSIDE the fort in a defensible chamber, reached by a
+  dug sloped wagon road (designate_dig type=ramp — the verb exists
+  today). This is deliberate later-game work: plan the ramp corridor
+  into the whole-map layout, don't retrofit it. When bridges/levers are
+  live, the wagon road is the natural place for the drawbridge airlock.
+
+## Fort #4: the drink chain, verified recipe
+
+- Full working chain (first success in project history): still built from
+  a log → list_reactions filter=brew → queue_job
+  reaction=BREW_DRINK_FROM_PLANT at the still → needs a brewable PLANT
+  stack AND an EMPTY barrel (embark barrels are all full; queue 2-3
+  barrels at a carpenter first or the job cancels "needs empty food
+  storage item") → drink stack appears, seeds return (+1 seed per plant).
+  Wire lesson: the reaction catalog reads the civ's
+  permitted_reaction_ID vector (resolved indices); *_str vectors in
+  entity raws are load-time staging, EMPTY at runtime — never gate on
+  them (same dead-field class as reaction_flags.FORTRESS_MODE_ENABLED).
+
+## Fort #3 (2026-07-15): farm-plot assignment timing
+
+- assign_crop against a farm plot that is still UNDER CONSTRUCTION returns
+  SUCCESS but does NOT take effect in-game (overseer verified). Always
+  re-assign every plot's crops AFTER `buildings` shows it "built" (stage
+  3/3), and treat any pre-construction assign as a no-op. Watch for
+  PlantSeeds jobs in dwarves verbose as the true "it worked" signal.
+- A plot tile that was undug WALL when build_farm_plot was stamped never
+  registers in the tile→building index: assign_crop at that tile errors
+  "no building" forever even though `buildings` lists the plot at that
+  exact coordinate. Workaround: address the plot via any tile that was
+  already open floor at stamp time. Better: only stamp plots on fully dug
+  floor.
+
+## Fort #3: one pick = one miner (v50)
+
+- Second fort-in-a-row set_labor MINE read-back verified the labor flag
+  sticks — and the second dwarf STILL never mined in 30+ days with
+  hundreds of pending designations. v50 requires a pick IN HAND to dig
+  (soil and stone alike); the labor makes a dwarf willing, the pick makes
+  them able. Default embarks are not guaranteed two picks. No tooling
+  path to more picks exists yet (no smelter/forge build types; no trade
+  depot), so mining throughput is capped at embark pick count. Count
+  picks (or infer from who actually mines) BEFORE planning dig volume.
+  VERDICT (2026-07-15 DFHack-source investigation): pick shortage CONFIRMED
+  as the cause; the work-details hypothesis is REFUTED. v50's engine still
+  reads unit.status.labors[] directly for job dispatch (DFHack's active
+  autolabor plugin writes the same field; our applySetLabor at
+  df_ai_protocol.cpp:420 is correct and sufficient). work_details
+  (plotinfo->labor_info.work_details) are a one-directional Labor-tab UI
+  layer that bulk-WRITES those same flags — the engine never reads them
+  for dispatch, which is also why our flag persisted 30+ days untouched.
+  DF's own dig tooltip states "The miner requires a pick" as a separate
+  constraint. set_labor needs no fix; pick supply is the real ceiling.
+
+## Fort #3: aquifers come in pairs; site the spine by bore triangulation
+
+- One site can carry TWO independent aquifers: a patchy soil aquifer just
+  below the surface (north half only, boundary ≈ one bore apart) and a
+  thick 5-layer stone aquifer far deeper, map-wide. survey_site's per-
+  column "AQUIFER at z=N" only reports the FIRST flagged z per column —
+  bore several columns (cross_section) and compare before believing any
+  single "the aquifer is at z=N" claim.
+- Payoff: triangulating 5 bores let the spine descend 11 z-levels to one
+  level above the deep aquifer with ZERO piercing. Whole-map planning
+  pass before the first dig is worth every call it costs.
+- STONE aquifers seal by SMOOTHING the damp walls (any dwarf, no pick, no
+  boulders) — completely different resource profile from the sand/soil
+  protocol. Not yet exercised live (the pierce never started); the plan
+  stands for next session.
+
+## Fort #3: tool-honesty patterns worth internalizing
+
+- stocks/list filter strings are CASE-SENSITIVE ("weapon" → nothing,
+  "WEAPON" → results). When a filter unexpectedly returns empty, retry
+  uppercase before concluding absence.
+- `look scope=fort` bbox is polluted by AMBIENT tile updates (valley
+  water flow, grass): on some z-levels it renders a distant wild region
+  instead of the fort. Trust it only when the bbox visibly contains your
+  own work; otherwise fall back to look local / elevation.
+- The "not yet connected" connector hint can false-positive when the new
+  designation directly abuts already-carved SPINE STAIRS on the same z
+  (claims nearest open tile is at the map edge). Informational only —
+  verify adjacency yourself before adding connector corridors.
+- Dwarves' nearest-job mining means dig-ahead designations STARVE priority
+  work: the deep pierce sat untouched for 13 days behind ~200 stone-hall
+  tiles. When the overseer orders a specific dig, CANCEL competing bulk
+  designations (they're free to re-issue later) rather than waiting.
+
 ## Aquifer protocol — refinements from Fort #2 (first unsupervised run, SUCCESS)
 
 - The written protocol below WORKS without coaching — Fort #2's single-layer
@@ -224,6 +483,17 @@
   over several small category stockpiles scattered by room. Gets dwarves
   into the habit of hauling goods into one defendable underground spot
   rather than leaving items wherever they were made/found on the surface.
+- More advanced refinement (2026-07-16, once a fort has real industry):
+  one giant "all" stockpile near the top of the fort as the general
+  depot, workshops further down on their own industry level, and
+  SMALLER category-filtered stockpiles placed right next to each
+  workshop, with that workshop's own "give to stockpile" output setting
+  pointed at the nearby pile — finished goods deposit locally instead of
+  hauling all the way back to the general depot every time. Corrected
+  overseer note: a workshop sitting right next to (or surrounded by) a
+  stockpile is good practice for shortening hauls, NOT a requirement or
+  design standard — a workshop works fine standing completely alone,
+  it just means longer walks for whoever's hauling its output.
 
 ## Reconnecting mid-session
 
