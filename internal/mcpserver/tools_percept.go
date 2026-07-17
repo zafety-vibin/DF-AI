@@ -70,10 +70,13 @@ func renderFullOrDownsampled(s *mapview.Slice, header string) string {
 }
 
 // fortFootprintBBox computes the render bbox for scope=fort: the bounding
-// box of all modifications recorded at z, expanded by margin tiles on each
-// side and clamped to the map bounds. ok=false means no modifications were
-// recorded at that z — callers must return a truthful "nothing here yet"
-// message rather than silently falling back to some other crop.
+// box of the player-attributed modifications recorded at z, expanded by
+// margin tiles on each side and clamped to the map bounds. Entries whose
+// classification is ModificationUnknown never define the footprint — only
+// classified player work (dug/channeled/built) does. ok=false means no such
+// modifications were recorded at that z — callers must return a truthful
+// "nothing here yet" message rather than silently falling back to some
+// other crop.
 func fortFootprintBBox(mods *modifications.ModificationOverlay, mapW, mapH uint16, z int16, margin int16) (x0, y0, x1, y1 int16, ok bool) {
 	region := modifications.Region{
 		XMin: 0, XMax: int16(mapW) - 1,
@@ -81,12 +84,14 @@ func fortFootprintBBox(mods *modifications.ModificationOverlay, mapW, mapH uint1
 		ZMin: z, ZMax: z,
 	}
 	hits := mods.GetModificationsInRegion(region, time.Time{})
-	if len(hits) == 0 {
-		return 0, 0, 0, 0, false
-	}
 	xMin, xMax := int16(32767), int16(-32768)
 	yMin, yMax := int16(32767), int16(-32768)
-	for coord := range hits {
+	found := false
+	for coord, info := range hits {
+		if info.Type == modifications.ModificationUnknown {
+			continue
+		}
+		found = true
 		if coord.X < xMin {
 			xMin = coord.X
 		}
@@ -99,6 +104,9 @@ func fortFootprintBBox(mods *modifications.ModificationOverlay, mapW, mapH uint1
 		if coord.Y > yMax {
 			yMax = coord.Y
 		}
+	}
+	if !found {
+		return 0, 0, 0, 0, false
 	}
 	xMin -= margin
 	yMin -= margin

@@ -98,3 +98,30 @@ func TestRenderDownsampledSlice_WaterAndDesignationSurvive(t *testing.T) {
 		t.Fatalf("expected the single output cell to be 'd' (designation majority), got %q in:\n%s", lines[0], out)
 	}
 }
+
+// TestRenderDownsampledSlice_SmoothedCountLine: smoothed tiles get a count
+// line, same convention as aquifer — no glyph paint, since a smooth job
+// doesn't change shape/material and would be meaningless to majority-vote.
+func TestRenderDownsampledSlice_SmoothedCountLine(t *testing.T) {
+	rows := []string{"##", "##"}
+	s := &Slice{Z: 1, X1: 0, Y1: 0, Rows: rows,
+		Smoothed: [][2]int16{{0, 0}, {1, 1}},
+	}
+	out := RenderDownsampledSlice(s, 2)
+	if !strings.Contains(out, "smoothed tiles in source view: 2") {
+		t.Fatalf("smoothed count line missing:\n%s", out)
+	}
+}
+
+// TestRenderDownsampledSlice_FloorItemsCountLine: loose floor items get a
+// count line, same convention as smoothed/aquifer — no glyph paint.
+func TestRenderDownsampledSlice_FloorItemsCountLine(t *testing.T) {
+	rows := []string{"##", "##"}
+	s := &Slice{Z: 1, X1: 0, Y1: 0, Rows: rows,
+		FloorItems: [][3]int16{{0, 0, 1}, {1, 1, 3}},
+	}
+	out := RenderDownsampledSlice(s, 2)
+	if !strings.Contains(out, "tiles with loose items on floor in source view: 2") {
+		t.Fatalf("floor items count line missing:\n%s", out)
+	}
+}

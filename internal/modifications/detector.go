@@ -7,11 +7,19 @@ import (
 	"github.com/df-ai/orchestrator/internal/protocol"
 )
 
+// baselineTile is the first shape-bearing observation of a tile: the flag
+// byte drives classification; the tiletype is kept only for the
+// ModificationInfo Old/NewTileType audit trail.
+type baselineTile struct {
+	TileType uint16
+	Flags    uint8
+}
+
 // Detector tracks tile modifications by comparing against baseline state
-// Stores first-seen tile type per coordinate to detect player/AI changes
+// (first shape-bearing observation per coordinate) to detect player/AI changes
 type Detector struct {
 	mu              sync.RWMutex
-	baseline        map[Coordinate]uint16 // First-seen tile type per coordinate
+	baseline        map[Coordinate]baselineTile
 	overlay         *ModificationOverlay
 	modificationsMu sync.Mutex // Separate lock for modification processing
 }
@@ -19,85 +27,44 @@ type Detector struct {
 // NewDetector creates a new modification detector
 func NewDetector(overlay *ModificationOverlay) *Detector {
 	return &Detector{
-		baseline: make(map[Coordinate]uint16),
+		baseline: make(map[Coordinate]baselineTile),
 		overlay:  overlay,
 	}
 }
 
-// InferModificationType determines the type of modification based on tile type changes
-// Uses heuristics to classify common Dwarf Fortress modifications
-func InferModificationType(oldType, newType uint16) ModificationType {
-	// This is a simplified heuristic - actual DF tile types are complex
-	// We use ranges to classify tile types:
-	// 0-349: Natural walls (stone, soil, etc.)
-	// 350-399: Natural floors
-	// 400-449: Constructed walls
-	// 450-499: Constructed floors
-	// 500-549: Ramps
-	// 550-599: Open space
+// shapeMask isolates the mutually exclusive shape bits of a tile flag byte.
+// The hidden/discovered/designated/liquid bits churn for reasons unrelated
+// to player work (fog-of-war reveals, water depth) and must never enter
+// classification.
+const shapeMask = protocol.FlagWall | protocol.FlagFloor | protocol.FlagVoid
 
-	oldIsWall := oldType < 350
-	oldIsFloor := oldType >= 350 && oldType < 400
-	oldIsBuiltWall := oldType >= 400 && oldType < 450
-	oldIsBuiltFloor := oldType >= 450 && oldType < 500
-	oldIsSpace := oldType >= 550
-
-	newIsWall := newType < 350
-	newIsFloor := newType >= 350 && newType < 400
-	newIsBuiltWall := newType >= 400 && newType < 450
-	newIsBuiltFloor := newType >= 450 && newType < 500
-	newIsRamp := newType >= 500 && newType < 550
-	newIsSpace := newType >= 550
-
-	// Detect digging: Wall/Rock -> Floor
-	if oldIsWall && newIsFloor {
+// InferModificationTypeFromFlags classifies a tile change by its shape-bit
+// transition (wall/floor/void). The plugin computes these bits from
+// df::tiletype_shape, which is authoritative — unlike raw tiletype values,
+// where ambient simulation churn (grass dark<->light cycles, murky pools
+// drying/refilling) changes the tiletype without changing the shape. Any
+// same-shape transition classifies Unknown, which also means smoothing and
+// engraving are deliberately NOT inferred from deltas: a smoothed wall is
+// still a wall, indistinguishable here from ambient tiletype churn.
+func InferModificationTypeFromFlags(oldFlags, newFlags uint8) ModificationType {
+	oldShape := oldFlags & shapeMask
+	newShape := newFlags & shapeMask
+	switch {
+	case oldShape == protocol.FlagWall && newShape == protocol.FlagFloor:
 		return ModificationDug
-	}
-
-	// Detect wall construction: Floor -> Wall
-	if oldIsFloor && (newIsBuiltWall || newIsWall) {
+	case oldShape == protocol.FlagWall && newShape == protocol.FlagVoid:
+		return ModificationChanneled
+	case oldShape == protocol.FlagFloor && newShape == protocol.FlagVoid:
+		return ModificationChanneled
+	case oldShape == protocol.FlagFloor && newShape == protocol.FlagWall:
 		return ModificationBuiltWall
-	}
-
-	// Detect floor construction: Space -> Floor
-	if oldIsSpace && (newIsBuiltFloor || newIsFloor) {
+	case oldShape == protocol.FlagVoid && newShape == protocol.FlagWall:
+		return ModificationBuiltWall
+	case oldShape == protocol.FlagVoid && newShape == protocol.FlagFloor:
 		return ModificationBuiltFloor
 	}
-
-	// Detect ramp construction: Floor -> Ramp
-	if oldIsFloor && newIsRamp {
-		return ModificationBuiltRamp
-	}
-
-	// Detect channeling: Floor -> Space
-	if oldIsFloor && newIsSpace {
-		return ModificationChanneled
-	}
-
-	// Detect destruction: Built -> anything else
-	if (oldIsBuiltWall || oldIsBuiltFloor) && !(newIsBuiltWall || newIsBuiltFloor) {
-		return ModificationDestroyed
-	}
-
-	// Additional heuristics based on tile type changes
-	// Smoothing and engraving are typically small increments within same material
-	if oldType > 0 && newType > 0 {
-		diff := int(newType) - int(oldType)
-		// If same category but higher type number, might be smoothing/engraving
-		if diff > 0 && diff < 10 {
-			if oldIsWall && newIsWall {
-				return ModificationSmoothed
-			}
-			if oldIsFloor && newIsFloor {
-				// Check if it's a significant upgrade (engraving)
-				if diff > 5 {
-					return ModificationEngraved
-				}
-				return ModificationSmoothed
-			}
-		}
-	}
-
+	// Same shape, or one side has no shape bit at all (unloaded/unallocated
+	// block placeholder) — no basis for attributing a player modification.
 	return ModificationUnknown
 }
 
@@ -115,24 +82,43 @@ func (d *Detector) DetectModifications(tiles []protocol.TileState) int {
 
 		// Get or set baseline
 		d.mu.Lock()
-		baselineType, hasBaseline := d.baseline[coord]
-		if !hasBaseline {
-			// First time seeing this tile - record as baseline
-			d.baseline[coord] = tile.TileType
-			d.mu.Unlock()
-			continue
+		base, hasBaseline := d.baseline[coord]
+		wasShapeless := hasBaseline && base.Flags&shapeMask == 0
+		if !hasBaseline || wasShapeless {
+			// The first shape-bearing observation becomes the real
+			// baseline going forward, whether this is a true first
+			// sighting or the coordinate's earlier sighting(s) were all
+			// shapeless (FLAG_HIDDEN only, unallocated-block placeholder).
+			d.baseline[coord] = baselineTile{TileType: tile.TileType, Flags: tile.Flags}
 		}
 		d.mu.Unlock()
 
-		// Check if tile type has changed from baseline
-		if tile.TileType == baselineType {
-			continue // No modification
+		if !hasBaseline {
+			// True first sighting — nothing to compare against yet.
+			continue
 		}
 
-		// Infer modification type
-		modType := InferModificationType(baselineType, tile.TileType)
+		// DFHack's MapCache can observe a block's tiles but never forces DF
+		// to generate one that doesn't exist yet (see tile_extractor.cpp
+		// compute_tile_flags): a deep, never-visited block can sit as a
+		// shapeless HIDDEN placeholder right through FULL_STATE, and only
+		// materializes once a dig job actually touches it — at which point
+		// the very first shape-bearing delta the plugin ever sends for that
+		// tile can already BE the dug floor, with no intervening
+		// wall-shaped observation on the wire. A never-materialized block
+		// is virtually always solid rock, so treat a shapeless baseline as
+		// an implied wall for classification; without this, a fort's first
+		// dig into a fresh z-level is silently swallowed as "just a
+		// rebaseline" and nothing is ever recorded.
+		baseFlags := base.Flags
+		if wasShapeless {
+			baseFlags = protocol.FlagWall
+		}
+
+		// Infer modification type from the shape-bit transition
+		modType := InferModificationTypeFromFlags(baseFlags, tile.Flags)
 		if modType == ModificationUnknown {
-			continue // Ignore unknown modifications
+			continue // Same shape (or unclassifiable) — not player work
 		}
 
 		// Check if we already tracked this modification
@@ -143,8 +129,8 @@ func (d *Detector) DetectModifications(tiles []protocol.TileState) int {
 				updatedInfo := existingInfo
 				updatedInfo.NewTileType = tile.TileType
 				updatedInfo.LastVerified = now
-				// Re-infer type based on original baseline and new tile type
-				updatedInfo.Type = InferModificationType(existingInfo.OldTileType, tile.TileType)
+				// Re-infer type against the original baseline shape
+				updatedInfo.Type = modType
 				d.overlay.Add(coord, updatedInfo)
 			}
 			continue
@@ -153,7 +139,7 @@ func (d *Detector) DetectModifications(tiles []protocol.TileState) int {
 		// Record new modification
 		modInfo := ModificationInfo{
 			Type:         modType,
-			OldTileType:  baselineType,
+			OldTileType:  base.TileType,
 			NewTileType:  tile.TileType,
 			DetectedAt:   now,
 			CommandID:    0, // Will be linked later if from a command
@@ -178,12 +164,12 @@ func (d *Detector) InitializeBaseline(tiles []protocol.TileState) {
 	defer d.mu.Unlock()
 
 	// Clear existing baseline
-	d.baseline = make(map[Coordinate]uint16)
+	d.baseline = make(map[Coordinate]baselineTile, len(tiles))
 
 	// Record all tiles as baseline
 	for _, tile := range tiles {
 		coord := Coordinate{X: tile.X, Y: tile.Y, Z: tile.Z}
-		d.baseline[coord] = tile.TileType
+		d.baseline[coord] = baselineTile{TileType: tile.TileType, Flags: tile.Flags}
 	}
 }
 

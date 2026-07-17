@@ -91,6 +91,13 @@ constexpr uint8_t COMMAND_TYPE_UNASSIGN_LODGING  = 0x14;
 constexpr uint8_t COMMAND_TYPE_REMOVE_ZONE       = 0x15;
 constexpr uint8_t COMMAND_TYPE_BUILD_FARM_PLOT   = 0x16;
 constexpr uint8_t COMMAND_TYPE_SET_FARM_CROP     = 0x17;
+constexpr uint8_t COMMAND_TYPE_DESIGNATE_BURROW  = 0x18;
+constexpr uint8_t COMMAND_TYPE_REMOVE_BURROW     = 0x19;
+constexpr uint8_t COMMAND_TYPE_ASSIGN_BURROW     = 0x1A;
+constexpr uint8_t COMMAND_TYPE_SET_ALERT         = 0x1B;
+constexpr uint8_t COMMAND_TYPE_LINK_BUILDING     = 0x1C;
+constexpr uint8_t COMMAND_TYPE_PULL_LEVER        = 0x1D;
+constexpr uint8_t COMMAND_TYPE_BUILD_BRIDGE      = 0x1E;
 
 // Location types -- DF-AI's own wire values for df::abstract_building_type's
 // INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL. A Location is created FROM an
@@ -252,8 +259,11 @@ constexpr uint8_t ORDER_TYPE_BY_NAME       = 0x00;
 constexpr uint8_t ORDER_TYPE_CUSTOM_REACTION = 0x0D;
 
 // BuildType constants — kept in sync with internal/protocol/message.go.
-// Ranges: 0x01-0x0F constructions, 0x10-0x2F workshops, 0x30-0x4F furniture,
-// 0x50-0x6F doors/hatches.
+// Ranges: 0x01-0x0F constructions, 0x10-0x2F workshops (incl.
+// MetalsmithsForge — DF models it as a Workshop subtype, not its own
+// building_type), 0x30-0x4F furniture, 0x50-0x6F doors/hatches,
+// 0x70-0x7F furnaces (df::building_type::Furnace — a top-level type
+// distinct from Workshop), 0x80-0x8F trade depot (forced 5x5 by DF).
 constexpr uint8_t BUILD_TYPE_WALL          = 0x01;
 constexpr uint8_t BUILD_TYPE_FLOOR         = 0x02;
 constexpr uint8_t BUILD_TYPE_UP_STAIR      = 0x03;
@@ -270,6 +280,7 @@ constexpr uint8_t BUILD_TYPE_WS_MECHANIC   = 0x15;
 constexpr uint8_t BUILD_TYPE_WS_BUTCHER    = 0x16;
 constexpr uint8_t BUILD_TYPE_WS_KITCHEN    = 0x17;
 constexpr uint8_t BUILD_TYPE_WS_FISHERY    = 0x18;
+constexpr uint8_t BUILD_TYPE_WS_METALSMITH = 0x19;
 
 constexpr uint8_t BUILD_TYPE_BED      = 0x30;
 constexpr uint8_t BUILD_TYPE_TABLE    = 0x31;
@@ -277,13 +288,36 @@ constexpr uint8_t BUILD_TYPE_CHAIR    = 0x32;
 constexpr uint8_t BUILD_TYPE_CABINET  = 0x33;
 constexpr uint8_t BUILD_TYPE_COFFER   = 0x34;
 
-constexpr uint8_t BUILD_TYPE_DOOR     = 0x50;
-constexpr uint8_t BUILD_TYPE_HATCH    = 0x51;
+constexpr uint8_t BUILD_TYPE_DOOR      = 0x50;
+constexpr uint8_t BUILD_TYPE_HATCH     = 0x51;
+constexpr uint8_t BUILD_TYPE_LEVER     = 0x52; // df::building_type::Trap, trap_type::Lever -- needs 1 mechanism (TRAPPARTS)
+constexpr uint8_t BUILD_TYPE_FLOODGATE = 0x53; // df::building_type::Floodgate -- needs 1 FLOODGATE item, no mechanism at build time
+
+constexpr uint8_t BUILD_TYPE_FURNACE_SMELTER = 0x70;
+constexpr uint8_t BUILD_TYPE_FURNACE_WOOD    = 0x71;
+
+constexpr uint8_t BUILD_TYPE_TRADE_DEPOT = 0x80;
 
 inline bool isBuildTypeWorkshop(uint8_t t)     { return t >= 0x10 && t < 0x30; }
 inline bool isBuildTypeFurniture(uint8_t t)    { return t >= 0x30 && t < 0x50; }
 inline bool isBuildTypeConstruction(uint8_t t) { return t >= 0x01 && t < 0x10; }
 inline bool isBuildTypeDoor(uint8_t t)         { return t >= 0x50 && t < 0x70; }
+inline bool isBuildTypeFurnace(uint8_t t)      { return t >= 0x70 && t < 0x80; }
+inline bool isBuildTypeDepot(uint8_t t)        { return t >= 0x80 && t < 0x90; }
+
+// Bridge direction byte -- COMMAND_TYPE_BUILD_BRIDGE's trailing byte.
+// DF-AI's own wire values, translated by the plugin (buildings.cpp:
+// placeBridge) to df::building_bridgest::T_direction (Retracting=-1,
+// Left=0, Right=1, Up=2, Down=3 -- dfhack-build/library/include/df/
+// building_bridgest.h). Names describe the visible effect confirmed via
+// dfhack-build/scripts/internal/quickfort/build.lua:468-478: Up raises to
+// North, Right raises to East, Down raises to South, Left raises to West;
+// Retracting slides the bridge away instead of raising it vertically.
+constexpr uint8_t BRIDGE_DIR_RETRACT = 0x00;
+constexpr uint8_t BRIDGE_DIR_RAISE_N = 0x01;
+constexpr uint8_t BRIDGE_DIR_RAISE_S = 0x02;
+constexpr uint8_t BRIDGE_DIR_RAISE_E = 0x03;
+constexpr uint8_t BRIDGE_DIR_RAISE_W = 0x04;
 
 // ACK status codes
 constexpr uint8_t ACK_STATUS_SUCCESS = 0x00;

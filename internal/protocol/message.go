@@ -309,6 +309,13 @@ const (
 	CommandTypeRemoveZone      uint8 = 0x15 // Deconstruct the civzone at a tile (rejected if it founds a Location)
 	CommandTypeBuildFarmPlot   uint8 = 0x16 // Designate a rectangular farm plot (extent-shaped, like a stockpile)
 	CommandTypeSetFarmCrop     uint8 = 0x17 // Assign a crop (or clear) to one or all season slots of a farm plot
+	CommandTypeDesignateBurrow uint8 = 0x18 // Create (if new) a named burrow and paint a tile rect into it
+	CommandTypeRemoveBurrow    uint8 = 0x19 // Delete a named burrow entirely (unassigns units/tiles first)
+	CommandTypeAssignBurrow    uint8 = 0x1A // Assign/unassign one unit, or all current citizens, to/from a named burrow
+	CommandTypeSetAlert        uint8 = 0x1B // Sound/clear the v50 civilian alert against a named burrow
+	CommandTypeLinkBuilding    uint8 = 0x1C // Wire a lever to a trigger target (bridge/floodgate/door/hatch)
+	CommandTypePullLever       uint8 = 0x1D // Queue DF's real PullLever job against a built lever
+	CommandTypeBuildBridge     uint8 = 0x1E // Designate a rectangular bridge with a raise/retract direction
 )
 
 // Labor constants for the SET_LABOR command. The value IS the real
@@ -506,11 +513,18 @@ const (
 //	0x01 – 0x0F : Constructions (wall, floor, ramp, stairs) — built from
 //	              a single material reagent against a tile.
 //	0x10 – 0x2F : Workshops — built from one of several material reagents
-//	              over a multi-tile footprint.
+//	              over a multi-tile footprint. This includes
+//	              MetalsmithsForge: DF models it as a Workshop subtype
+//	              (df::workshop_type), not a separate building_type.
 //	0x30 – 0x4F : Furniture — single-tile placed buildings using one item
 //	              from a stockpile.
 //	0x50 – 0x6F : Doors / Hatches — single-tile portal buildings.
-//	0x70 – 0x7F : Reserved for stockpiles and zones (future).
+//	0x70 – 0x7F : Furnaces — df::building_type::Furnace (a top-level type
+//	              distinct from Workshop, DFHack source-verified in
+//	              df.building.xml). Multi-tile footprint like a workshop,
+//	              but its own subtype enum (df::furnace_type).
+//	0x80 – 0x8F : Trade Depot — its own building_type, forced 5x5 by DF
+//	              (Buildings::getCorrectSize), not a workshop/furnace.
 //
 // Add new values at the end of each range as plugin support expands.
 const (
@@ -532,6 +546,7 @@ const (
 	BuildTypeWorkshopButcher     uint8 = 0x16
 	BuildTypeWorkshopKitchen     uint8 = 0x17
 	BuildTypeWorkshopFishery     uint8 = 0x18
+	BuildTypeWorkshopMetalsmith  uint8 = 0x19
 
 	// Furniture (single-tile, requires an item from stockpile).
 	BuildTypeBed     uint8 = 0x30
@@ -543,6 +558,39 @@ const (
 	// Doors / hatches.
 	BuildTypeDoor  uint8 = 0x50
 	BuildTypeHatch uint8 = 0x51
+
+	// Furnaces (3x3, require a fire-safe build material).
+	BuildTypeFurnaceSmelter uint8 = 0x70
+	BuildTypeFurnaceWood    uint8 = 0x71
+
+	// Trade depot (5x5, forced by DF regardless of requested size).
+	BuildTypeTradeDepot uint8 = 0x80
+)
+
+// BuildTypeLever and BuildTypeFloodgate share the doors/hatches wire range
+// (0x50-0x6F, isBuildTypeDoor) — both are 1x1 ACTUAL buildings taking one
+// specific pre-made item, same shape as Door/Hatch (dfhack-plugin/
+// buildings.cpp: placeDoor). Lever needs 1 mechanism (TRAPPARTS) at build
+// time; Floodgate needs 1 FLOODGATE item and consumes NO mechanism until
+// it is later linked to a lever (see LinkBuildingDesignation).
+const (
+	BuildTypeLever     uint8 = 0x52
+	BuildTypeFloodgate uint8 = 0x53
+)
+
+// BridgeDirection* constants for BuildBridgeDesignation.Direction — DF-AI's
+// own wire values, translated by the plugin (buildings.cpp: placeBridge)
+// to df::building_bridgest::T_direction (Retracting=-1, Left=0, Right=1,
+// Up=2, Down=3). Matches dfhack-plugin/protocol.h BRIDGE_DIR_* constants.
+// Names describe the visible effect: Up raises to North, Right raises to
+// East, Down raises to South, Left raises to West; Retract slides the
+// bridge away instead of raising it vertically.
+const (
+	BridgeDirectionRetract uint8 = 0x00
+	BridgeDirectionRaiseN  uint8 = 0x01
+	BridgeDirectionRaiseS  uint8 = 0x02
+	BridgeDirectionRaiseE  uint8 = 0x03
+	BridgeDirectionRaiseW  uint8 = 0x04
 )
 
 // IsBuildTypeWorkshop reports whether the given BuildType refers to a
@@ -560,6 +608,14 @@ func IsBuildTypeConstruction(t uint8) bool { return t >= 0x01 && t < 0x10 }
 // IsBuildTypeDoor reports whether the given BuildType refers to a door
 // or hatch.
 func IsBuildTypeDoor(t uint8) bool { return t >= 0x50 && t < 0x70 }
+
+// IsBuildTypeFurnace reports whether the given BuildType refers to a
+// furnace (df::building_type::Furnace — Smelter, WoodFurnace, ...).
+func IsBuildTypeFurnace(t uint8) bool { return t >= 0x70 && t < 0x80 }
+
+// IsBuildTypeDepot reports whether the given BuildType refers to a
+// trade depot.
+func IsBuildTypeDepot(t uint8) bool { return t >= 0x80 && t < 0x90 }
 
 // Region represents a 3D bounding box for designations
 type Region struct {
@@ -624,6 +680,63 @@ type SetFarmCropDesignation struct {
 	CropName string
 }
 
+// DesignateBurrowDesignation creates the burrow named Name if it doesn't
+// exist yet (findByName is exact, case-sensitive — matches DFHack's own
+// dfhack.burrows.findByName), then paints the tile rect (X1,Y1,Z1)-(X2,Y2,Z2)
+// into it. Repeatable: calling again with the same Name adds more tiles to
+// the same burrow instead of creating a second one. Z1 may differ from Z2
+// for a cheap multi-level paint in one call; DF map bounds are a single
+// rectangular prism so if both corners are in-bounds the whole enclosed box
+// is too — no per-tile bounds skipping needed once the corners are
+// validated. Burrows paint through hidden tiles by design (same house rule
+// as dig designations — DF's own burrow UI does this too), so there is no
+// floor/walkability check unlike DesignateZone.
+type DesignateBurrowDesignation struct {
+	Name       string
+	X1, Y1, Z1 int16
+	X2, Y2, Z2 int16
+}
+
+// RemoveBurrowDesignation deletes the named burrow entirely — clears its
+// tiles and unit assignments first (matching quickfort's burrow.lua
+// deletion path), detaches it from the civilian alert's burrow set if it
+// was a member, then frees the struct and removes it from
+// plotinfo->burrows.list. Not reversible; a burrow removed this way has no
+// name-based way back (a fresh designate_burrow with the same name creates
+// an unrelated new burrow with a new id).
+type RemoveBurrowDesignation struct {
+	Name string
+}
+
+// AssignBurrowDesignation assigns (Assign=true) or unassigns (Assign=false)
+// units to/from the named burrow. Set AllCitizens=true to target every
+// current citizen (Units::isCitizen — sane, non-dead, current-fort) in one
+// call instead of a single UnitID; UnitID is ignored when AllCitizens=true.
+type AssignBurrowDesignation struct {
+	Name        string
+	Assign      bool
+	AllCitizens bool
+	UnitID      int32
+}
+
+// SetAlertDesignation sounds (Active=true) or clears (Active=false) DF's
+// v50 civilian alert against the named burrow. Active=true adds the burrow
+// to the alert's restriction set (if not already a member) and turns the
+// alarm on if it wasn't already sounding; Active=false removes the burrow
+// from that set and auto-clears the alarm if the set becomes empty as a
+// result (mirrors scripts/gui/civ-alert.lua's remove_civalert_burrow
+// exactly). This is DF's vanilla civilian-alert mechanism (see
+// dfhack-build/scripts/docs/gui/civ-alert.rst): while active, ALL
+// non-military citizens rush to the burrow and are confined there,
+// regardless of whether AssignBurrowDesignation was ever used on it — no
+// per-unit assignment is required or checked. Deactivate promptly once the
+// danger passes; leaving it active keeps every civilian confined and can
+// starve/unhappy them (per the same doc).
+type SetAlertDesignation struct {
+	Name   string
+	Active bool
+}
+
 // CreateLocationDesignation targets the MeetingHall civzone at (X,Y,Z)
 // and converts it into a Location of LocationType. Profession is
 // required only when LocationType is LocationTypeGuildhall.
@@ -645,6 +758,36 @@ type AssignLodgingDesignation struct {
 // (BedroomX,BedroomY,BedroomZ) from whichever tavern it's lodging for.
 type UnassignLodgingDesignation struct {
 	BedroomX, BedroomY, BedroomZ int16
+}
+
+// LinkBuildingDesignation wires the lever at (LeverX,LeverY,LeverZ) to the
+// trigger target (bridge/floodgate/door/hatch) at
+// (TargetX,TargetY,TargetZ) — DF's mechanism-linking mechanism. Consumes
+// two free mechanisms (TRAPPARTS items) from the fort's stockpiles;
+// rejected with a truthful error if fewer than two are available, if
+// either building is still under construction, or if the target isn't a
+// supported trigger type.
+type LinkBuildingDesignation struct {
+	LeverX, LeverY, LeverZ    int16
+	TargetX, TargetY, TargetZ int16
+}
+
+// PullLeverDesignation queues DF's real PullLever job against the lever
+// at (X,Y,Z).
+type PullLeverDesignation struct {
+	X, Y, Z int16
+}
+
+// BuildBridgeDesignation designates a rectangular bridge at
+// (X1,Y1)-(X2,Y2) on level Z, raising/retracting toward Direction
+// (BridgeDirection* constants). Bridge is rectangle-shaped (like
+// FarmPlotDesignation/StockpileDesignation) rather than a fixed-footprint
+// building, and needs its own wire command because BuildDesignation's
+// single-tile shape has no room for a second corner or a direction byte.
+type BuildBridgeDesignation struct {
+	X1, Y1, Z int16
+	X2, Y2    int16
+	Direction uint8
 }
 
 // UnsuspendDesignation represents a single-tile unsuspend command, used to
@@ -775,6 +918,15 @@ type CommandMessage struct {
 	FarmPlot     FarmPlotDesignation       // For BUILD_FARM_PLOT commands
 	SetFarmCrop  SetFarmCropDesignation    // For SET_FARM_CROP commands
 
+	DesignateBurrow DesignateBurrowDesignation // For DESIGNATE_BURROW commands
+	RemoveBurrow    RemoveBurrowDesignation    // For REMOVE_BURROW commands
+	AssignBurrow    AssignBurrowDesignation    // For ASSIGN_BURROW commands
+	SetAlert        SetAlertDesignation        // For SET_ALERT commands
+
+	LinkBuilding LinkBuildingDesignation // For LINK_BUILDING commands
+	PullLever    PullLeverDesignation    // For PULL_LEVER commands
+	BuildBridge  BuildBridgeDesignation  // For BUILD_BRIDGE commands
+
 	CreateLocation  CreateLocationDesignation  // For CREATE_LOCATION commands
 	AssignLodging   AssignLodgingDesignation   // For ASSIGN_LODGING commands
 	UnassignLodging UnassignLodgingDesignation // For UNASSIGN_LODGING commands
@@ -790,7 +942,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeSetFarmCrop {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeBuildBridge {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -812,7 +964,9 @@ func (m *CommandMessage) Validate() error {
 		if !IsBuildTypeConstruction(m.Build.BuildType) &&
 			!IsBuildTypeWorkshop(m.Build.BuildType) &&
 			!IsBuildTypeFurniture(m.Build.BuildType) &&
-			!IsBuildTypeDoor(m.Build.BuildType) {
+			!IsBuildTypeDoor(m.Build.BuildType) &&
+			!IsBuildTypeFurnace(m.Build.BuildType) &&
+			!IsBuildTypeDepot(m.Build.BuildType) {
 			return fmt.Errorf("invalid build type: 0x%02X", m.Build.BuildType)
 		}
 		if m.Build.Material > MaterialClassBlocks {
@@ -846,6 +1000,32 @@ func (m *CommandMessage) Validate() error {
 		}
 		if m.SetFarmCrop.CropName == "" {
 			return errors.New("set_farm_crop requires a non-empty CropName (a plant raw token/display name, or \"fallow\")")
+		}
+	case CommandTypeDesignateBurrow:
+		if m.DesignateBurrow.Name == "" {
+			return errors.New("designate_burrow requires a non-empty Name")
+		}
+		if m.DesignateBurrow.X2 < m.DesignateBurrow.X1 || m.DesignateBurrow.Y2 < m.DesignateBurrow.Y1 || m.DesignateBurrow.Z2 < m.DesignateBurrow.Z1 {
+			return errors.New("invalid region: end coordinates must be >= start coordinates")
+		}
+	case CommandTypeRemoveBurrow:
+		if m.RemoveBurrow.Name == "" {
+			return errors.New("remove_burrow requires a non-empty Name")
+		}
+	case CommandTypeAssignBurrow:
+		if m.AssignBurrow.Name == "" {
+			return errors.New("assign_burrow requires a non-empty Name")
+		}
+	case CommandTypeSetAlert:
+		if m.SetAlert.Name == "" {
+			return errors.New("set_alert requires a non-empty Name")
+		}
+	case CommandTypeBuildBridge:
+		if m.BuildBridge.X2 < m.BuildBridge.X1 || m.BuildBridge.Y2 < m.BuildBridge.Y1 {
+			return errors.New("invalid region: end coordinates must be >= start coordinates")
+		}
+		if m.BuildBridge.Direction > BridgeDirectionRaiseW {
+			return fmt.Errorf("invalid bridge direction: 0x%02X", m.BuildBridge.Direction)
 		}
 	}
 

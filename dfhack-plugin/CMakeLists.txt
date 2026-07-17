@@ -43,10 +43,12 @@ DFHACK_PLUGIN(df_ai_protocol
     buildings.cpp
     zones.cpp
     locations.cpp
+    burrows.cpp
     work_orders.cpp
+    mechanisms.cpp
     queries.cpp
     announcements.cpp
-    LINK_LIBRARIES clsocket
+    LINK_LIBRARIES clsocket lua
 )
 
 # C++20 — DFHack 53.x internal headers (MiscUtils.h, BitArray.h, Units.h)

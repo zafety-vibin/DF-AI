@@ -28,6 +28,21 @@ func TestCapRawJSON(t *testing.T) {
 	}
 }
 
+func TestStocksQueryArgs(t *testing.T) {
+	if got := stocksQueryArgs(""); got != "{}" {
+		t.Fatalf("empty category must send empty args, got %q", got)
+	}
+	// The plugin matches category case-SENSITIVELY against uppercase
+	// ENUM_KEY_STR names — the documented lowercase examples only work
+	// because this helper uppercases before sending.
+	if got := stocksQueryArgs("boulder"); got != `{"category":"BOULDER"}` {
+		t.Fatalf("category must be uppercased for the plugin, got %q", got)
+	}
+	if got := stocksQueryArgs("Wood"); got != `{"category":"WOOD"}` {
+		t.Fatalf("mixed case must normalize, got %q", got)
+	}
+}
+
 func TestRenderBuildings(t *testing.T) {
 	raw := []byte(`{"buildings":[
 		{"type":"carpenter workshop","x":50,"y":50,"z":139,"stage":0,"max_stage":3,"done":false},
@@ -100,6 +115,37 @@ func TestRenderStocksDetailed(t *testing.T) {
 	}
 }
 
+func TestRenderStocksInUse(t *testing.T) {
+	raw := []byte(`{"items":[
+		{"item_type":"BED","material":"oak","count":1,"in_use":3},
+		{"item_type":"DOOR","material":"bronze","count":0,"in_use":2}
+	]}`)
+
+	detailed := renderStocks(raw, true, 0)
+	if !strings.Contains(detailed, "- BED: oak x1 (+3 built-in)\n") {
+		t.Fatalf("detailed in_use note wrong:\n%s", detailed)
+	}
+	if !strings.Contains(detailed, "- DOOR: bronze x0 (+2 built-in)\n") {
+		t.Fatalf("a zero free count must still show its in_use note:\n%s", detailed)
+	}
+
+	agg := renderStocks(raw, false, 0)
+	if !strings.Contains(agg, "- BED: 1 total across 1 material (+3 built-in); top: oak 1") {
+		t.Fatalf("aggregated in_use note wrong:\n%s", agg)
+	}
+	if !strings.Contains(agg, "- DOOR: 0 total across 1 material (+2 built-in); top: bronze 0") {
+		t.Fatalf("aggregated in_use note for an all-built-in type wrong:\n%s", agg)
+	}
+
+	noInUse := []byte(`{"items":[{"item_type":"TABLE","material":"granite","count":5}]}`)
+	if out := renderStocks(noInUse, true, 0); strings.Contains(out, "built-in") {
+		t.Fatalf("absent in_use must not print a note:\n%s", out)
+	}
+	if out := renderStocks(noInUse, false, 0); strings.Contains(out, "built-in") {
+		t.Fatalf("absent in_use must not print a note in aggregate view either:\n%s", out)
+	}
+}
+
 func TestRenderStocksMinCount(t *testing.T) {
 	raw := []byte(`{"items":[
 		{"item_type":"BOULDER","material":"shale","count":20},
@@ -115,6 +161,34 @@ func TestRenderStocksMinCount(t *testing.T) {
 
 	if out := renderStocks([]byte(`{"items":[{"item_type":"BOULDER","material":"chalk","count":2}]}`), false, 5); out != "No stock items (or all below min_count)." {
 		t.Fatalf("all-filtered response wrong: %q", out)
+	}
+}
+
+// TestRenderStocksMinCountSurfacesInUse: a fully-built-in entry (Count=0,
+// InUse>0) must survive a min_count filter even though its free count is
+// below the threshold — min_count suppresses free-stock noise, not
+// fort-existence, and a caller filtering on it must still be able to tell
+// "this fort has some of these, all built in."
+func TestRenderStocksMinCountSurfacesInUse(t *testing.T) {
+	raw := []byte(`{"items":[
+		{"item_type":"TABLE","material":"granite","count":0,"in_use":3},
+		{"item_type":"TABLE","material":"oak","count":1}
+	]}`)
+
+	detailed := renderStocks(raw, true, 5)
+	if !strings.Contains(detailed, "- TABLE: granite x0 (+3 built-in)\n") {
+		t.Fatalf("fully-built-in entry must survive min_count in detailed view:\n%s", detailed)
+	}
+	if strings.Contains(detailed, "oak x1") {
+		t.Fatalf("free-only entry below min_count must still be filtered in detailed view:\n%s", detailed)
+	}
+
+	agg := renderStocks(raw, false, 5)
+	if !strings.Contains(agg, "(+3 built-in)") {
+		t.Fatalf("fully-built-in entry must survive min_count in aggregated view:\n%s", agg)
+	}
+	if strings.Contains(agg, "oak") {
+		t.Fatalf("free-only entry below min_count must still be filtered in aggregated view:\n%s", agg)
 	}
 }
 

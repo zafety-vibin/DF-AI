@@ -62,9 +62,14 @@ bool applyRemoveZone(int16_t x, int16_t y, int16_t z, std::string &error);
 bool applySetLabor(int32_t unitID, uint8_t laborID, bool enable, std::string &error);
 
 // Forward declarations for functions in buildings.cpp
-bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint32_t groupMask, std::string &error);
+bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint32_t groupMask, std::string &error, bool &partial);
 bool placeFarmPlot(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
 bool applySetFarmCrop(int16_t x, int16_t y, int16_t z, uint8_t season, const std::string &cropName, std::string &error);
+bool placeBridge(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint8_t wireDirection, std::string &error);
+
+// Forward declarations for functions from mechanisms.cpp
+bool applyPullLever(int16_t x, int16_t y, int16_t z, std::string &error);
+bool applyLinkBuilding(int16_t leverX, int16_t leverY, int16_t leverZ, int16_t targetX, int16_t targetY, int16_t targetZ, std::string &error);
 
 // Forward declarations for functions from zones.cpp
 bool applyDesignateZone(uint8_t zoneType, int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
@@ -75,6 +80,12 @@ bool applyUnassignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::str
 bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, const std::string &profession, std::string &error);
 bool applyAssignLodging(int16_t tavernX, int16_t tavernY, int16_t tavernZ, int16_t bedroomX, int16_t bedroomY, int16_t bedroomZ, std::string &error);
 bool applyUnassignLodging(int16_t bedroomX, int16_t bedroomY, int16_t bedroomZ, std::string &error);
+
+// Forward declarations from burrows.cpp
+bool applyDesignateBurrow(const std::string &name, int16_t x1, int16_t y1, int16_t z1, int16_t x2, int16_t y2, int16_t z2, std::string &error);
+bool applyRemoveBurrow(const std::string &name, std::string &error);
+bool applyAssignBurrow(const std::string &name, bool assign, bool allCitizens, int32_t unitID, std::string &error);
+bool applySetAlert(const std::string &name, bool active, std::string &error);
 
 // Forward declaration for function from queries.cpp
 void executeQuery(uint32_t queryID, const std::string &name, const std::string &args);
@@ -352,14 +363,63 @@ bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error)
     }
 
     df::coord pos(x, y, z);
-    df::building* bld = Buildings::findAtTile(pos);
-    if (!bld) {
+    df::coord2d pos2d(x, y);
+
+    // findAtTile only ever returns occupancy-setting ("real") buildings --
+    // Stockpile is abstract (isSettingOccupancy()==false, same bucket as
+    // Civzone) and is architecturally invisible to it, even when the
+    // stockpile's designated rectangle shares this tile with a real
+    // building's footprint (an ordinary layout: a stockpile ring around an
+    // enclosed workshop). Civzone overlap is deliberately left out of this
+    // scan -- remove_zone is the correct, already-working tool for that
+    // case, and stockpile has no equivalent removal command of its own.
+    std::vector<df::building*> candidates;
+    if (df::building *real = Buildings::findAtTile(pos)) {
+        candidates.push_back(real);
+    }
+    for (auto *b : df::global::world->buildings.all) {
+        if (!b || b->getType() != df::building_type::Stockpile) continue;
+        if (b->z != z) continue;
+        if (!Buildings::containsTile(b, pos2d)) continue;
+        candidates.push_back(b);
+    }
+
+    if (candidates.empty()) {
         std::ostringstream os;
         os << "no building at (" << x << "," << y << "," << z << ")";
         error = os.str();
         return false;
     }
 
+    if (candidates.size() > 1) {
+        std::ostringstream os;
+        os << "multiple buildings overlap (" << x << "," << y << "," << z << "): ";
+        bool hasStockpile = false;
+        bool hasRealBuilding = false;
+        for (size_t i = 0; i < candidates.size(); i++) {
+            if (i) os << "; ";
+            df::building *b = candidates[i];
+            os << ENUM_KEY_STR(building_type, b->getType())
+               << " spanning (" << b->x1 << "," << b->y1 << ")-("
+               << b->x2 << "," << b->y2 << ")";
+            if (b->getType() == df::building_type::Stockpile) hasStockpile = true;
+            else hasRealBuilding = true;
+        }
+        os << " -- reissue remove_building at a tile covered by only the one you want removed";
+        if (hasStockpile && hasRealBuilding) {
+            os << ". A stockpile's rectangle has no hole punched out for buildings inside it, so every tile of an "
+                  "enclosed building can be ambiguous with its surrounding stockpile and no tile-only-covered-by-it "
+                  "may exist. To remove the stockpile: reissue here if such a tile exists, or accept that removing "
+                  "it deletes its ENTIRE designated rectangle as collateral. To remove the real building instead: "
+                  "first remove the overlapping stockpile (again, its whole rectangle is deleted, not just the "
+                  "shared tiles), then reissue remove_building at this same coordinate to reach the now-unambiguous "
+                  "building";
+        }
+        error = os.str();
+        return false;
+    }
+
+    df::building *bld = candidates[0];
     if (Buildings::deconstruct(bld)) {
         error = "removed instantly (no deconstruction labor needed)";
     } else {
@@ -734,7 +794,17 @@ void executeCommand(const std::vector<uint8_t> &payload)
             uint32_t mask =
                 ((uint32_t)payload[15] << 24) | ((uint32_t)payload[16] << 16) |
                 ((uint32_t)payload[17] << 8)  |  (uint32_t)payload[18];
-            success = placeStockpile(x1, y1, z, x2, y2, mask, error);
+            bool partial = false;
+            success = placeStockpile(x1, y1, z, x2, y2, mask, error, partial);
+            // The generic tail below only ever sends SUCCESS or FAILURE
+            // (success ? 0x00 : 0x02) — a preset-import failure still
+            // leaves success==true (the stockpile IS placed and usable),
+            // so it must short-circuit here to send ACK_STATUS_PARTIAL
+            // instead of falling through to a false "clean" SUCCESS.
+            if (success && partial) {
+                sendCommandAck(cmdID, ACK_STATUS_PARTIAL, error);
+                return;
+            }
             break;
         }
         case COMMAND_TYPE_PAUSE: {
@@ -943,6 +1013,121 @@ void executeCommand(const std::vector<uint8_t> &payload)
             }
             std::string cropName(payload.begin() + 14, payload.begin() + 14 + nameLen);
             success = applySetFarmCrop(x, y, z, season, cropName, error);
+            break;
+        }
+        case COMMAND_TYPE_DESIGNATE_BURROW: {
+            // Payload: [4:cmdID][1:cmdType][2:NameLen][N:Name][2:X1][2:Y1][2:Z1][2:X2][2:Y2][2:Z2]
+            if (payload.size() < 7) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid DESIGNATE_BURROW payload");
+                return;
+            }
+            uint16_t nameLen = ((uint16_t)payload[5] << 8) | payload[6];
+            if (payload.size() < 7 + (size_t)nameLen + 12) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid DESIGNATE_BURROW payload size");
+                return;
+            }
+            std::string name(payload.begin() + 7, payload.begin() + 7 + nameLen);
+            size_t offset = 7 + nameLen;
+            int16_t x1 = ((int16_t)payload[offset]      << 8) | payload[offset + 1];
+            int16_t y1 = ((int16_t)payload[offset + 2]  << 8) | payload[offset + 3];
+            int16_t z1 = ((int16_t)payload[offset + 4]  << 8) | payload[offset + 5];
+            int16_t x2 = ((int16_t)payload[offset + 6]  << 8) | payload[offset + 7];
+            int16_t y2 = ((int16_t)payload[offset + 8]  << 8) | payload[offset + 9];
+            int16_t z2 = ((int16_t)payload[offset + 10] << 8) | payload[offset + 11];
+            success = applyDesignateBurrow(name, x1, y1, z1, x2, y2, z2, error);
+            break;
+        }
+        case COMMAND_TYPE_REMOVE_BURROW: {
+            // Payload: [4:cmdID][1:cmdType][2:NameLen][N:Name]
+            if (payload.size() < 7) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid REMOVE_BURROW payload");
+                return;
+            }
+            uint16_t nameLen = ((uint16_t)payload[5] << 8) | payload[6];
+            if (payload.size() < 7 + (size_t)nameLen) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid REMOVE_BURROW payload size");
+                return;
+            }
+            std::string name(payload.begin() + 7, payload.begin() + 7 + nameLen);
+            success = applyRemoveBurrow(name, error);
+            break;
+        }
+        case COMMAND_TYPE_ASSIGN_BURROW: {
+            // Payload: [4:cmdID][1:cmdType][2:NameLen][N:Name][1:Assign][1:AllCitizens][4:UnitID]
+            if (payload.size() < 7) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid ASSIGN_BURROW payload");
+                return;
+            }
+            uint16_t nameLen = ((uint16_t)payload[5] << 8) | payload[6];
+            if (payload.size() < 7 + (size_t)nameLen + 6) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid ASSIGN_BURROW payload size");
+                return;
+            }
+            std::string name(payload.begin() + 7, payload.begin() + 7 + nameLen);
+            size_t offset = 7 + nameLen;
+            bool assign = payload[offset] != 0;
+            bool allCitizens = payload[offset + 1] != 0;
+            int32_t unitID = (int32_t)read_uint32_be(payload, offset + 2);
+            success = applyAssignBurrow(name, assign, allCitizens, unitID, error);
+            break;
+        }
+        case COMMAND_TYPE_SET_ALERT: {
+            // Payload: [4:cmdID][1:cmdType][2:NameLen][N:Name][1:Active]
+            if (payload.size() < 7) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SET_ALERT payload");
+                return;
+            }
+            uint16_t nameLen = ((uint16_t)payload[5] << 8) | payload[6];
+            if (payload.size() < 7 + (size_t)nameLen + 1) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SET_ALERT payload size");
+                return;
+            }
+            std::string name(payload.begin() + 7, payload.begin() + 7 + nameLen);
+            bool active = payload[7 + nameLen] != 0;
+            success = applySetAlert(name, active, error);
+            break;
+        }
+        case COMMAND_TYPE_LINK_BUILDING: {
+            // Payload: [4:cmdID][1:cmdType][2:LeverX][2:LeverY][2:LeverZ][2:TargetX][2:TargetY][2:TargetZ]
+            if (payload.size() < 17) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid LINK_BUILDING payload");
+                return;
+            }
+            int16_t lx = ((int16_t)payload[5]  << 8) | payload[6];
+            int16_t ly = ((int16_t)payload[7]  << 8) | payload[8];
+            int16_t lz = ((int16_t)payload[9]  << 8) | payload[10];
+            int16_t tx = ((int16_t)payload[11] << 8) | payload[12];
+            int16_t ty = ((int16_t)payload[13] << 8) | payload[14];
+            int16_t tz = ((int16_t)payload[15] << 8) | payload[16];
+            success = applyLinkBuilding(lx, ly, lz, tx, ty, tz, error);
+            break;
+        }
+        case COMMAND_TYPE_PULL_LEVER: {
+            // Payload: [4:cmdID][1:cmdType][2:X][2:Y][2:Z]
+            if (payload.size() < 11) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid PULL_LEVER payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            success = applyPullLever(x, y, z, error);
+            break;
+        }
+        case COMMAND_TYPE_BUILD_BRIDGE: {
+            // Payload: [4:cmdID][1:cmdType][2:X1][2:Y1][2:Z][2:X2][2:Y2][1:Direction]
+            // Byte-identical to BUILD_FARM_PLOT plus a trailing direction byte.
+            if (payload.size() < 16) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid BUILD_BRIDGE payload");
+                return;
+            }
+            int16_t x1 = ((int16_t)payload[5]  << 8) | payload[6];
+            int16_t y1 = ((int16_t)payload[7]  << 8) | payload[8];
+            int16_t z  = ((int16_t)payload[9]  << 8) | payload[10];
+            int16_t x2 = ((int16_t)payload[11] << 8) | payload[12];
+            int16_t y2 = ((int16_t)payload[13] << 8) | payload[14];
+            uint8_t direction = payload[15];
+            success = placeBridge(x1, y1, z, x2, y2, direction, error);
             break;
         }
         default:

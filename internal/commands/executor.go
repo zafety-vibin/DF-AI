@@ -388,6 +388,115 @@ func (e *CommandExecutor) SendSetFarmCrop(x, y, z int16, season uint8, cropName 
 	return e.SendCommand(cmd)
 }
 
+// SendDesignateBurrow creates the named burrow if it doesn't exist yet and
+// paints the tile rect (x1,y1,z1)-(x2,y2,z2) into it. Repeatable: calling
+// again with the same name adds more tiles to the same burrow. z1 may
+// differ from z2 for a cheap multi-level paint in one call.
+func (e *CommandExecutor) SendDesignateBurrow(name string, x1, y1, z1, x2, y2, z2 int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeDesignateBurrow,
+		DesignateBurrow: protocol.DesignateBurrowDesignation{
+			Name: name,
+			X1:   x1, Y1: y1, Z1: z1,
+			X2: x2, Y2: y2, Z2: z2,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendRemoveBurrow deletes the named burrow entirely (unassigns its tiles
+// and units first).
+func (e *CommandExecutor) SendRemoveBurrow(name string) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeRemoveBurrow,
+		RemoveBurrow: protocol.RemoveBurrowDesignation{
+			Name: name,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendAssignBurrow assigns (assign=true) or unassigns (assign=false) a unit
+// to/from the named burrow. Set allCitizens=true to target every current
+// citizen in one call instead of a single unitID (unitID is ignored then).
+func (e *CommandExecutor) SendAssignBurrow(name string, unitID int32, allCitizens bool, assign bool) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeAssignBurrow,
+		AssignBurrow: protocol.AssignBurrowDesignation{
+			Name:        name,
+			Assign:      assign,
+			AllCitizens: allCitizens,
+			UnitID:      unitID,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendSetAlert sounds (active=true) or clears (active=false) DF's v50
+// civilian alert against the named burrow -- restricts every citizen
+// assigned to that burrow (see SendAssignBurrow) to its tiles while
+// sounding.
+func (e *CommandExecutor) SendSetAlert(name string, active bool) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeSetAlert,
+		SetAlert: protocol.SetAlertDesignation{
+			Name:   name,
+			Active: active,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendLinkBuilding wires the lever at (leverX,leverY,leverZ) to the
+// trigger target (bridge/floodgate/door/hatch) at
+// (targetX,targetY,targetZ). Consumes two free mechanisms from the fort's
+// stockpiles; the plugin rejects the call truthfully if fewer than two are
+// available, if either building is still under construction, or if the
+// target isn't a supported trigger type.
+func (e *CommandExecutor) SendLinkBuilding(leverX, leverY, leverZ, targetX, targetY, targetZ int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeLinkBuilding,
+		LinkBuilding: protocol.LinkBuildingDesignation{
+			LeverX: leverX, LeverY: leverY, LeverZ: leverZ,
+			TargetX: targetX, TargetY: targetY, TargetZ: targetZ,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendPullLever queues DF's real PullLever job against the lever at
+// (x,y,z). The lever must already be built and linked (SendLinkBuilding)
+// to have any effect on a target.
+func (e *CommandExecutor) SendPullLever(x, y, z int16) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypePullLever,
+		PullLever:   protocol.PullLeverDesignation{X: x, Y: y, Z: z},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendBuildBridge designates a rectangular bridge at (x1,y1)-(x2,y2) on
+// level z, raising/retracting toward direction (protocol.BridgeDirection*
+// constants).
+func (e *CommandExecutor) SendBuildBridge(x1, y1, z, x2, y2 int16, direction uint8) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeBuildBridge,
+		BuildBridge: protocol.BuildBridgeDesignation{
+			X1: x1, Y1: y1, Z: z,
+			X2: x2, Y2: y2,
+			Direction: direction,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
 // SendSmoothCommand designates a rectangular region for smoothing or
 // engraving. smoothType is protocol.SmoothTypeSmooth (1) or
 // SmoothTypeEngrave (2). Only natural stone walls/floors will be acted on

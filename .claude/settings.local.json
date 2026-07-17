@@ -56,7 +56,15 @@
       "mcp__df-fortress__stocks",
       "mcp__df-fortress__step",
       "mcp__df-fortress__cancel_designation",
-      "mcp__df-fortress__build"
+      "mcp__df-fortress__build",
+      "Skill(update-config)",
+      "Bash(python *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(rtk find *)",
+      "Bash(xargs ls -t)",
+      "Bash(echo \"grep exit=$?\")"
     ],
     "deny": [],
     "ask": []

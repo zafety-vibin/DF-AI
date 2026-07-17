@@ -19,9 +19,16 @@ func TestAckText(t *testing.T) {
 	if !strings.Contains(ok, "SUCCESS") || !strings.Contains(ok, "dig 5x5") {
 		t.Fatalf("success text wrong: %q", ok)
 	}
-	partial := ackText(&commands.CommandResult{Success: true, Status: protocol.AckStatusPartial, ErrorMsg: "3 of 25 tiles blocked at (10,11,90)"}, nil, "dig 5x5")
+	partial := ackText(&commands.CommandResult{Status: protocol.AckStatusPartial, ErrorMsg: "3 of 25 tiles blocked at (10,11,90)"}, nil, "dig 5x5")
 	if !strings.Contains(partial, "PARTIAL") || !strings.Contains(partial, "3 of 25") {
 		t.Fatalf("partial must carry plugin text: %q", partial)
+	}
+	// A SUCCESS-status ack carrying an informational note must render as
+	// SUCCESS with the note verbatim — not get downgraded to PARTIAL from
+	// mere message presence (regression: remove_zone's clean success note).
+	note := ackText(&commands.CommandResult{Success: true, Status: protocol.AckStatusSuccess, ErrorMsg: "zone removed immediately"}, nil, "remove_zone id=3")
+	if !strings.HasPrefix(note, "SUCCESS") || !strings.Contains(note, "zone removed immediately") {
+		t.Fatalf("success-with-note must stay SUCCESS and carry the note: %q", note)
 	}
 	failed := ackText(nil, errors.New("timeout waiting for ACK"), "dig 5x5")
 	if !strings.Contains(failed, "FAILED") || !strings.Contains(failed, "timeout") {
@@ -105,7 +112,7 @@ func TestConnectorSuggestion_TouchingRegionReturnsEmpty(t *testing.T) {
 		}
 	}
 	// new designation directly adjacent (touches x=3, which borders x=2)
-	got := connectorSuggestion(topo, 3, 0, 0, 5, 2, 0)
+	got := connectorSuggestion(topo, nil, 3, 0, 0, 5, 2, 0)
 	if got != "" {
 		t.Fatalf("expected no suggestion for a touching designation, got %q", got)
 	}
@@ -119,7 +126,7 @@ func TestConnectorSuggestion_DisconnectedReturnsSuggestion(t *testing.T) {
 		}
 	}
 	// new designation far away, no shared border
-	got := connectorSuggestion(topo, 10, 10, 0, 12, 12, 0)
+	got := connectorSuggestion(topo, nil, 10, 10, 0, 12, 12, 0)
 	if !strings.Contains(got, "not yet connected to existing space") {
 		t.Fatalf("expected a connector suggestion, got %q", got)
 	}
@@ -130,7 +137,7 @@ func TestConnectorSuggestion_DisconnectedReturnsSuggestion(t *testing.T) {
 
 func TestConnectorSuggestion_EmptyGraphReturnsEmpty(t *testing.T) {
 	topo := topology.NewTopologyOverlay(20, 20, 5) // nothing dug yet
-	got := connectorSuggestion(topo, 0, 0, 0, 2, 2, 0)
+	got := connectorSuggestion(topo, nil, 0, 0, 0, 2, 2, 0)
 	if got != "" {
 		t.Fatalf("expected no suggestion on a fresh embark with nothing dug, got %q", got)
 	}
@@ -177,7 +184,7 @@ func TestConnectorSuggestion_TargetIsARealRegionTile(t *testing.T) {
 
 	// A disconnected designation nearby (far enough that it doesn't touch
 	// the C shape's open tiles).
-	got := connectorSuggestion(topo, 15, 15, 0, 17, 17, 0)
+	got := connectorSuggestion(topo, nil, 15, 15, 0, 17, 17, 0)
 	if got == "" {
 		t.Fatal("expected a connector suggestion for a disconnected designation")
 	}
@@ -226,7 +233,7 @@ func TestConnectorSuggestion_NonCollinearSuggestsLShape(t *testing.T) {
 	}
 	// Center of this designation is (11,7,0); nearest open tile is (2,2,0)
 	// — differs in both x and y, so this must NOT collapse to one line.
-	got := connectorSuggestion(topo, 10, 6, 0, 12, 8, 0)
+	got := connectorSuggestion(topo, nil, 10, 6, 0, 12, 8, 0)
 	if got == "" {
 		t.Fatal("expected a connector suggestion for a disconnected designation")
 	}
@@ -250,9 +257,75 @@ func TestConnectorSuggestion_VerticallyAdjacentReturnsEmpty(t *testing.T) {
 	// Open tile directly above the designation's 1x1 footprint — nowhere
 	// near its lateral ring, only reachable by looking straight up.
 	_ = topo.SetTileState(5, 5, 4, topology.StateOpen)
-	got := connectorSuggestion(topo, 5, 5, 5, 5, 5, 5)
+	got := connectorSuggestion(topo, nil, 5, 5, 5, 5, 5, 5)
 	if got != "" {
 		t.Fatalf("expected no suggestion for a vertically-adjacent footprint, got %q", got)
+	}
+}
+
+// TestConnectorSuggestion_PendingDesignationSuppresses is the regression
+// test for the dig-ahead false positive: a stair spine designated but not
+// yet carved is hidden, so its tiles classify Unknown in the topology
+// overlay — a room designated beside it read "not yet connected" and the
+// nearest-open-region fallback pointed at distant wilderness (map edge).
+// With the spine's ACKed dig rect recorded in pendingDigs, the adjoining
+// room must be treated as connected (no suggestion at all).
+func TestConnectorSuggestion_PendingDesignationSuppresses(t *testing.T) {
+	topo := topology.NewTopologyOverlay(20, 20, 10)
+	// Distant open "wilderness" so the region graph is non-empty — this is
+	// what the false positive used to point at.
+	_ = topo.SetTileState(0, 0, 9, topology.StateOpen)
+
+	digs := &pendingDigs{}
+	// The spine: a 2x2 stairs designation spanning many z, ACKed earlier
+	// this session, still solid/hidden in the topology overlay.
+	digs.add(10, 10, 8, 11, 11, 2)
+
+	// A room designated beside the spine at z=5 — its ring touches (11,11,5).
+	got := connectorSuggestion(topo, digs, 12, 10, 5, 15, 13, 5)
+	if got != "" {
+		t.Fatalf("room adjoining a pending dig designation must count as connected, got %q", got)
+	}
+
+	// Same room WITHOUT the recorded rect still gets the suggestion —
+	// proves the suppression comes from pendingDigs, not the fixture.
+	if got := connectorSuggestion(topo, nil, 12, 10, 5, 15, 13, 5); !strings.Contains(got, "not yet connected") {
+		t.Fatalf("expected a suggestion without the dig record, got %q", got)
+	}
+
+	// Vertical variant: a designation directly UNDER a pending rect's
+	// bottom is connected through its footprint scan.
+	if got := connectorSuggestion(topo, digs, 10, 10, 1, 11, 11, 1); got != "" {
+		t.Fatalf("designation under a pending shaft must count as connected, got %q", got)
+	}
+}
+
+func TestPendingDigs(t *testing.T) {
+	var nilDigs *pendingDigs
+	nilDigs.add(0, 0, 0, 1, 1, 1) // must not panic
+	if nilDigs.contains(0, 0, 0) {
+		t.Fatal("nil pendingDigs must contain nothing")
+	}
+
+	digs := &pendingDigs{}
+	if digs.contains(5, 5, 5) {
+		t.Fatal("empty pendingDigs must contain nothing")
+	}
+	// Corners in reversed order must normalize.
+	digs.add(11, 11, 2, 10, 10, 8)
+	for _, tc := range []struct {
+		x, y, z int16
+		want    bool
+	}{
+		{10, 10, 2, true},
+		{11, 11, 8, true},
+		{10, 11, 5, true},
+		{12, 10, 5, false}, // outside x
+		{10, 10, 9, false}, // outside z
+	} {
+		if got := digs.contains(tc.x, tc.y, tc.z); got != tc.want {
+			t.Errorf("contains(%d,%d,%d) = %v, want %v", tc.x, tc.y, tc.z, got, tc.want)
+		}
 	}
 }
 
@@ -261,10 +334,41 @@ func TestBuildWireCoords(t *testing.T) {
 	if x, y := buildWireCoords(0x10, 28, 52); x != 27 || y != 51 {
 		t.Fatalf("carpenter center (28,52) should wire as corner (27,51), got (%d,%d)", x, y)
 	}
+	// Metalsmith's forge is still a Workshop (0x19) -- same 3x3 offset.
+	if x, y := buildWireCoords(protocol.BuildTypeWorkshopMetalsmith, 28, 52); x != 27 || y != 51 {
+		t.Fatalf("metalsmith center (28,52) should wire as corner (27,51), got (%d,%d)", x, y)
+	}
+	// Furnaces (0x70-0x7F) are 3x3 like workshops.
+	if x, y := buildWireCoords(protocol.BuildTypeFurnaceSmelter, 28, 52); x != 27 || y != 51 {
+		t.Fatalf("smelter center (28,52) should wire as corner (27,51), got (%d,%d)", x, y)
+	}
+	// Trade depot (0x80-0x8F) is 5x5 -- offset -2,-2.
+	if x, y := buildWireCoords(protocol.BuildTypeTradeDepot, 28, 52); x != 26 || y != 50 {
+		t.Fatalf("depot center (28,52) should wire as corner (26,50), got (%d,%d)", x, y)
+	}
 	// 1x1 buildings pass through unchanged.
 	for _, bt := range []uint8{0x01, 0x30, 0x50} {
 		if x, y := buildWireCoords(bt, 28, 52); x != 28 || y != 52 {
 			t.Fatalf("1x1 type 0x%02X must pass through, got (%d,%d)", bt, x, y)
 		}
+	}
+}
+
+func TestBuildFootprintCorner(t *testing.T) {
+	// Odd footprints match the fixed-size buildWireCoords offsets exactly
+	// (3/2==1, 5/2==2 -- same center=size/2 formula DF itself uses).
+	if x, y := buildFootprintCorner(28, 52, 3, 3); x != 27 || y != 51 {
+		t.Fatalf("3x3 center (28,52) should wire as corner (27,51), got (%d,%d)", x, y)
+	}
+	if x, y := buildFootprintCorner(28, 52, 5, 5); x != 26 || y != 50 {
+		t.Fatalf("5x5 center (28,52) should wire as corner (26,50), got (%d,%d)", x, y)
+	}
+	// 1x1 passes through unchanged.
+	if x, y := buildFootprintCorner(28, 52, 1, 1); x != 28 || y != 52 {
+		t.Fatalf("1x1 center (28,52) should pass through, got (%d,%d)", x, y)
+	}
+	// Even footprint (bridges are not forced to odd sizes): 4/2==2.
+	if x, y := buildFootprintCorner(28, 52, 4, 2); x != 26 || y != 51 {
+		t.Fatalf("4x2 center (28,52) should wire as corner (26,51), got (%d,%d)", x, y)
 	}
 }

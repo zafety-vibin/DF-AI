@@ -168,6 +168,8 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
     int skippedCarved = 0;     // carved stair tiles nothing can be added to
     int promotedCarved = 0;    // carved up-stairs designated UpDownStair to
                                // gain their missing down component (join)
+    int convertedStairs = 0;   // carved stairs overwritten by a non-stair
+                               // digType, losing their vertical connection
     bool joinedAbove = false;  // top kind promoted to UpDownStair (see loop)
     bool joinedBelow = false;  // bottom kind promoted to UpDownStair
 
@@ -187,6 +189,11 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
     //   - Otherwise: every tile in the rectangle gets the requested
     //     digType. For multi-Z non-stair digs (e.g. excavating a full
     //     underground complex), we still respect the per-tile dig type.
+    //     This INCLUDES already-carved stair tiles: a non-stair digType
+    //     legitimately converts them to plain floor (removing their
+    //     vertical connection), same as vanilla DF's own stair-removal
+    //     mechanic — tracked separately via convertedStairs and reported
+    //     as its own distinct ACK clause, deliberately not skipped.
     //   - Already-carved stair tiles in a stair dig are skipped, EXCEPT a
     //     carved STAIR_UP whose position needs a down component — that one
     //     is designated UpDownStair (details at the check in the loop).
@@ -219,10 +226,20 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
                 // designate it — that carves the missing half and is how a
                 // shaft is extended downward past its old bottom. Skipping
                 // it there would strand every new level below (the z9<->z10
-                // gap from the 2026-07 live failure, mirrored).
+                // gap from the 2026-07 live failure, mirrored). Non-stair
+                // digTypes (Default, Channel, Ramp) DO legally overwrite an
+                // already-carved stair tile — this is vanilla DF's own way
+                // of removing or repurposing a staircase, not a bug to
+                // guard against. An earlier fix here made these digTypes
+                // skip carved stairs unconditionally to stop a silent
+                // vertical-connection loss; that traded away real
+                // capability for silence. The fix is a truthful ACK
+                // (convertedStairs below), not blocking the designation.
+                df::tiletype_shape shape = tileShape(cache.tiletypeAt(pos));
+                bool tileIsStair = isStairShape(shape);
+
                 if (isStairDig) {
-                    df::tiletype_shape shape = tileShape(cache.tiletypeAt(pos));
-                    if (isStairShape(shape)) {
+                    if (tileIsStair) {
                         bool needsDown;
                         if (isStairShaft) {
                             // Every shaft tile above the bottom connects to
@@ -244,6 +261,8 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
                         }
                         continue;
                     }
+                } else if (tileIsStair) {
+                    convertedStairs++;
                 }
 
                 df::tile_designation des = cache.designationAt(pos);
@@ -310,14 +329,16 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
         return false;
     }
 
-    // Truthful ACK for the stair paths: promotion/skip counts and
-    // shaft-join notes reach the model verbatim (rendered as PARTIAL text
-    // by the server). Silent when nothing noteworthy happened — plain digs
-    // stay SUCCESS. Note the designated count covers in-range fresh tiles;
-    // promoted carved up-stairs (in-range or the abutting tile above the
-    // top) are reported by their own count.
+    // Truthful ACK for the stair paths: promotion/skip/conversion counts
+    // and shaft-join notes reach the model verbatim (rendered as PARTIAL
+    // text by the server). Silent when nothing noteworthy happened — plain
+    // digs stay SUCCESS. Note the designated count covers in-range fresh
+    // tiles, including converted stairs; promoted carved up-stairs
+    // (in-range or the abutting tile above the top) are reported by their
+    // own count.
     std::string stairText;
-    if (skippedCarved > 0 || promotedCarved > 0 || joinedAbove || joinedBelow) {
+    if (skippedCarved > 0 || promotedCarved > 0 || joinedAbove || joinedBelow ||
+        convertedStairs > 0) {
         char buf[192];
         snprintf(buf, sizeof(buf), "%d designated", designated);
         stairText = buf;
@@ -330,6 +351,12 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
         if (skippedCarved > 0) {
             snprintf(buf, sizeof(buf), " (%d skipped: already carved)",
                      skippedCarved);
+            stairText += buf;
+        }
+        if (convertedStairs > 0) {
+            snprintf(buf, sizeof(buf),
+                     " (%d will remove existing stairs: vertical connection lost)",
+                     convertedStairs);
             stairText += buf;
         }
         if (joinedAbove)
@@ -375,13 +402,17 @@ extern bool placeWorkshop(int16_t x, int16_t y, int16_t z, uint8_t buildType, st
 extern bool placeFurniture(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
 extern bool placeConstruction(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
 extern bool placeDoor(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
+extern bool placeFurnace(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
+extern bool placeTradeDepot(int16_t x, int16_t y, int16_t z, std::string &error);
 
 // applyBuildDesignation dispatches BUILD commands to category-specific
 // placers based on the BuildType byte's range:
 //   0x01-0x0F → constructions (wall, floor, stairs, ramp)
-//   0x10-0x2F → workshops
+//   0x10-0x2F → workshops (incl. MetalsmithsForge)
 //   0x30-0x4F → furniture
 //   0x50-0x6F → doors / hatches
+//   0x70-0x7F → furnaces (Smelter, WoodFurnace)
+//   0x80-0x8F → trade depot
 bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &error)
 {
     // Parse: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z] [1: BuildType]
@@ -411,6 +442,12 @@ bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &err
     }
     if (isBuildTypeDoor(buildType)) {
         return placeDoor(x, y, z, buildType, error);
+    }
+    if (isBuildTypeFurnace(buildType)) {
+        return placeFurnace(x, y, z, buildType, error);
+    }
+    if (isBuildTypeDepot(buildType)) {
+        return placeTradeDepot(x, y, z, error);
     }
 
     char buf[64];

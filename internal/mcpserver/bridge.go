@@ -31,6 +31,7 @@ type Bridge struct {
 	Blueprints *blueprints.BlueprintLibrary
 	Places     *PlaceStore
 	Logger     *logging.Logger
+	Digs       *pendingDigs // session-scoped ACKed dig rects (see digrects.go)
 	port       uint16
 }
 
@@ -53,6 +54,7 @@ func NewBridge(cfgPath string) (*Bridge, error) {
 		Blueprints: blueprints.NewBlueprintLibrary("blueprints"),
 		Places:     NewPlaceStore(filepath.Join("fortress", "state", "places.json")),
 		Logger:     logger,
+		Digs:       &pendingDigs{},
 		port:       cfg.ListenPort,
 	}
 

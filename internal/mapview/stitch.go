@@ -14,8 +14,8 @@ import (
 //
 // Rows concatenate horizontally within a tile-row and the resulting
 // tile-row lines stack vertically across tile-rows. Designated/Water/
-// Aquifer/DesignationKinds entries in every block are already
-// ABSOLUTE-coordinate (map_slice reports them in map space, not
+// Aquifer/DesignationKinds/Smoothed/FloorItems entries in every block are
+// already ABSOLUTE-coordinate (map_slice reports them in map space, not
 // block-relative space) so they are simply unioned — no re-basing needed.
 func StitchSlices(grid [][]*Slice) (*Slice, error) {
 	if len(grid) == 0 || len(grid[0]) == 0 {
@@ -75,6 +75,8 @@ func StitchSlices(grid [][]*Slice) (*Slice, error) {
 			out.Water = append(out.Water, blk.Water...)
 			out.Aquifer = append(out.Aquifer, blk.Aquifer...)
 			out.DesignationKinds = append(out.DesignationKinds, blk.DesignationKinds...)
+			out.Smoothed = append(out.Smoothed, blk.Smoothed...)
+			out.FloorItems = append(out.FloorItems, blk.FloorItems...)
 		}
 	}
 	return out, nil

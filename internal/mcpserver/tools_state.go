@@ -84,12 +84,32 @@ func renderBuildings(raw []byte) string {
 }
 
 // stockItem is one (item_type, material) entry from the plugin's
-// stockpile_inventory query.
+// stockpile_inventory query. Count is free/available stock only; InUse is
+// the same item/material already incorporated into a building or
+// construction (a built bed, an installed door, a boulder mortared into a
+// wall) — still a live item in DF's eyes but not a spare a caller can
+// place. The two are tallied separately upstream in queries.cpp
+// handleStockpileInventory so callers can't mistake "fort has 3 beds
+// total" for "3 beds are free to assign."
 type stockItem struct {
 	ItemType string `json:"item_type"`
 	Material string `json:"material"`
 	Count    int    `json:"count"`
+	InUse    int    `json:"in_use,omitempty"`
 	Economic bool   `json:"economic,omitempty"`
+}
+
+// stocksQueryArgs builds the stockpile_inventory query args. The plugin
+// (queries.cpp handleStockpileInventory) matches category as a
+// case-sensitive substring of ENUM_KEY_STR(item_type), which is always
+// uppercase ("BOULDER", "WEAPON") — uppercasing here is what makes the
+// tool's documented lowercase examples match at all.
+func stocksQueryArgs(category string) string {
+	if category == "" {
+		return "{}"
+	}
+	argBytes, _ := json.Marshal(map[string]string{"category": strings.ToUpper(category)})
+	return string(argBytes)
 }
 
 // renderStocks renders the stockpile_inventory response. The plugin keys
@@ -111,7 +131,13 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 	if minCount > 0 {
 		filtered := items[:0]
 		for _, it := range items {
-			if it.Count >= minCount {
+			// min_count only suppresses noise on the free-stock signal; an
+			// entry with genuine built-in presence (InUse > 0) must still
+			// surface even when its free Count is below the threshold —
+			// otherwise a fully-built-in item type (e.g. "3 built-in
+			// tables, 0 free") silently vanishes and a caller can no
+			// longer tell the fort has any at all.
+			if it.Count >= minCount || it.InUse > 0 {
 				filtered = append(filtered, it)
 			}
 		}
@@ -129,13 +155,18 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 			if it.Economic {
 				econ = " [economic]"
 			}
-			fmt.Fprintf(&sb, "- %s: %s x%d%s\n", it.ItemType, it.Material, it.Count, econ)
+			inUse := ""
+			if it.InUse > 0 {
+				inUse = fmt.Sprintf(" (+%d built-in)", it.InUse)
+			}
+			fmt.Fprintf(&sb, "- %s: %s x%d%s%s\n", it.ItemType, it.Material, it.Count, econ, inUse)
 		}
 		return sb.String()
 	}
 
 	type typeAgg struct {
 		total     int
+		inUse     int
 		economic  int
 		materials []stockItem
 	}
@@ -149,6 +180,7 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 			order = append(order, it.ItemType)
 		}
 		agg.total += it.Count
+		agg.inUse += it.InUse
 		if it.Economic {
 			agg.economic += it.Count
 		}
@@ -172,8 +204,12 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 		if agg.economic > 0 {
 			econNote = fmt.Sprintf(" (%d economic)", agg.economic)
 		}
-		fmt.Fprintf(&sb, "- %s: %d total across %d material%s%s; top: %s\n",
-			t, agg.total, len(agg.materials), plural(len(agg.materials)), econNote, strings.Join(tops, ", "))
+		inUseNote := ""
+		if agg.inUse > 0 {
+			inUseNote = fmt.Sprintf(" (+%d built-in)", agg.inUse)
+		}
+		fmt.Fprintf(&sb, "- %s: %d total across %d material%s%s%s; top: %s\n",
+			t, agg.total, len(agg.materials), plural(len(agg.materials)), econNote, inUseNote, strings.Join(tops, ", "))
 	}
 	return sb.String()
 }
@@ -673,19 +709,14 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 	})
 
 	type stocksIn struct {
-		Category string `json:"category,omitempty" jsonschema:"optional substring filter on item type (e.g. 'boulder', 'wood') — narrows the query AND switches the response to full per-material detail for that type"`
-		MinCount int    `json:"min_count,omitempty" jsonschema:"optional: hide item/material entries below this count"`
+		Category string `json:"category,omitempty" jsonschema:"optional case-insensitive substring filter on item type (e.g. 'boulder', 'wood') — narrows the query AND switches the response to full per-material detail for that type"`
+		MinCount int    `json:"min_count,omitempty" jsonschema:"optional: hide item/material entries whose free count is below this count; an entry with any built-in (in_use) presence always surfaces regardless of this threshold, since min_count filters free-stock noise, not fort-existence"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "stocks",
-		Description: "Stockpile inventory by item type and material — what the fort actually has. Default view is aggregated (one line per item type, top materials); pass category to narrow the query and see full per-material detail for one type.",
+		Description: "Stockpile inventory by item type and material — what the fort actually has. count is free/available stock only (not yet built or installed); in_use is the same item/material already incorporated into a building or construction (a built bed, an installed door, a boulder mortared into a wall) — a positive count is what's actually available to assign or build with. Default view is aggregated (one line per item type, top materials); pass category to narrow the query and see full per-material detail for one type.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in stocksIn) (*mcp.CallToolResult, any, error) {
-		args := "{}"
-		if in.Category != "" {
-			argBytes, _ := json.Marshal(map[string]string{"category": in.Category})
-			args = string(argBytes)
-		}
-		raw, err := b.Query(ctx, "stockpile_inventory", args)
+		raw, err := b.Query(ctx, "stockpile_inventory", stocksQueryArgs(in.Category))
 		if err != nil {
 			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
 		}

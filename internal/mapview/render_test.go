@@ -103,6 +103,22 @@ func TestRenderCropWater(t *testing.T) {
 	}
 }
 
+// TestRenderCropWater_HiddenTile: a hidden ('?') tile carrying a water
+// entry must still get its depth digit painted — RenderCrop's water overlay
+// is unconditional (see the "always on" doc comment above), matching the
+// plugin's map_slice fix that stopped excluding hidden tiles from the
+// water[] array (queries.cpp queryMapSlice). Pins the Go side of the same
+// fog-honesty contract exercised for column_profile in
+// TestRenderColumnFluids_HiddenWater.
+func TestRenderCropWater_HiddenTile(t *testing.T) {
+	s := &Slice{Z: 118, X1: 51, Y1: 46, Rows: []string{"?"},
+		Water: [][3]int16{{51, 46, 7}}}
+	out := RenderCrop(s, nil, "")
+	if !strings.Contains(out, "  46 7") {
+		t.Fatalf("water digit must overlay the hidden glyph, not defer to '?':\n%s", out)
+	}
+}
+
 // A slice without water/aquifer fields (older plugin) renders exactly as
 // before: no aquifer line, no overlay.
 func TestRenderCropNoWaterFields(t *testing.T) {
@@ -113,6 +129,35 @@ func TestRenderCropNoWaterFields(t *testing.T) {
 	}
 	if !strings.Contains(out, "   0 ##") {
 		t.Fatalf("base glyphs must be untouched:\n%s", out)
+	}
+}
+
+// TestRenderCropSmoothed: smoothed tiles get a count line, not a glyph —
+// same convention as aquifer, since a smooth job doesn't change shape/material.
+func TestRenderCropSmoothed(t *testing.T) {
+	s := &Slice{Z: 100, X1: 10, Y1: 20, Rows: []string{"##"},
+		Smoothed: [][2]int16{{10, 20}, {11, 20}}}
+	out := RenderCrop(s, nil, "")
+	if !strings.Contains(out, "smoothed tiles in view: 2") {
+		t.Fatalf("smoothed count line missing:\n%s", out)
+	}
+	if !strings.Contains(out, "  20 ##") {
+		t.Fatalf("smoothed must not draw a glyph on y=20 row:\n%s", out)
+	}
+}
+
+// TestRenderCropFloorItems: loose floor items get a count line, not a
+// glyph — same convention as smoothed/aquifer, since the base terrain
+// classifier renders such a tile as plain clean floor.
+func TestRenderCropFloorItems(t *testing.T) {
+	s := &Slice{Z: 100, X1: 10, Y1: 20, Rows: []string{"##"},
+		FloorItems: [][3]int16{{10, 20, 2}}}
+	out := RenderCrop(s, nil, "")
+	if !strings.Contains(out, "tiles with loose items on floor: 1") {
+		t.Fatalf("floor items count line missing:\n%s", out)
+	}
+	if !strings.Contains(out, "  20 ##") {
+		t.Fatalf("floor items must not draw a glyph on y=20 row:\n%s", out)
 	}
 }
 
@@ -234,6 +279,70 @@ func TestRenderColumnFluids(t *testing.T) {
 	// Annotations must not displace the hidden marker.
 	if !strings.Contains(lines[2], "(hidden/undug — diggable)") {
 		t.Fatalf("hidden marker lost on annotated level: %q", lines[2])
+	}
+}
+
+// TestRenderColumnSmooth: a completed smooth job annotates its level line
+// with SMOOTHED, alongside (not instead of) any fluid annotations, since
+// shape/material don't change on smooth and the glyph looks identical
+// before and after.
+func TestRenderColumnSmooth(t *testing.T) {
+	c := &ColumnProfile{X: 72, Y: 81, Levels: []ColumnLevel{
+		{Z: 110, Glyph: "#", Shape: "wall", Material: "stone", Smooth: true},
+		{Z: 109, Glyph: "#", Shape: "wall", Material: "stone"},
+	}}
+	out := RenderColumn(c)
+	lines := strings.Split(out, "\n")
+	if !strings.Contains(lines[1], "SMOOTHED") {
+		t.Fatalf("smoothed annotation missing on z=110: %q", lines[1])
+	}
+	if strings.Contains(lines[2], "SMOOTHED") {
+		t.Fatalf("unsmoothed level must not carry SMOOTHED: %q", lines[2])
+	}
+}
+
+// TestRenderColumnFloorItems: a tile with loose items at rest gets an
+// "ITEM(S) ON FLOOR" annotation alongside (not instead of) other fluid
+// annotations.
+func TestRenderColumnFloorItems(t *testing.T) {
+	c := &ColumnProfile{X: 72, Y: 81, Levels: []ColumnLevel{
+		{Z: 110, Glyph: ".", Shape: "floor", Material: "rock_or_soil", FloorItems: 2},
+		{Z: 109, Glyph: "~", Shape: "floor", Material: "water", Water: 4, FloorItems: 1},
+		{Z: 108, Glyph: ".", Shape: "floor", Material: "rock_or_soil"},
+	}}
+	out := RenderColumn(c)
+	lines := strings.Split(out, "\n")
+	if !strings.Contains(lines[1], "2 ITEM(S) ON FLOOR") {
+		t.Fatalf("floor items annotation missing on z=110: %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "~4/7 water") || !strings.Contains(lines[2], "1 ITEM(S) ON FLOOR") {
+		t.Fatalf("expected both water and floor items annotations on z=109: %q", lines[2])
+	}
+	if strings.Contains(lines[3], "ITEM(S) ON FLOOR") {
+		t.Fatalf("clean level must not carry floor items annotation: %q", lines[3])
+	}
+}
+
+// TestRenderColumnFluids_HiddenWater: a hidden tile carrying real standing
+// water (flow_size>0 from the plugin, regardless of the fog bit) must still
+// render its water annotation — this is the exact live incident: a hidden
+// under-brook channel tile held 7/7 water but the plugin's map_slice path
+// once dropped hidden water from its response (fixed in queries.cpp's
+// queryMapSlice; column_profile's queryColumnProfile never had this gate).
+// This fixture pins the Go-side contract: hidden must never suppress a
+// present water annotation, whichever query produced it.
+func TestRenderColumnFluids_HiddenWater(t *testing.T) {
+	c := &ColumnProfile{X: 51, Y: 46, Levels: []ColumnLevel{
+		{Z: 119, Glyph: ",", Shape: "floor", Material: "grass"},
+		{Z: 118, Glyph: "?", Shape: "wall", Material: "soil", Hidden: true, Water: 7},
+	}}
+	out := RenderColumn(c)
+	lines := strings.Split(out, "\n")
+	if !strings.Contains(lines[2], "(hidden/undug — diggable)") {
+		t.Fatalf("hidden marker missing on z=118: %q", lines[2])
+	}
+	if !strings.Contains(lines[2], "~7/7 water") {
+		t.Fatalf("hidden tile must still carry its water annotation: %q", lines[2])
 	}
 }
 

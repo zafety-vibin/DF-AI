@@ -194,6 +194,9 @@ func applyBlueprintCmds(ctx context.Context, b *Bridge, cmds []blueprints.DigCom
 			continue
 		}
 		okCount += run.Count
+		// Feed the session dig record so a later designate_dig beside this
+		// blueprint's still-solid tiles doesn't hint "not yet connected".
+		b.Digs.add(run.X1, run.Y, run.Z, run.X2, run.Y, run.Z)
 	}
 	return okCount, failCount, firstErr
 }

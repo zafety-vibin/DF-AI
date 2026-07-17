@@ -32,6 +32,17 @@ type Slice struct {
 	// Optional: an older plugin omits it, leaving Designated (plain
 	// [x,y] pairs, no kind) as the only always-on signal.
 	DesignationKinds [][3]int16 `json:"designation_kinds"`
+	// Smoothed tiles as [x,y] in absolute map coords — a tile carries DF's
+	// SMOOTH/SMOOTH_DEAD tiletype_special variant, the only signal a
+	// completed "smooth mode=wall/floor" job took effect (shape/material
+	// don't change). Optional: an older plugin simply omits it.
+	Smoothed [][2]int16 `json:"smoothed"`
+	// FloorItems as [x,y,count] in absolute map coords — count of loose
+	// items at rest on the tile (on_ground, and not yet absorbed into a
+	// building or construction). These tiles render as plain clean floor
+	// in Rows but can still block a new building placement. Optional: an
+	// older plugin simply omits it.
+	FloorItems [][3]int16 `json:"floor_items"`
 }
 
 type ColumnLevel struct {
@@ -42,10 +53,15 @@ type ColumnLevel struct {
 	Hidden   bool   `json:"hidden"`
 	// Optional fluid annotations (absent from older plugins = zero values):
 	// Water depth 1-7, Aquifer = water_table bit, Damp = a horizontal or
-	// above neighbor is wet.
+	// above neighbor is wet, Smooth = tile carries DF's SMOOTH/SMOOTH_DEAD
+	// tiletype_special variant (a completed "smooth mode=wall/floor" job).
 	Water   int  `json:"water"`
 	Aquifer bool `json:"aquifer"`
 	Damp    bool `json:"damp"`
+	Smooth  bool `json:"smooth"`
+	// FloorItems is the count of loose items at rest on this tile (see
+	// Slice.FloorItems). Zero/absent from older plugins.
+	FloorItems int `json:"floor_items"`
 }
 
 type ColumnProfile struct {

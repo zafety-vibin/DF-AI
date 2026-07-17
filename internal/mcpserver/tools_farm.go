@@ -47,7 +47,7 @@ func registerFarmTools(srv *mcp.Server, b *Bridge) {
 		Y      int    `json:"y"`
 		Z      int    `json:"z"`
 		Season string `json:"season" jsonschema:"spring|summer|autumn|winter|all — 'all' assigns the same crop to every season slot in one call"`
-		Crop   string `json:"crop" jsonschema:"a plant raw token or display name from list_crops (e.g. plump_helmet or 'Plump Helmet'), or 'fallow' to clear the slot(s) — a plot with no crop assigned for a season grows NOTHING that season"`
+		Crop   string `json:"crop" jsonschema:"a plant raw token or display name from list_crops, matched exactly (case-insensitive, NOT a substring) — e.g. MUSHROOM_HELMET_PLUMP or 'plump helmet'; or 'fallow' to clear the slot(s) — a plot with no crop assigned for a season grows NOTHING that season"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "assign_crop",

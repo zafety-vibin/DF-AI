@@ -62,6 +62,94 @@ func TestDecodeColumnProfileFluids(t *testing.T) {
 	}
 }
 
+// Smooth decodes when present (a completed "smooth mode=wall/floor" job);
+// the absent case (older plugin) is covered by TestDecodeColumnProfile
+// above — the field stays false.
+func TestDecodeColumnProfileSmooth(t *testing.T) {
+	raw := []byte(`{"x":70,"y":80,"levels":[{"z":110,"glyph":"#","shape":"wall","material":"stone","smooth":true}]}`)
+	c, err := DecodeColumnProfile(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !c.Levels[0].Smooth {
+		t.Fatalf("expected Smooth=true, got %+v", c.Levels[0])
+	}
+}
+
+// Smoothed decodes when present, mirroring the Water/Aquifer coverage
+// above — the absent case (older plugin) is covered by TestDecodeSlice,
+// where the field stays nil.
+func TestDecodeSliceSmoothed(t *testing.T) {
+	raw := []byte(`{"z":110,"x1":70,"y1":80,"rows":["##"],"smoothed":[[70,80]]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(s.Smoothed) != 1 || s.Smoothed[0] != [2]int16{70, 80} {
+		t.Fatalf("smoothed mismatch: %+v", s.Smoothed)
+	}
+}
+
+// A player-built Construction wall/floor (e.g. an aquifer seal from the
+// build tool) glyphs identically to natural stone (shape=wall,
+// material=stone — classifyTileRevealed has no separate case for
+// tiletype_material::CONSTRUCTION) and DF stamps the same tiletype_special
+// SMOOTH value on it as genuine dwarf-smoothing. The plugin's isSmoothedAt
+// guards on material != CONSTRUCTION, so a fixture for such a tile must
+// carry no "smooth"/"smoothed" entry at all; these tests pin that the
+// decode side treats that absence as false, not as an accidental true.
+func TestDecodeColumnProfileConstructedWallNotSmoothed(t *testing.T) {
+	raw := []byte(`{"x":70,"y":80,"levels":[{"z":110,"glyph":"#","shape":"wall","material":"stone","hidden":false}]}`)
+	c, err := DecodeColumnProfile(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if c.Levels[0].Smooth {
+		t.Fatalf("built Construction wall must not decode as smoothed: %+v", c.Levels[0])
+	}
+}
+
+func TestDecodeSliceConstructedWallNotSmoothed(t *testing.T) {
+	raw := []byte(`{"z":110,"x1":70,"y1":80,"rows":["##"],"smoothed":[]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, xy := range s.Smoothed {
+		if xy == [2]int16{70, 80} {
+			t.Fatalf("built Construction tile must not appear in smoothed list: %+v", s.Smoothed)
+		}
+	}
+}
+
+// FloorItems decodes when present, mirroring the Smoothed coverage above —
+// the absent case (older plugin) is covered by TestDecodeSlice, where the
+// field stays nil.
+func TestDecodeSliceFloorItems(t *testing.T) {
+	raw := []byte(`{"z":110,"x1":70,"y1":80,"rows":["##"],"floor_items":[[70,80,2]]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(s.FloorItems) != 1 || s.FloorItems[0] != [3]int16{70, 80, 2} {
+		t.Fatalf("floor_items mismatch: %+v", s.FloorItems)
+	}
+}
+
+// FloorItems decodes when present (a loose item at rest on this tile); the
+// absent case (older plugin) is covered by TestDecodeColumnProfile above —
+// the field stays 0.
+func TestDecodeColumnProfileFloorItems(t *testing.T) {
+	raw := []byte(`{"x":70,"y":80,"levels":[{"z":110,"glyph":".","shape":"floor","material":"rock_or_soil","floor_items":3}]}`)
+	c, err := DecodeColumnProfile(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if c.Levels[0].FloorItems != 3 {
+		t.Fatalf("expected FloorItems=3, got %+v", c.Levels[0])
+	}
+}
+
 func TestDecodeSlice_DesignationKindsOptional(t *testing.T) {
 	raw := []byte(`{"z":100,"x1":0,"y1":0,"rows":["..","d."],"designated":[[0,1]],"designation_kinds":[[0,1,2]]}`)
 	s, err := DecodeSlice(raw)

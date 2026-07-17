@@ -48,6 +48,7 @@
 #include "df/building_type.h"
 #include "df/item.h"
 #include "df/item_type.h"
+#include "df/map_block.h"
 #include "df/tiletype.h"
 #include "df/tile_designation.h"
 #include "df/plotinfost.h"
@@ -60,7 +61,6 @@
 #include "df/reaction_reagent.h"
 #include "df/reaction_reagent_itemst.h"
 #include "df/reaction_reagent_type.h"
-#include "df/reaction_flags.h"
 #include "df/workshop_type.h"
 #include "df/plant_raw.h"
 #include "df/plant_raw_flags.h"
@@ -70,6 +70,7 @@
 
 #include "protocol.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -77,6 +78,7 @@
 #include <vector>
 #include <sstream>
 #include <map>
+#include <set>
 #include <tuple>
 
 using namespace DFHack;
@@ -234,11 +236,20 @@ static std::string handleListOrders(const std::string &args, uint8_t &status) {
     return os.str();
 }
 
+// isReactionPermittedForCiv is implemented in work_orders.cpp (shared with
+// applyQueueReactionJob) so both the discovery and execution paths agree on
+// what's actually runnable -- df::reaction_flags::FORTRESS_MODE_ENABLED is
+// never set on raw-loaded reactions (vanilla raws carry no such tag, and no
+// DFHack code reads it); the real gate is the fort's civ entity_raw
+// permitted-reaction list.
+bool isReactionPermittedForCiv(const std::string &reactionCode);
+
 // handleListReactions is the discovery half of queue_job's reaction-based
 // path (ORDER_TYPE_CUSTOM_REACTION, work_orders.cpp applyQueueReactionJob)
-// -- enumerates every FORTRESS_MODE_ENABLED df::reaction from the raws, the
-// same vector applyQueueReactionJob linear-scans by code. Every code shown
-// here round-trips into queue_job's reaction path verbatim. Exposed on the
+// -- enumerates every df::reaction from the raws that this fort's civ
+// permits (see isReactionPermittedForCiv), the same vector
+// applyQueueReactionJob linear-scans by code. Every code shown here
+// round-trips into queue_job's reaction path verbatim. Exposed on the
 // Go side as the standalone `list_reactions` tool (see internal/mcpserver/
 // tools_state.go), same pattern as job_types/list_orders above -- kept out
 // of the cheap-per-call tools (orders/queue_job) on purpose.
@@ -262,7 +273,7 @@ static std::string handleListReactions(const std::string &args, uint8_t &status)
 
     for (auto *reaction : df::global::world->raws.reactions.reactions) {
         if (!reaction) continue;
-        if (!reaction->flags.is_set(df::reaction_flags::FORTRESS_MODE_ENABLED)) continue;
+        if (!isReactionPermittedForCiv(reaction->code)) continue;
 
         std::string lcode = reaction->code;
         for (auto &c : lcode) c = tolower(c);
@@ -601,6 +612,11 @@ static std::string handleListZones(const std::string &args, uint8_t &status) {
 // Forward declaration -- implemented in locations.cpp (Task 1).
 uint8_t wireFromAbstractBuildingType(df::abstract_building_type t);
 
+// Forward declaration -- implemented in burrows.cpp (uses Burrows/df::burrow
+// types that file already includes; same forward-declared-elsewhere pattern
+// as wireFromAbstractBuildingType above).
+std::string handleListBurrows(const std::string &args, uint8_t &status);
+
 static std::string handleListLocations(const std::string &args, uint8_t &status) {
     if (!df::global::world || !df::global::plotinfo) {
         status = QUERY_STATUS_ERROR;
@@ -668,6 +684,22 @@ static std::string handleListLocations(const std::string &args, uint8_t &status)
     return os.str();
 }
 
+// kNeverFortStockFlags marks an item as never legitimate fort stock at
+// all, regardless of what else it's doing: caravan/hostile-owned,
+// forbidden, marked for dumping, garbage-collected, on fire, rotten, or an
+// artifact. Shared between handleListCrops's seed tally and
+// handleStockpileInventory's free/in-use split below so the two masks
+// don't drift apart.
+static const uint32_t kNeverFortStockFlags =
+    (uint32_t)df::item_flags::Mask::mask_dump |
+    (uint32_t)df::item_flags::Mask::mask_forbid |
+    (uint32_t)df::item_flags::Mask::mask_garbage_collect |
+    (uint32_t)df::item_flags::Mask::mask_hostile |
+    (uint32_t)df::item_flags::Mask::mask_on_fire |
+    (uint32_t)df::item_flags::Mask::mask_rotten |
+    (uint32_t)df::item_flags::Mask::mask_trader |
+    (uint32_t)df::item_flags::Mask::mask_artifact;
+
 // handleListCrops enumerates plantable crops (plant raws carrying the SEED
 // flag) for the build_farm_plot/assign_crop workflow -- each entry's
 // "token" round-trips verbatim into SET_FARM_CROP's CropName field
@@ -688,17 +720,9 @@ static std::string handleListCrops(const std::string &args, uint8_t &status) {
 
     // Same bad-flags mask and vector as autofarm's find_plantable_plants --
     // dumped/forbidden/rotten/etc seeds don't count as usable stock.
-    const uint32_t badFlags =
-        (uint32_t)df::item_flags::Mask::mask_dump |
-        (uint32_t)df::item_flags::Mask::mask_forbid |
-        (uint32_t)df::item_flags::Mask::mask_garbage_collect |
-        (uint32_t)df::item_flags::Mask::mask_hostile |
-        (uint32_t)df::item_flags::Mask::mask_on_fire |
-        (uint32_t)df::item_flags::Mask::mask_rotten |
-        (uint32_t)df::item_flags::Mask::mask_trader |
+    const uint32_t badFlags = kNeverFortStockFlags |
         (uint32_t)df::item_flags::Mask::mask_in_building |
-        (uint32_t)df::item_flags::Mask::mask_construction |
-        (uint32_t)df::item_flags::Mask::mask_artifact;
+        (uint32_t)df::item_flags::Mask::mask_construction;
     std::map<int32_t, int32_t> seedCounts;
     for (auto *item : df::global::world->items.other[df::items_other_id::SEEDS]) {
         auto *seed = strict_virtual_cast<df::item_seedsst>(item);
@@ -755,36 +779,60 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
     // sparingly. The material key is the same (type, index) pair
     // MaterialInfo::decode(item) reads, so Shale and Chalk boulders count
     // as separate entries instead of one anonymous BOULDER pile.
-    std::map<std::tuple<int, int, int>, int> counts; // (item_type, mat_type, mat_index) → count
+    //
+    // freeCounts is available stock; inUseCounts is the same item/material
+    // already incorporated into a building (in_building -- a bed in a
+    // bedroom, a door in a doorway) or a construction (a boulder mortared
+    // into a wall). Both are still live df::item objects, so a naive single
+    // tally silently conflates "free spare" with "already used" -- that was
+    // exactly the bug that caused invisible needs-bed/needs-door cancel
+    // loops upstream (caller sees count>0 and assumes a spare exists).
+    // Junk items (caravan/forbidden/dumped/etc, kNeverFortStockFlags above)
+    // don't belong in either tally.
+    std::map<std::tuple<int, int, int>, int> freeCounts;  // (item_type, mat_type, mat_index) → count
+    std::map<std::tuple<int, int, int>, int> inUseCounts;
 
-    // VERIFY: world->items.all field name (may be world->items.other.IN_PLAY).
     auto &items = df::global::world->items.all;
     for (auto *it : items) {
         if (!it) continue;
-        // VERIFY: filter for items in stockpiles only — in some versions
-        // this requires checking item.flags.bits.in_inventory == 0 etc.
-        counts[std::make_tuple((int)it->getType(),
-                               (int)it->getActualMaterial(),
-                               (int)it->getActualMaterialIndex())]++;
+        if (it->flags.whole & kNeverFortStockFlags) continue;
+
+        auto key = std::make_tuple((int)it->getType(),
+                                   (int)it->getActualMaterial(),
+                                   (int)it->getActualMaterialIndex());
+        if (it->flags.bits.in_building || it->flags.bits.construction) {
+            inUseCounts[key]++;
+        } else {
+            freeCounts[key]++;
+        }
     }
+
+    std::set<std::tuple<int, int, int>> allKeys;
+    for (auto &kv : freeCounts) allKeys.insert(kv.first);
+    for (auto &kv : inUseCounts) allKeys.insert(kv.first);
 
     std::ostringstream os;
     os << "{\"items\":[";
     bool first = true;
-    for (auto &kv : counts) {
-        df::item_type itype = (df::item_type)std::get<0>(kv.first);
+    for (auto &key : allKeys) {
+        df::item_type itype = (df::item_type)std::get<0>(key);
         std::string typeName = ENUM_KEY_STR(item_type, itype);
         if (!category.empty() && typeName.find(category) == std::string::npos) continue;
         // Human-readable material name via MaterialInfo (state_name at room
         // temperature, e.g. "shale"). Empty string when the pair doesn't
         // decode (e.g. materialless items).
-        MaterialInfo mi((int16_t)std::get<1>(kv.first), (int32_t)std::get<2>(kv.first));
+        MaterialInfo mi((int16_t)std::get<1>(key), (int32_t)std::get<2>(key));
         std::string matName = mi.isValid() ? mi.toString() : "";
+        auto freeIt = freeCounts.find(key);
+        auto inUseIt = inUseCounts.find(key);
+        int freeCount = (freeIt != freeCounts.end()) ? freeIt->second : 0;
+        int inUseCount = (inUseIt != inUseCounts.end()) ? inUseIt->second : 0;
         if (!first) os << ",";
         first = false;
         os << "{\"item_type\":" << jsonStr(typeName)
            << ",\"material\":" << jsonStr(matName)
-           << ",\"count\":" << jsonInt(kv.second);
+           << ",\"count\":" << jsonInt(freeCount)
+           << ",\"in_use\":" << jsonInt(inUseCount);
         if (itype == df::item_type::BOULDER) {
             // Economic stones (flux, ore-adjacent, etc.) are reserved by the
             // stone-use screen and masons won't take them by default — the
@@ -908,6 +956,61 @@ static bool dampAt(int32_t x, int32_t y, int32_t z) {
     return wetAt(x, y, z + 1);
 }
 
+// isSmoothedAt: true when tt carries DF's SMOOTH/SMOOTH_DEAD tiletype_special
+// variant -- the only DF-side signal a wall/floor has been smoothed; shape
+// and material are identical before/after (StoneWall vs StoneWallSmoothLR
+// both report shape=WALL material=STONE, differing only in `special`).
+// DF also stamps special=SMOOTH on every player-built Construction tile
+// (ConstructedFloor/Wall/Pillar, material=CONSTRUCTION) -- those are not
+// dwarf-smoothed and must be excluded, or every built wall/floor (including
+// aquifer seals) would misreport as smoothed.
+static bool isSmoothedAt(df::tiletype tt) {
+    using Sp = df::tiletype_special;
+    df::tiletype_special sp = tileSpecial(tt);
+    if (sp != Sp::SMOOTH && sp != Sp::SMOOTH_DEAD) return false;
+    return tileMaterial(tt) != df::tiletype_material::CONSTRUCTION;
+}
+
+// floorItemCountAt: per-tile count of items genuinely at rest on open
+// floor -- on_ground (DF's own per-tile "item sitting here" flag,
+// flipped by MapExtras::Block::addItemOnGround/removeItemOnGround) and
+// NOT yet absorbed into a building or construction (in_building/
+// construction -- handleStockpileInventory above already tallies those
+// separately; DF keeps on_ground true for those too, see gui/autodump.lua's
+// identical exclusion in the DFHack scripts tree, so plain itemCountAt
+// can't be used unfiltered here). Deliberately does NOT exclude
+// kNeverFortStockFlags junk (forbidden, dumped, rotten, etc.) -- those
+// items still physically sit on the tile and can still trigger DF's own
+// site_blocked construction stall (MapExtras::MapCache::removeItemOnGround).
+//
+// Filtered per 16x16 block on first touch, mirroring MapCache.cpp's own
+// init_item_counts lazy-per-block pattern (the same one backing
+// MapExtras::Block::itemCountAt) via the Block's raw item list, so a
+// map_slice/column_profile call only ever scans the blocks it actually
+// visits -- never world->items.all.
+using FloorItemBlockCache = std::map<MapExtras::Block *, std::array<int, 256>>;
+
+static int floorItemCountAt(MapExtras::MapCache &cache, FloorItemBlockCache &blockCache, df::coord pos) {
+    MapExtras::Block *b = cache.BlockAtTile(pos);
+    if (!b) return 0;
+    auto found = blockCache.find(b);
+    if (found == blockCache.end()) {
+        std::array<int, 256> counts{};
+        if (df::map_block *raw = b->getRaw()) {
+            for (int32_t id : raw->items) {
+                df::item *item = df::item::find(id);
+                if (!item || !item->flags.bits.on_ground) continue;
+                if (item->flags.bits.in_building || item->flags.bits.construction) continue;
+                df::coord tidx = item->pos - raw->map_pos;
+                if (!is_valid_tile_coord(tidx) || tidx.z != 0) continue;
+                counts[tidx.y * 16 + tidx.x]++;
+            }
+        }
+        found = blockCache.emplace(b, counts).first;
+    }
+    return found->second[(pos.y & 15) * 16 + (pos.x & 15)];
+}
+
 static std::string queryMapSlice(const std::string &args, uint8_t &status) {
     int64_t x1 = jsonGetInt(args, "x1", -1), y1 = jsonGetInt(args, "y1", -1);
     int64_t x2 = jsonGetInt(args, "x2", -1), y2 = jsonGetInt(args, "y2", -1);
@@ -922,12 +1025,15 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
         return jsonError("map_slice out of bounds");
 
     MapExtras::MapCache cache;
+    FloorItemBlockCache itemBlockCache;
     std::string rows = "[";
     std::string designated = "[";
     std::string water = "[";
     std::string aquifer = "[";
     std::string designationKinds = "[";
-    int desCount = 0, waterCount = 0, aquiferCount = 0, kindCount = 0;
+    std::string smoothed = "[";
+    std::string floorItems = "[";
+    int desCount = 0, waterCount = 0, aquiferCount = 0, kindCount = 0, smoothCount = 0, floorItemTiles = 0;
     for (int16_t y = (int16_t)y1; y <= (int16_t)y2; y++) {
         std::string row;
         for (int16_t x = (int16_t)x1; x <= (int16_t)x2; x++) {
@@ -970,9 +1076,17 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
                 designationKinds += "[" + jsonInt(x) + "," + jsonInt(y) + ",4]"; // smooth/engrave
                 kindCount++;
             }
-            // Visible water only — hidden pockets stay under fog, matching
-            // the '?' the grid shows for the same tile.
-            if (!des.bits.hidden && des.bits.flow_size > 0 &&
+            // Water INCLUDING hidden tiles — same fog-honesty exception as
+            // aquifer below. A near-flood incident traced to this exact
+            // gate: a hidden under-brook channel tile carried real 7/7
+            // water that this filter silently dropped from the water[]
+            // array while the grid glyph stayed '?' (diggable-looking) and
+            // the aquifer bit for neighboring tiles reported fine, so
+            // nothing in the response hinted at the hazard. DF's own
+            // damp-dig cancellations already make standing water
+            // player-knowable the moment a dig touches it; hiding it here
+            // only manufactures a surprise instead of preventing one.
+            if (des.bits.flow_size > 0 &&
                 des.bits.liquid_type == df::tile_liquid::Water) {
                 if (waterCount) water += ",";
                 water += "[" + jsonInt(x) + "," + jsonInt(y) + "," +
@@ -987,16 +1101,38 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
                 aquifer += "[" + jsonInt(x) + "," + jsonInt(y) + "]";
                 aquiferCount++;
             }
+            // Smoothed state — the only DF-side signal that a completed
+            // "smooth mode=wall/floor" job took effect; shape/material don't
+            // change, so the classifier glyphs above render identically
+            // before and after. See isSmoothedAt.
+            if (isSmoothedAt(tt)) {
+                if (smoothCount) smoothed += ",";
+                smoothed += "[" + jsonInt(x) + "," + jsonInt(y) + "]";
+                smoothCount++;
+            }
+            // Loose items at rest on open floor -- invisible to the glyph
+            // classifier above (a tile with a stray item still renders as
+            // plain floor) but can silently block a new building placement.
+            // See floorItemCountAt.
+            int itemCount = floorItemCountAt(cache, itemBlockCache, pos);
+            if (itemCount > 0) {
+                if (floorItemTiles) floorItems += ",";
+                floorItems += "[" + jsonInt(x) + "," + jsonInt(y) + "," + jsonInt(itemCount) + "]";
+                floorItemTiles++;
+            }
         }
         if (y != (int16_t)y1) rows += ",";
         rows += jsonStr(row);
     }
-    rows += "]"; designated += "]"; water += "]"; aquifer += "]"; designationKinds += "]";
+    rows += "]"; designated += "]"; water += "]"; aquifer += "]"; designationKinds += "]"; smoothed += "]";
+    floorItems += "]";
     status = QUERY_STATUS_SUCCESS;
     return "{\"z\":" + jsonInt(z) + ",\"x1\":" + jsonInt(x1) + ",\"y1\":" + jsonInt(y1) +
            ",\"rows\":" + rows + ",\"designated\":" + designated +
            ",\"water\":" + water + ",\"aquifer\":" + aquifer +
-           ",\"designation_kinds\":" + designationKinds + "}";
+           ",\"designation_kinds\":" + designationKinds +
+           ",\"smoothed\":" + smoothed +
+           ",\"floor_items\":" + floorItems + "}";
 }
 
 static std::string queryColumnProfile(const std::string &args, uint8_t &status) {
@@ -1007,6 +1143,7 @@ static std::string queryColumnProfile(const std::string &args, uint8_t &status) 
         return jsonError("column_profile needs x,y,z_top>=z_bottom");
     if ((zt - zb + 1) > 60) return jsonError("column_profile too tall (max 60)");
     MapExtras::MapCache cache;
+    FloorItemBlockCache itemBlockCache;
     std::string levels = "[";
     bool first = true;
     for (int16_t z = (int16_t)zt; z >= (int16_t)zb; z--) {
@@ -1037,10 +1174,10 @@ static std::string queryColumnProfile(const std::string &args, uint8_t &status) 
             case 'T': case 't': shape = "plant"; mat = "wood"; break;
             case 'F': shape = "fortification"; mat = "stone"; break;
         }
-        // Water/aquifer/damp report the truth under fog, same as
+        // Water/aquifer/damp/smooth report the truth under fog, same as
         // shape/material above — this is the survey path, and dampness is
         // exactly what a cautious digger must see before breaching a wet
-        // layer. All three fields are omitted when falsy (additive JSON).
+        // layer. All four fields are omitted when falsy (additive JSON).
         std::string wetness;
         if (des.bits.flow_size > 0 && des.bits.liquid_type == df::tile_liquid::Water)
             wetness += ",\"water\":" + jsonInt(des.bits.flow_size);
@@ -1048,6 +1185,11 @@ static std::string queryColumnProfile(const std::string &args, uint8_t &status) 
             wetness += ",\"aquifer\":true";
         if (dampAt((int32_t)x, (int32_t)y, z))
             wetness += ",\"damp\":true";
+        if (isSmoothedAt(tt))
+            wetness += ",\"smooth\":true";
+        int itemCount = floorItemCountAt(cache, itemBlockCache, pos);
+        if (itemCount > 0)
+            wetness += ",\"floor_items\":" + jsonInt(itemCount);
         if (!first) levels += ",";
         first = false;
         levels += "{\"z\":" + jsonInt(z) + ",\"glyph\":" + jsonStr(std::string(1, g)) +
@@ -1096,6 +1238,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = handleListZones(args, status);
         } else if (name == "list_locations") {
             data = handleListLocations(args, status);
+        } else if (name == "list_burrows") {
+            data = handleListBurrows(args, status);
         } else if (name == "list_crops") {
             data = handleListCrops(args, status);
         } else if (name == "stockpile_inventory") {

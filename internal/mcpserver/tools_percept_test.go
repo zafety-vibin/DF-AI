@@ -346,6 +346,61 @@ func TestFortFootprintBBox_ClampsHighSideToMapBounds(t *testing.T) {
 	}
 }
 
+// TestFortFootprintBBox_AmbientChurnDoesNotGrowFootprint drives the real
+// Detector end-to-end into fortFootprintBBox: a dug tile (wall->floor by
+// shape) defines the footprint, while ambient tiletype churn at a distant
+// valley — grass dark->light (344->394) and a murky pool (2) drying to a
+// soil floor (350), all floor->floor by shape — must not grow it. This is
+// the exact pollution that made scope=fort render the wrong region.
+func TestFortFootprintBBox_AmbientChurnDoesNotGrowFootprint(t *testing.T) {
+	mods := modifications.NewModificationOverlay(modifications.Bounds{Width: 96, Height: 96, Depth: 5})
+	det := modifications.NewDetector(mods)
+	det.InitializeBaseline([]protocol.TileState{
+		{X: 20, Y: 20, Z: 3, TileType: 215, Flags: protocol.FlagHidden | protocol.FlagWall},      // StoneWall, to be dug
+		{X: 80, Y: 80, Z: 3, TileType: 344, Flags: protocol.FlagDiscovered | protocol.FlagFloor}, // valley grass
+		{X: 81, Y: 80, Z: 3, TileType: 2, Flags: protocol.FlagDiscovered | protocol.FlagFloor},   // murky pool
+	})
+	det.DetectModifications([]protocol.TileState{
+		{X: 20, Y: 20, Z: 3, TileType: 332, Flags: protocol.FlagDiscovered | protocol.FlagFloor}, // dug: StoneFloor1
+		{X: 80, Y: 80, Z: 3, TileType: 394, Flags: protocol.FlagDiscovered | protocol.FlagFloor}, // grass churn
+		{X: 81, Y: 80, Z: 3, TileType: 350, Flags: protocol.FlagDiscovered | protocol.FlagFloor}, // pool dries
+	})
+	x0, y0, x1, y1, ok := fortFootprintBBox(mods, 96, 96, 3, 8)
+	if !ok {
+		t.Fatal("expected ok=true — the dug tile must define a footprint")
+	}
+	if x0 != 12 || y0 != 12 || x1 != 28 || y1 != 28 {
+		t.Fatalf("bbox = (%d,%d)-(%d,%d), want (12,12)-(28,28) around the dug tile only (ambient churn grew it)",
+			x0, y0, x1, y1)
+	}
+}
+
+// TestFortFootprintBBox_UnknownTypeEntriesIgnored asserts overlay entries
+// whose classification is ModificationUnknown never define the footprint:
+// alone they yield ok=false, and alongside real work they don't widen the
+// bbox.
+func TestFortFootprintBBox_UnknownTypeEntriesIgnored(t *testing.T) {
+	mods := modifications.NewModificationOverlay(modifications.Bounds{Width: 50, Height: 50, Depth: 5})
+	if err := mods.Add(modifications.Coordinate{X: 40, Y: 40, Z: 3},
+		modifications.ModificationInfo{Type: modifications.ModificationUnknown, DetectedAt: time.Now()}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, _, _, _, ok := fortFootprintBBox(mods, 50, 50, 3, 8); ok {
+		t.Fatal("expected ok=false with only Unknown-type entries recorded")
+	}
+	if err := mods.Add(modifications.Coordinate{X: 10, Y: 10, Z: 3},
+		modifications.ModificationInfo{Type: modifications.ModificationDug, DetectedAt: time.Now()}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	x0, y0, x1, y1, ok := fortFootprintBBox(mods, 50, 50, 3, 8)
+	if !ok {
+		t.Fatal("expected ok=true once a Dug entry exists")
+	}
+	if x0 != 2 || y0 != 2 || x1 != 18 || y1 != 18 {
+		t.Fatalf("bbox = (%d,%d)-(%d,%d), want (2,2)-(18,18) from the Dug entry only", x0, y0, x1, y1)
+	}
+}
+
 // TestRenderFullOrDownsampled_FullFidelityAtBudget asserts a stitched
 // region exactly at the 100x100 budget takes the full-fidelity path (no
 // downsampling).

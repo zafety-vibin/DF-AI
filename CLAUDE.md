@@ -70,6 +70,7 @@ cmake --build build --target df_ai_protocol --config Release
 - DLL deploys need DF closed (file lock); the artifact is `df_ai_protocol.plug.dll` (`.plug.dll`, not `.dll`).
 - Repo has `core.autocrlf=true` and no `.gitattributes`: avoid sed/bulk rewrites; keep diffs free of line-ending churn.
 - DF 53.15+ pools announcement reports: never delete `df::report` objects; the announcements vector grows monotonically (max-id cursoring is correct).
+- `designate_dig type=mine/channel/ramp` over an existing stair silently converts it to plain floor by design (mirrors vanilla DF's own stair-removal mechanic) — the ACK reports it, but a model composing a room/hub designation should `look`/`cross_section` its target footprint first if a stair shaft might run through it, since losing a shaft's vertical connection can strand a fort's descent (this happened live in Fort #4 session 2).
 
 ## House rules
 

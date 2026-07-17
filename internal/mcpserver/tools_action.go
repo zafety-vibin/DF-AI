@@ -16,11 +16,15 @@ import (
 // connectorSuggestion checks whether the just-designated rectangle
 // touches any existing open (already-dug) region. Returns "" when it
 // does (or when nothing has been dug yet — no suggestion makes sense
-// for a fort's very first designation). Never returns error/warning
-// text: a fresh designation being disconnected from existing space is
-// normal DF workflow (room first, corridor second), not a mistake — see
-// design doc "Component 3".
-func connectorSuggestion(topo *topology.TopologyOverlay, x1, y1, z1, x2, y2, z2 int16) string {
+// for a fort's very first designation). A neighbor inside a dig rect
+// this session already ACKed (digs, nil = none) also counts as
+// connected: hidden-but-designated tiles classify as Unknown in the
+// topology overlay, so a room designated beside a not-yet-carved stair
+// spine would otherwise false-positive as disconnected and point at
+// wilderness. Never returns error/warning text: a fresh designation
+// being disconnected from existing space is normal DF workflow (room
+// first, corridor second), not a mistake — see design doc "Component 3".
+func connectorSuggestion(topo *topology.TopologyOverlay, digs *pendingDigs, x1, y1, z1, x2, y2, z2 int16) string {
 	rg := topology.BuildRegionGraph(topo)
 	if len(rg.Regions) == 0 {
 		return ""
@@ -43,8 +47,8 @@ func connectorSuggestion(topo *topology.TopologyOverlay, x1, y1, z1, x2, y2, z2 
 				if inside {
 					continue
 				}
-				if topo.GetTileState(x, y, z) == topology.StateOpen {
-					return "" // touches existing open space — connected
+				if topo.GetTileState(x, y, z) == topology.StateOpen || digs.contains(x, y, z) {
+					return "" // touches existing open space (or a pending dig) — connected
 				}
 			}
 		}
@@ -57,10 +61,10 @@ func connectorSuggestion(topo *topology.TopologyOverlay, x1, y1, z1, x2, y2, z2 
 	// and one Z below the bottom.
 	for x := x1; x <= x2; x++ {
 		for y := y1; y <= y2; y++ {
-			if topo.GetTileState(x, y, z1-1) == topology.StateOpen {
+			if topo.GetTileState(x, y, z1-1) == topology.StateOpen || digs.contains(x, y, z1-1) {
 				return ""
 			}
-			if topo.GetTileState(x, y, z2+1) == topology.StateOpen {
+			if topo.GetTileState(x, y, z2+1) == topology.StateOpen || digs.contains(x, y, z2+1) {
 				return ""
 			}
 		}
@@ -116,11 +120,17 @@ func ackText(res *commands.CommandResult, err error, what string) string {
 	if res == nil {
 		return fmt.Sprintf("FAILED: %s — no result", what)
 	}
+	// Severity comes from the plugin's ack STATUS byte, never inferred
+	// from message presence: a SUCCESS ack carrying an informational note
+	// (e.g. remove_zone's "zone removed immediately") is a clean success
+	// with the note appended verbatim, not a PARTIAL.
 	switch {
+	case res.Status == protocol.AckStatusPartial:
+		return fmt.Sprintf("PARTIAL: %s — %s", what, res.ErrorMsg)
 	case res.Success && res.ErrorMsg == "":
 		return fmt.Sprintf("SUCCESS: %s (ack in %s)", what, res.Duration)
 	case res.Success:
-		return fmt.Sprintf("PARTIAL: %s — %s", what, res.ErrorMsg)
+		return fmt.Sprintf("SUCCESS: %s (ack in %s) — %s", what, res.Duration, res.ErrorMsg)
 	default:
 		return fmt.Sprintf("FAILED: %s — %s", what, res.ErrorMsg)
 	}
@@ -145,14 +155,36 @@ func resultDetail(res *commands.CommandResult, err error) string {
 
 // buildWireCoords converts the model-facing build coordinate to the wire
 // semantic. The protocol's (x,y) is a building's NW CORNER (DFHack
-// allocInstance), but the tool promises CENTER for 3x3 workshops — the
-// natural way to think about placement. Workshops (0x10-0x2F) shift by
-// -1,-1; everything else is 1x1 where center == corner.
+// allocInstance), but the tool promises CENTER for square multi-tile
+// footprints — the natural way to think about placement. The corner
+// offset is (footprint-1)/2 in both axes (DF centers odd footprints,
+// Buildings.cpp getCorrectSize: 3x3 → center (1,1), 5x5 → center (2,2)):
+// workshops and furnaces (3x3) shift by -1,-1; the trade depot (5x5,
+// forced by DF regardless of requested size) shifts by -2,-2; everything
+// else is 1x1 where center == corner.
 func buildWireCoords(buildType uint8, x, y int) (int16, int16) {
-	if buildType >= 0x10 && buildType < 0x30 {
+	switch {
+	case protocol.IsBuildTypeWorkshop(buildType), protocol.IsBuildTypeFurnace(buildType):
 		return int16(x - 1), int16(y - 1)
+	case protocol.IsBuildTypeDepot(buildType):
+		return int16(x - 2), int16(y - 2)
+	default:
+		return int16(x), int16(y)
 	}
-	return int16(x), int16(y)
+}
+
+// buildFootprintCorner is buildWireCoords generalized to an arbitrary WxH
+// footprint (bridge's width/height are caller-chosen, unlike the fixed 3x3
+// workshop/furnace or forced 5x5 depot footprints buildWireCoords already
+// special-cases). DF centers a rectangle-shaped building at center=size/2
+// (integer division) — Buildings.cpp's getCorrectSize groups Bridge with
+// FarmPlot/Stockpile/Civzone/RoadDirt/RoadPaved under exactly that formula
+// — so the NW corner is x - width/2, y - height/2. For odd dimensions this
+// is numerically identical to buildWireCoords' "-1,-1"/"-2,-2" cases
+// (3/2==1, 5/2==2); it also handles even dimensions correctly, which those
+// two fixed cases never needed to.
+func buildFootprintCorner(x, y, width, height int) (int16, int16) {
+	return int16(x - width/2), int16(y - height/2)
 }
 
 // digTypeFromName maps a model-facing (or blueprint-CSV-facing) dig type
@@ -198,11 +230,27 @@ var buildTypes = map[string]uint8{
 	"still": protocol.BuildTypeWorkshopStill, "farmer": protocol.BuildTypeWorkshopFarmer,
 	"craftsdwarf": protocol.BuildTypeWorkshopCraftsdwarf, "mechanic": protocol.BuildTypeWorkshopMechanic,
 	"butcher": protocol.BuildTypeWorkshopButcher, "kitchen": protocol.BuildTypeWorkshopKitchen,
-	"fishery": protocol.BuildTypeWorkshopFishery,
-	"bed":     protocol.BuildTypeBed, "table": protocol.BuildTypeTable,
+	"fishery": protocol.BuildTypeWorkshopFishery, "metalsmith": protocol.BuildTypeWorkshopMetalsmith,
+	"bed": protocol.BuildTypeBed, "table": protocol.BuildTypeTable,
 	"chair": protocol.BuildTypeChair, "cabinet": protocol.BuildTypeCabinet,
 	"coffer": protocol.BuildTypeCoffer,
-	"door":   protocol.BuildTypeDoor, "hatch": protocol.BuildTypeHatch,
+	"door": protocol.BuildTypeDoor, "hatch": protocol.BuildTypeHatch,
+	"lever": protocol.BuildTypeLever, "floodgate": protocol.BuildTypeFloodgate,
+	"smelter": protocol.BuildTypeFurnaceSmelter, "wood_furnace": protocol.BuildTypeFurnaceWood,
+	"tradedepot": protocol.BuildTypeTradeDepot,
+}
+
+// bridgeDirections maps the build tool's model-facing bridge direction
+// name to the wire BridgeDirection* byte (protocol.go). "bridge" is
+// deliberately NOT in buildTypes above: it has no fixed BuildType byte at
+// all (it needs a rectangle + direction, not a single-tile BUILD command
+// — see the build tool's handler) and is dispatched separately.
+var bridgeDirections = map[string]uint8{
+	"retract": protocol.BridgeDirectionRetract,
+	"raise_n": protocol.BridgeDirectionRaiseN,
+	"raise_s": protocol.BridgeDirectionRaiseS,
+	"raise_e": protocol.BridgeDirectionRaiseE,
+	"raise_w": protocol.BridgeDirectionRaiseW,
 }
 
 var orderTypes = map[string]uint8{
@@ -310,10 +358,13 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		// designation, and only against a live topology overlay.
 		if err == nil && res != nil && res.Success {
 			if topo := b.Topo(); topo != nil {
-				if suggestion := connectorSuggestion(topo, int16(in.X1), int16(in.Y1), int16(in.Z1), int16(in.X2), int16(in.Y2), int16(in.Z2)); suggestion != "" {
+				if suggestion := connectorSuggestion(topo, b.Digs, int16(in.X1), int16(in.Y1), int16(in.Z1), int16(in.X2), int16(in.Y2), int16(in.Z2)); suggestion != "" {
 					ack = ack + "\n" + suggestion
 				}
 			}
+			// Recorded AFTER the suggestion so a designation can't count
+			// itself as its own connection.
+			b.Digs.add(int16(in.X1), int16(in.Y1), int16(in.Z1), int16(in.X2), int16(in.Y2), int16(in.Z2))
 		}
 		return withDash(b, ctx, ack), nil, nil
 	})
@@ -351,18 +402,42 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	})
 
 	type buildIn struct {
-		Type     string `json:"type" jsonschema:"workshop (carpenter|mason|still|farmer|craftsdwarf|mechanic|butcher|kitchen|fishery), furniture (bed|table|chair|cabinet|coffer), door|hatch, or construction (wall|floor|upstair|downstair|updownstair|ramp)"`
-		X        int    `json:"x" jsonschema:"for workshops this is the CENTER of the 3x3 footprint"`
-		Y        int    `json:"y"`
-		Z        int    `json:"z"`
-		Material string `json:"material,omitempty" jsonschema:"any|wood|stone|blocks — constrains the item CLASS claimed for the build (default any)"`
+		Type      string `json:"type" jsonschema:"workshop (carpenter|mason|still|farmer|craftsdwarf|mechanic|butcher|kitchen|fishery|metalsmith), furnace (smelter|wood_furnace), tradedepot, furniture (bed|table|chair|cabinet|coffer), door|hatch|lever|floodgate, bridge, or construction (wall|floor|upstair|downstair|updownstair|ramp)"`
+		X         int    `json:"x" jsonschema:"CENTER of the footprint: workshops/furnaces are 3x3, tradedepot is 5x5, bridge is width x height (surrounding tiles must be clear floor)"`
+		Y         int    `json:"y"`
+		Z         int    `json:"z"`
+		Material  string `json:"material,omitempty" jsonschema:"any|wood|stone|blocks — constrains the item CLASS claimed for the build (default any); ignored for bridge"`
+		Width     int    `json:"width,omitempty" jsonschema:"bridge only (required): footprint width, x-span"`
+		Height    int    `json:"height,omitempty" jsonschema:"bridge only (required): footprint height, y-span"`
+		Direction string `json:"direction,omitempty" jsonschema:"bridge only (required): retract|raise_n|raise_s|raise_e|raise_w — which way the bridge lifts when raised (retract slides away instead)"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "build",
-		Description: "Place a building. Workshops are 3x3 (x,y = center; surrounding 8 tiles must be clear floor). Furniture needs the item in a stockpile first (order it). Constructions need blocks/boulders. Optional material (any|wood|stone|blocks) constrains which item CLASS gets used — wood=logs, stone=boulders, blocks=blocks — but DF's job system still picks the specific item within that class.",
+		Description: "Place a building. Workshops/furnaces are 3x3, tradedepot is 5x5, bridge is width x height (x,y = center; surrounding tiles must be clear floor). Furniture/lever/floodgate need the item in a stockpile first (order or queue_job it — lever needs 1 mechanism, floodgate needs 1 floodgate item). Constructions need blocks/boulders. metalsmith needs an ANVIL item (craft or buy one) plus a fire-safe building material; smelter/wood_furnace need a fire-safe boulder; tradedepot needs 3x any building material; bridge needs building material scaled to its footprint (DF computes the amount) and takes width/height/direction instead of material. Optional material (any|wood|stone|blocks) constrains which item CLASS gets used — wood=logs, stone=boulders, blocks=blocks — but DF's job system still picks the specific item within that class. A lever must be link_building'd to a target before pull_lever has any effect.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in buildIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
+		}
+		if strings.ToLower(in.Type) == "bridge" {
+			if in.Width <= 0 || in.Height <= 0 {
+				return withDash(b, ctx, "bridge requires width and height > 0"), nil, nil
+			}
+			// DF hard-caps bridges at 31x31 (its own UI; DFHack's quickfort
+			// enforces the same limit) -- reject early rather than round-trip
+			// to the plugin, which also enforces this as the authoritative check.
+			if in.Width > 31 || in.Height > 31 {
+				return withDash(b, ctx, "bridge exceeds DF's maximum size of 31x31 tiles"), nil, nil
+			}
+			dir, ok := bridgeDirections[strings.ToLower(in.Direction)]
+			if !ok {
+				return withDash(b, ctx, fmt.Sprintf("unknown bridge direction %q (retract|raise_n|raise_s|raise_e|raise_w)", in.Direction)), nil, nil
+			}
+			x1, y1 := buildFootprintCorner(in.X, in.Y, in.Width, in.Height)
+			x2 := x1 + int16(in.Width) - 1
+			y2 := y1 + int16(in.Height) - 1
+			res, err := b.Exec.SendBuildBridge(x1, y1, int16(in.Z), x2, y2, dir)
+			what := fmt.Sprintf("build bridge %dx%d at center (%d,%d,%d) direction=%s", in.Width, in.Height, in.X, in.Y, in.Z, strings.ToLower(in.Direction))
+			return withDash(b, ctx, ackText(res, err, what)), nil, nil
 		}
 		bt, ok := buildTypes[strings.ToLower(in.Type)]
 		if !ok {
@@ -538,13 +613,44 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "remove_building",
-		Description: "Mark the building at a tile for removal (deconstruction). Any tile of a multi-tile building's footprint works. Dwarves do the teardown over game time and reclaim the materials — step() and check buildings to confirm it's gone.",
+		Description: "Mark the building at a tile for removal (deconstruction). Any tile of a multi-tile building's footprint works. Dwarves do the teardown over game time and reclaim the materials — step() and check buildings to confirm it's gone. If a stockpile's rectangle overlaps a real building at that tile (stockpiles have no hole punched out for enclosed buildings), the call returns a FAILED ack listing all candidates instead of guessing — removing the stockpile first is destructive to its WHOLE rectangle, not just the shared tiles, so read the ack text before reissuing.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in xyzIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
 		}
 		res, err := b.Exec.SendRemoveBuilding(int16(in.X), int16(in.Y), int16(in.Z))
 		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("remove building at (%d,%d,%d)", in.X, in.Y, in.Z))), nil, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "pull_lever",
+		Description: "Queue DF's real PullLever job against the built lever at a tile. The lever must already be built and, for the pull to do anything, link_building'd to a target (bridge/floodgate/door/hatch). Dwarves do the actual pulling over game time — step() to let it happen.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in xyzIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		res, err := b.Exec.SendPullLever(int16(in.X), int16(in.Y), int16(in.Z))
+		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("pull lever at (%d,%d,%d)", in.X, in.Y, in.Z))), nil, nil
+	})
+
+	type linkBuildingIn struct {
+		LeverX  int `json:"lever_x"`
+		LeverY  int `json:"lever_y"`
+		LeverZ  int `json:"lever_z"`
+		TargetX int `json:"target_x" jsonschema:"any tile of the target building's footprint"`
+		TargetY int `json:"target_y"`
+		TargetZ int `json:"target_z"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "link_building",
+		Description: "Wire a built lever to a trigger target (bridge, floodgate, door, or hatch) so pull_lever operates it. Consumes two free mechanism items (craft with queue_job item=ConstructMechanisms at a mechanic workshop) — fails truthfully if fewer than two are available, if either building is still under construction, or if the target type isn't supported. Both buildings must already be built.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in linkBuildingIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		res, err := b.Exec.SendLinkBuilding(int16(in.LeverX), int16(in.LeverY), int16(in.LeverZ), int16(in.TargetX), int16(in.TargetY), int16(in.TargetZ))
+		what := fmt.Sprintf("link lever (%d,%d,%d) -> target (%d,%d,%d)", in.LeverX, in.LeverY, in.LeverZ, in.TargetX, in.TargetY, in.TargetZ)
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{

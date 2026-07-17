@@ -6,9 +6,10 @@ import (
 )
 
 // quadrantSlice builds a w x h Slice at absolute origin (x1,y1) filled with
-// one distinctive glyph, plus one Designated tile and one Water tile at
-// absolute coordinates inside the block — used to check that overlay
-// entries survive stitching unchanged (they're already absolute).
+// one distinctive glyph, plus one Designated tile, one Water tile, one
+// Smoothed tile, and one FloorItems tile at absolute coordinates inside the
+// block — used to check that overlay entries survive stitching unchanged
+// (they're already absolute).
 func quadrantSlice(x1, y1 int16, w, h int, glyph rune) *Slice {
 	row := strings.Repeat(string(glyph), w)
 	rows := make([]string, h)
@@ -19,6 +20,8 @@ func quadrantSlice(x1, y1 int16, w, h int, glyph rune) *Slice {
 		Z: 5, X1: x1, Y1: y1, Rows: rows,
 		Designated: [][2]int16{{x1, y1}},
 		Water:      [][3]int16{{x1 + 1, y1, 3}},
+		Smoothed:   [][2]int16{{x1, y1}},
+		FloorItems: [][3]int16{{x1, y1, 2}},
 	}
 }
 
@@ -70,6 +73,12 @@ func TestStitchSlices_2x2Quadrants(t *testing.T) {
 	}
 	if len(out.Water) != 4 {
 		t.Fatalf("expected 4 water tiles, got %d: %v", len(out.Water), out.Water)
+	}
+	if len(out.Smoothed) != 4 {
+		t.Fatalf("expected 4 smoothed tiles (one per block), got %d: %v", len(out.Smoothed), out.Smoothed)
+	}
+	if len(out.FloorItems) != 4 {
+		t.Fatalf("expected 4 floor item tiles (one per block), got %d: %v", len(out.FloorItems), out.FloorItems)
 	}
 }
 

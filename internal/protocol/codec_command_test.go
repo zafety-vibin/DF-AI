@@ -52,6 +52,140 @@ func TestEncodeDecodeRemoveZoneCommand(t *testing.T) {
 	}
 }
 
+func TestDesignateBurrowRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   11,
+		CommandType: CommandTypeDesignateBurrow,
+		DesignateBurrow: DesignateBurrowDesignation{
+			Name: "shelter",
+			X1:   10, Y1: 10, Z1: 90,
+			X2: 20, Y2: 20, Z2: 92,
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 11 || got.CommandType != CommandTypeDesignateBurrow || got.DesignateBurrow != orig.DesignateBurrow {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
+func TestRemoveBurrowRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:    12,
+		CommandType:  CommandTypeRemoveBurrow,
+		RemoveBurrow: RemoveBurrowDesignation{Name: "shelter"},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 12 || got.CommandType != CommandTypeRemoveBurrow || got.RemoveBurrow != orig.RemoveBurrow {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
+func TestAssignBurrowRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   13,
+		CommandType: CommandTypeAssignBurrow,
+		AssignBurrow: AssignBurrowDesignation{
+			Name: "shelter", Assign: true, AllCitizens: false, UnitID: 42,
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 13 || got.CommandType != CommandTypeAssignBurrow || got.AssignBurrow != orig.AssignBurrow {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
+func TestAssignBurrowAllCitizensRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   14,
+		CommandType: CommandTypeAssignBurrow,
+		AssignBurrow: AssignBurrowDesignation{
+			Name: "shelter", Assign: false, AllCitizens: true, UnitID: 0,
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 14 || got.CommandType != CommandTypeAssignBurrow || got.AssignBurrow != orig.AssignBurrow {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
+func TestSetAlertRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   15,
+		CommandType: CommandTypeSetAlert,
+		SetAlert:    SetAlertDesignation{Name: "shelter", Active: true},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 15 || got.CommandType != CommandTypeSetAlert || got.SetAlert != orig.SetAlert {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
+func TestDesignateBurrowEmptyNameRejected(t *testing.T) {
+	msg := &CommandMessage{
+		CommandID:       1,
+		CommandType:     CommandTypeDesignateBurrow,
+		DesignateBurrow: DesignateBurrowDesignation{Name: "", X2: 1, Y2: 1, Z2: 1},
+	}
+	if err := msg.Validate(); err == nil {
+		t.Fatal("expected error for empty burrow name")
+	}
+}
+
 func TestQueueJobRoundTrip(t *testing.T) {
 	orig := &CommandMessage{
 		CommandID:   8,
@@ -330,5 +464,101 @@ func TestBuildLegacyPayloadWithoutMaterialByte(t *testing.T) {
 	want := BuildDesignation{X: 3, Y: 4, Z: 5, BuildType: BuildTypeBed, Material: MaterialClassAny}
 	if got.CommandID != 11 || got.Build != want {
 		t.Fatalf("legacy payload mismatch: %+v", got)
+	}
+}
+
+func TestLinkBuildingRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   12,
+		CommandType: CommandTypeLinkBuilding,
+		LinkBuilding: LinkBuildingDesignation{
+			LeverX: 10, LeverY: 20, LeverZ: 100,
+			TargetX: 15, TargetY: 25, TargetZ: 100,
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 12 || got.CommandType != CommandTypeLinkBuilding || got.LinkBuilding != orig.LinkBuilding {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
+func TestPullLeverRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   13,
+		CommandType: CommandTypePullLever,
+		PullLever:   PullLeverDesignation{X: 10, Y: 20, Z: 100},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 13 || got.CommandType != CommandTypePullLever || got.PullLever != orig.PullLever {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
+func TestBuildBridgeRoundTrip(t *testing.T) {
+	for _, dir := range []uint8{BridgeDirectionRetract, BridgeDirectionRaiseN, BridgeDirectionRaiseS, BridgeDirectionRaiseE, BridgeDirectionRaiseW} {
+		orig := &CommandMessage{
+			CommandID:   14,
+			CommandType: CommandTypeBuildBridge,
+			BuildBridge: BuildBridgeDesignation{X1: 10, Y1: 20, Z: 100, X2: 14, Y2: 22, Direction: dir},
+		}
+		data, err := SerializeMessage(orig)
+		if err != nil {
+			t.Fatalf("direction %d encode: %v", dir, err)
+		}
+		decoded, err := DeserializeMessage(data)
+		if err != nil {
+			t.Fatalf("direction %d decode: %v", dir, err)
+		}
+		got, ok := decoded.(*CommandMessage)
+		if !ok {
+			t.Fatalf("decoded wrong type %T", decoded)
+		}
+		if got.BuildBridge != orig.BuildBridge {
+			t.Fatalf("direction %d round-trip mismatch: %+v", dir, got.BuildBridge)
+		}
+	}
+}
+
+func TestBuildBridgeInvalidDirectionRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   14,
+		CommandType: CommandTypeBuildBridge,
+		BuildBridge: BuildBridgeDesignation{X1: 1, Y1: 1, Z: 1, X2: 2, Y2: 2, Direction: BridgeDirectionRaiseW + 1},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("bridge direction out of range must fail validation")
+	}
+}
+
+func TestBuildBridgeInvalidRegionRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   14,
+		CommandType: CommandTypeBuildBridge,
+		BuildBridge: BuildBridgeDesignation{X1: 5, Y1: 1, Z: 1, X2: 2, Y2: 2, Direction: BridgeDirectionRetract},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("x2<x1 must fail validation")
 	}
 }

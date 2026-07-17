@@ -1047,6 +1047,86 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		if _, err := w.Write(cropBytes); err != nil {
 			return err
 		}
+	case CommandTypeDesignateBurrow:
+		// [2: NameLen] [N: Name] [2: X1] [2: Y1] [2: Z1] [2: X2] [2: Y2] [2: Z2]
+		// Name-first, matching CommandTypeBlueprint's shape (case 0x07).
+		nameBytes := []byte(msg.DesignateBurrow.Name)
+		if len(nameBytes) > 255 {
+			return errors.New("designate_burrow name too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(nameBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(nameBytes); err != nil {
+			return err
+		}
+		for _, v := range []int16{
+			msg.DesignateBurrow.X1, msg.DesignateBurrow.Y1, msg.DesignateBurrow.Z1,
+			msg.DesignateBurrow.X2, msg.DesignateBurrow.Y2, msg.DesignateBurrow.Z2,
+		} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+	case CommandTypeRemoveBurrow:
+		// [2: NameLen] [N: Name]
+		nameBytes := []byte(msg.RemoveBurrow.Name)
+		if len(nameBytes) > 255 {
+			return errors.New("remove_burrow name too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(nameBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(nameBytes); err != nil {
+			return err
+		}
+	case CommandTypeAssignBurrow:
+		// [2: NameLen] [N: Name] [1: Assign] [1: AllCitizens] [4: UnitID]
+		nameBytes := []byte(msg.AssignBurrow.Name)
+		if len(nameBytes) > 255 {
+			return errors.New("assign_burrow name too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(nameBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(nameBytes); err != nil {
+			return err
+		}
+		assignByte, allCitizensByte := uint8(0), uint8(0)
+		if msg.AssignBurrow.Assign {
+			assignByte = 1
+		}
+		if msg.AssignBurrow.AllCitizens {
+			allCitizensByte = 1
+		}
+		if err := binary.Write(w, binary.BigEndian, assignByte); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, allCitizensByte); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.AssignBurrow.UnitID); err != nil {
+			return err
+		}
+	case CommandTypeSetAlert:
+		// [2: NameLen] [N: Name] [1: Active]
+		nameBytes := []byte(msg.SetAlert.Name)
+		if len(nameBytes) > 255 {
+			return errors.New("set_alert name too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(nameBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(nameBytes); err != nil {
+			return err
+		}
+		activeByte := uint8(0)
+		if msg.SetAlert.Active {
+			activeByte = 1
+		}
+		if err := binary.Write(w, binary.BigEndian, activeByte); err != nil {
+			return err
+		}
 	case CommandTypeQueueJob:
 		// [2: X] [2: Y] [2: Z] [1: OrderType] [2: NameLen][N: Name]
 		// The name tail is present ONLY when OrderType == OrderTypeByName or
@@ -1115,6 +1195,34 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 			return err
 		}
 		if err := binary.Write(w, binary.BigEndian, msg.OriginZ); err != nil {
+			return err
+		}
+	case CommandTypeLinkBuilding:
+		// [2: LeverX] [2: LeverY] [2: LeverZ] [2: TargetX] [2: TargetY] [2: TargetZ]
+		for _, v := range []int16{
+			msg.LinkBuilding.LeverX, msg.LinkBuilding.LeverY, msg.LinkBuilding.LeverZ,
+			msg.LinkBuilding.TargetX, msg.LinkBuilding.TargetY, msg.LinkBuilding.TargetZ,
+		} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+	case CommandTypePullLever:
+		// [2: X] [2: Y] [2: Z]
+		for _, v := range []int16{msg.PullLever.X, msg.PullLever.Y, msg.PullLever.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+	case CommandTypeBuildBridge:
+		// [2: X1] [2: Y1] [2: Z] [2: X2] [2: Y2] [1: Direction] — byte-identical
+		// to BUILD_FARM_PLOT plus a trailing direction byte.
+		for _, v := range []int16{msg.BuildBridge.X1, msg.BuildBridge.Y1, msg.BuildBridge.Z, msg.BuildBridge.X2, msg.BuildBridge.Y2} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.BuildBridge.Direction); err != nil {
 			return err
 		}
 	}
@@ -1327,6 +1435,71 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 			return nil, err
 		}
 		msg.SetFarmCrop.CropName = string(cropBytes)
+	case CommandTypeDesignateBurrow:
+		var nameLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &nameLen); err != nil {
+			return nil, err
+		}
+		nameBytes := make([]byte, nameLen)
+		if _, err := io.ReadFull(buf, nameBytes); err != nil {
+			return nil, err
+		}
+		msg.DesignateBurrow.Name = string(nameBytes)
+		for _, p := range []*int16{
+			&msg.DesignateBurrow.X1, &msg.DesignateBurrow.Y1, &msg.DesignateBurrow.Z1,
+			&msg.DesignateBurrow.X2, &msg.DesignateBurrow.Y2, &msg.DesignateBurrow.Z2,
+		} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+	case CommandTypeRemoveBurrow:
+		var nameLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &nameLen); err != nil {
+			return nil, err
+		}
+		nameBytes := make([]byte, nameLen)
+		if _, err := io.ReadFull(buf, nameBytes); err != nil {
+			return nil, err
+		}
+		msg.RemoveBurrow.Name = string(nameBytes)
+	case CommandTypeAssignBurrow:
+		var nameLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &nameLen); err != nil {
+			return nil, err
+		}
+		nameBytes := make([]byte, nameLen)
+		if _, err := io.ReadFull(buf, nameBytes); err != nil {
+			return nil, err
+		}
+		msg.AssignBurrow.Name = string(nameBytes)
+		var assignByte, allCitizensByte uint8
+		if err := binary.Read(buf, binary.BigEndian, &assignByte); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &allCitizensByte); err != nil {
+			return nil, err
+		}
+		msg.AssignBurrow.Assign = assignByte != 0
+		msg.AssignBurrow.AllCitizens = allCitizensByte != 0
+		if err := binary.Read(buf, binary.BigEndian, &msg.AssignBurrow.UnitID); err != nil {
+			return nil, err
+		}
+	case CommandTypeSetAlert:
+		var nameLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &nameLen); err != nil {
+			return nil, err
+		}
+		nameBytes := make([]byte, nameLen)
+		if _, err := io.ReadFull(buf, nameBytes); err != nil {
+			return nil, err
+		}
+		msg.SetAlert.Name = string(nameBytes)
+		var activeByte uint8
+		if err := binary.Read(buf, binary.BigEndian, &activeByte); err != nil {
+			return nil, err
+		}
+		msg.SetAlert.Active = activeByte != 0
 	case CommandTypeQueueJob:
 		for _, p := range []*int16{&msg.QueueJob.X, &msg.QueueJob.Y, &msg.QueueJob.Z} {
 			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
@@ -1387,6 +1560,30 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 			return nil, err
 		}
 		if err := binary.Read(buf, binary.BigEndian, &msg.OriginZ); err != nil {
+			return nil, err
+		}
+	case CommandTypeLinkBuilding:
+		for _, p := range []*int16{
+			&msg.LinkBuilding.LeverX, &msg.LinkBuilding.LeverY, &msg.LinkBuilding.LeverZ,
+			&msg.LinkBuilding.TargetX, &msg.LinkBuilding.TargetY, &msg.LinkBuilding.TargetZ,
+		} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+	case CommandTypePullLever:
+		for _, p := range []*int16{&msg.PullLever.X, &msg.PullLever.Y, &msg.PullLever.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+	case CommandTypeBuildBridge:
+		for _, p := range []*int16{&msg.BuildBridge.X1, &msg.BuildBridge.Y1, &msg.BuildBridge.Z, &msg.BuildBridge.X2, &msg.BuildBridge.Y2} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.BuildBridge.Direction); err != nil {
 			return nil, err
 		}
 	default:

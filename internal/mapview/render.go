@@ -98,6 +98,16 @@ func RenderCrop(s *Slice, overlays []Overlay, legendExtra string) string {
 	if len(s.Aquifer) > 0 {
 		fmt.Fprintf(&sb, "aquifer tiles in view: %d\n", len(s.Aquifer))
 	}
+	// Smoothed tiles get a count line too, same convention as aquifer —
+	// shape/material don't change on smooth, so there's no glyph to paint.
+	if len(s.Smoothed) > 0 {
+		fmt.Fprintf(&sb, "smoothed tiles in view: %d\n", len(s.Smoothed))
+	}
+	// Loose floor items get a count line too — invisible to the base
+	// glyph classifier, but can still block a new building placement.
+	if len(s.FloorItems) > 0 {
+		fmt.Fprintf(&sb, "tiles with loose items on floor: %d\n", len(s.FloorItems))
+	}
 	if legendExtra != "" {
 		sb.WriteString(legendExtra + "\n")
 	}
@@ -141,6 +151,12 @@ func RenderColumn(c *ColumnProfile) string {
 		}
 		if lv.Damp {
 			fluids += " DAMP"
+		}
+		if lv.Smooth {
+			fluids += " SMOOTHED"
+		}
+		if lv.FloorItems > 0 {
+			fluids += fmt.Sprintf(" %d ITEM(S) ON FLOOR", lv.FloorItems)
 		}
 		fmt.Fprintf(&sb, "z=%d %s %s/%s%s%s%s\n", lv.Z, lv.Glyph, lv.Shape, lv.Material, hidden, fluids, rel)
 	}

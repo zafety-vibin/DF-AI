@@ -66,6 +66,8 @@ var minToolArgs = map[string]map[string]any{
 	"set_labor":          {"id": 1, "labor": "mine", "enable": true},
 	"unsuspend":          {"x": 1, "y": 1, "z": 1},
 	"remove_building":    {"x": 1, "y": 1, "z": 1},
+	"pull_lever":         {"x": 1, "y": 1, "z": 1},
+	"link_building":      {"lever_x": 1, "lever_y": 1, "lever_z": 1, "target_x": 2, "target_y": 2, "target_z": 2},
 	"buildings":          {}, // z is optional — exercise the no-arg path
 	"cancel_designation": {"x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
 	"chop":               {"x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
@@ -81,6 +83,12 @@ var minToolArgs = map[string]map[string]any{
 	"build_farm_plot": {"x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
 	"assign_crop":     {"x": 1, "y": 1, "z": 1, "season": "spring", "crop": "fallow"},
 	// list_crops has no required fields — {} default is fine, no entry needed.
+	"designate_burrow": {"name": "nil_bridge_smoke_test", "x1": 1, "y1": 1, "z1": 1, "x2": 2, "y2": 2},
+	"remove_burrow":    {"name": "nil_bridge_smoke_test"},
+	"assign_burrow":    {"name": "nil_bridge_smoke_test", "unit_id": 1},
+	"unassign_burrow":  {"name": "nil_bridge_smoke_test", "unit_id": 1},
+	"set_alert":        {"name": "nil_bridge_smoke_test", "active": true},
+	// list_burrows has no required fields — {} default is fine, no entry needed.
 }
 
 // TestEveryToolNilBridge lists every registered tool and calls each one
