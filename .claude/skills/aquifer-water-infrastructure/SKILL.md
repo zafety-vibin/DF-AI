@@ -1,6 +1,6 @@
 ---
 name: aquifer-water-infrastructure
-description: PLANNED — blocked on tooling. Use when a sealed aquifer pierce (see aquifer-piercing) needs to become a deliberate water source (cistern, tap, or well) instead of a sealed-off hazard — currently undeliverable end-to-end because no shutoff mechanism exists at all (well/floodgate/lever build types are missing, and even a built door has no lock/toggle tool) — read this to know what's real vs. missing before promising water infrastructure.
+description: PLANNED — procedure never executed, but the shutoff tooling now exists. Use when a sealed aquifer pierce (see aquifer-piercing) needs to become a deliberate water source (cistern, tap, or well) instead of a sealed-off hazard. The lever→door/hatch/bridge mechanism chain (build + link_building + pull_lever) was live-verified 2026-07-17; floodgate is pending live verification (its crafting bug is fixed but not yet deployed) and wells remain missing entirely — read this to know what's real vs. missing before promising water infrastructure, and note that no shutoff has ever been tested against actual flowing water.
 ---
 
 # Aquifer Water Infrastructure (PLANNED)
@@ -35,9 +35,9 @@ validated sequence:
 
 - **Passive ceiling seep**: leave a chamber's ceiling as unsealed aquifer
   rock and let it slowly fill on its own. Simplest, but gives no control
-  over rate or a hard stop — not safe to route anywhere dwarves stand until
-  a real shutoff (below) exists downstream of it; today that means no
-  shutoff exists at all (see Shutoffs).
+  over rate or a hard stop — not safe to route anywhere dwarves stand
+  without a real shutoff (see Shutoffs) downstream of it, and no shutoff
+  has yet been proven against flowing water.
 - **Channel one-tile tap with a temporary drain**: `designate_dig
   type=channel` a single tile from the level above the aquifer, with a
   drain path already dug to carry away excess so the tap doesn't flood the
@@ -49,41 +49,47 @@ validated sequence:
   pressure before it reaches a room dwarves stand in. Orientation-level
   idea only; not attempted.
 
-## Shutoffs — this is the actual blocker
+## Shutoffs — tooling now exists; none tested against water yet
 
-**Nothing in this project can shut off water flow today — not even a
-door.** Read this section fully before proposing any tap to a live session;
-every option below is missing at least one required piece.
+The mechanism chain shipped with the 2026-07-15 defense-systems wave and
+was live-verified 2026-07-17 (Fort #4): build a mechanic's workshop,
+craft mechanisms, `build type=lever`, `link_building` (consumes 2
+mechanisms; valid targets are exactly bridge/door/hatch/floodgate — the
+wire protocol caps it at those 4), `pull_lever`. One lever can drive
+several linked targets at once (verified: bridge+door+hatch off a single
+lever). **Caveat that gates everything below: every verification so far
+was mechanical (the link forms, the pull completes) — no shutoff has yet
+been toggled against actual flowing water, and `look`/`cross_section`
+cannot render a target's raised/lowered or open/closed state, so
+triggered state must be inferred from job completion.**
 
-- **Door (building exists, locking does not)**: `build` supports `door`
-  (`BuildTypeDoor` exists and is wired end-to-end), so a door can be
-  *built*. But there is no lock/unlock/forbid toggle tool anywhere in
-  `internal/mcpserver` — grep for `lock`/`forbid` before trusting this
-  stale, but as of the last read nothing exposes that control. An unlocked
-  door does not stop water; a dwarf-passable door is not a shutoff. Do not
-  describe "build a door" as a working shutoff mechanism to a live session
-  — it builds the door, not the ability to close it.
-- **Floodgate + lever (the proper mechanism)**: **MISSING.** There is no
-  `BuildTypeFloodgate` and no lever build type in `internal/protocol` at
-  all, and there is no linking/wiring command analogous to
-  `assign_lodging` for connecting a lever to a floodgate or hatch. Until
-  both the building types and a link command exist, there is no
-  remote/reliable shutoff — don't describe a floodgate-and-lever plan to
-  a live session as executable.
-- **Screw pumps**: also **MISSING** from the protocol. These matter most
-  for heavy-aquifer work (active drain-while-digging) — see
+- **Lever-linked door / hatch / bridge**: EXISTS and live-verified
+  (2026-07-17) as a working remote toggle. There is still no standalone
+  lock/forbid tool for an unlinked door — a door only becomes
+  controllable by linking it to a lever.
+- **Floodgate + lever (the proper water mechanism)**: build type and
+  link target both EXIST in the protocol, but floodgate is **pending
+  live verification**: crafting the floodgate item was blocked by a real
+  bug (`ConstructFloodgate` missing from `jobTypeAllowedAtWorkshop`'s
+  workshop-compatibility table in `dfhack-plugin/work_orders.cpp`),
+  fixed 2026-07-17 but **not yet rebuilt/deployed/live-verified**. Do
+  not describe a floodgate plan as proven until a floodgate has actually
+  been crafted, built, linked, and pulled in a live fort.
+- **Screw pumps**: still **MISSING** from the protocol. These matter
+  most for heavy-aquifer work (active drain-while-digging) — see
   `aquifer-piercing` §7. Not relevant to light-aquifer taps, but worth
-  tracking as the same underlying gap (no water-moving building types at
-  all yet, beyond the passive ones above).
+  tracking (no water-moving building type exists yet).
 
 ## Wells — also blocked
 
 A well (block + bucket + rope/chain + mechanism, built over a clear
 vertical column reaching water at depth >= 3/7) is the standard way to
 give dwarves drinking access to a cistern without exposing them to the
-water body directly. **There is no well build type in the protocol.**
-Don't propose "build a well over the cistern" as a near-term plan; log it
-as blocked the same way the floodgate/lever gap is logged.
+water body directly. **There is still no well build type in the
+protocol** (confirmed 2026-07-17: `link_building`'s target set is
+exactly bridge/door/hatch/floodgate — no well anywhere in the wire
+protocol). Don't propose "build a well over the cistern" as a near-term
+plan; log it as blocked.
 
 ## Refill budget — how to think about capacity once a tap exists
 
@@ -100,22 +106,22 @@ rate against observed refill, not a guess.
 | Capability | Status |
 |---|---|
 | `channel` dig type | EXISTS (`designate_dig type=channel`) |
-| Door (building) | EXISTS (`build` type `door`) — building only, see next row |
-| Door lock/unlock/forbid toggle | MISSING — no tool in `internal/mcpserver`; a built door cannot be closed on command, so it is NOT a shutoff |
-| Hatches | EXISTS (`build` type `hatch`) |
+| Lever building + `link_building` + `pull_lever` | EXISTS — LIVE-VERIFIED 2026-07-17 against door/hatch/bridge targets |
+| Door / hatch / bridge as lever-linked toggles | EXISTS — LIVE-VERIFIED 2026-07-17 (mechanically; never against flowing water) |
+| Standalone door lock/forbid toggle (no lever) | MISSING — an unlinked door still cannot be closed on command |
+| Floodgate building + link target | EXISTS in protocol; PENDING LIVE VERIFICATION — crafting bug (`ConstructFloodgate` absent from `work_orders.cpp`'s workshop table) fixed 2026-07-17 but not yet deployed; never built/linked/pulled live |
+| Read-back of open/closed / raised/lowered state | MISSING — `look`/`cross_section` render the built glyph regardless of triggered state; infer from job completion |
 | Well building | MISSING — no protocol build type |
-| Floodgate building | MISSING — no protocol build type |
-| Lever building + link command | MISSING — no protocol build type or link command |
 | Screw pumps | MISSING — no protocol build type (heavy-aquifer work only; defer) |
 
-**No shutoff mechanism exists at all today.** Every row above except dig
-type and buildings is either missing outright or (for doors) missing the
-control that would make it a shutoff. Do not greenlight a live tap of any
-kind — passive seep, channel, or otherwise — until at least one row in this
-table moves from MISSING to EXISTS with an actual close/lock/toggle
-command behind it.
+**A verified remote shutoff mechanism now exists (lever-linked
+door/hatch/bridge), and floodgate is one deploy-and-verify away** — but
+no shutoff of any kind has been exercised against real water flow, and
+there is no tool-side read on a mechanism's triggered state. Treat the
+first live tap as an experiment with a drain path and an escape plan,
+not a routine build.
 
-This table reflects `internal/protocol/message.go`'s `BuildType*`
-constants as of the last read — re-grep before trusting it stale; new
-build types landing is exactly the kind of change that unblocks this
-skill from PLANNED to real.
+This table reflects the protocol and `internal/mcpserver` as of
+2026-07-17 — re-grep before trusting it stale; a floodgate live-verify
+or a well build type landing is exactly the kind of change that promotes
+this skill from PLANNED to real.

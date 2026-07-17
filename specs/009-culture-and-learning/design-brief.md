@@ -1,7 +1,7 @@
 # Feature 009: Culture & Learning — design brief
 
 **Status**: brief for the next brainstorming cycle — NOT an approved design. Priorities get reordered by First Fort observations before planning.
-**Gate**: begins after Feature 008's First Fort exit criteria pass (fortress/FIRST-FORT-RUNBOOK.md). Its first execution item is 008's gated Task 16 (legacy deletion).
+**Gate**: begins after Feature 008's First Fort exit criteria pass (runbook archived at docs/archive/2026-07-12-first-fort-runbook.md; gate declared passed 2026-07-12 — see decisions.md). Its first execution item is 008's gated Task 16 (legacy deletion).
 **Goal**: from "can play" to "plays well and learns" — the research core. Fort N+1 must measurably benefit from fort N: skills referenced, mistakes not repeated, named places in the narration, headroom goals pursued unprompted.
 
 ## Workstreams (pre-First-Fort priority order)

@@ -18,9 +18,9 @@ For current state, run the code and tools. Never trust a doc for "how many X do 
 |---|---|---|
 | `guides/` | Stateless subsystem references: plugin-build, mcp-server, world-model | Trust; fix if stale |
 | `decisions.md` | Append-only decision log, one dated line each | Trust as record |
-| `archive/` | Superseded docs (pre-MCP architecture era) | Historical only |
-| `../specs/` | Numbered feature specs; `008-mcp-server/` = active architecture + implementation plan | Per-feature |
-| `../fortress/` | The AI player's workspace: charter (CLAUDE.md), memory files, First Fort runbook | Gameplay state — the playing session owns it |
+| `archive/` | Frozen history: pre-MCP-era docs and specs (`2025-11-legacy/`, incl. specs 001-007), executed implementation plans, dated research snapshots | Historical only |
+| `../specs/` | Numbered feature specs — see `../specs/README.md`; `008-mcp-server/` = active architecture + implementation plan; 001-007 archived | Per-feature |
+| `../fortress/` | The AI player's workspace: charter (CLAUDE.md), memory files, session-setup runbook (SESSION-SETUP.md) | Gameplay state — the playing session owns it |
 | `../.superpowers/sdd/` | Execution ledger + task briefs/reports for agent-driven waves (gitignored) | Session recovery map |
 
 ## Active work (verify against git, not this line)
