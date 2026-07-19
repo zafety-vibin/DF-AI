@@ -150,6 +150,34 @@ func TestDecodeColumnProfileFloorItems(t *testing.T) {
 	}
 }
 
+// PendingBuilding decodes when present, mirroring the Smoothed/FloorItems
+// coverage above — the absent case (older plugin) is covered by
+// TestDecodeSlice, where the field stays nil.
+func TestDecodeSlicePendingBuilding(t *testing.T) {
+	raw := []byte(`{"z":110,"x1":70,"y1":80,"rows":["##"],"pending_building":[[70,80]]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(s.PendingBuilding) != 1 || s.PendingBuilding[0] != [2]int16{70, 80} {
+		t.Fatalf("pending_building mismatch: %+v", s.PendingBuilding)
+	}
+}
+
+// An older plugin simply omits pending_building — the field must decode to
+// a nil slice, no error, mirroring TestDecodeSlice's coverage of the other
+// optional fields.
+func TestDecodeSlicePendingBuildingAbsentIsFine(t *testing.T) {
+	raw := []byte(`{"z":110,"x1":70,"y1":80,"rows":["##"]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("an older-plugin payload without pending_building must still decode: %v", err)
+	}
+	if len(s.PendingBuilding) != 0 {
+		t.Fatalf("expected empty PendingBuilding, got %v", s.PendingBuilding)
+	}
+}
+
 func TestDecodeSlice_DesignationKindsOptional(t *testing.T) {
 	raw := []byte(`{"z":100,"x1":0,"y1":0,"rows":["..","d."],"designated":[[0,1]],"designation_kinds":[[0,1,2]]}`)
 	s, err := DecodeSlice(raw)
@@ -158,6 +186,36 @@ func TestDecodeSlice_DesignationKindsOptional(t *testing.T) {
 	}
 	if len(s.DesignationKinds) != 1 || s.DesignationKinds[0] != [3]int16{0, 1, 2} {
 		t.Fatalf("expected DesignationKinds [[0,1,2]], got %v", s.DesignationKinds)
+	}
+}
+
+// Minerals/MineralNames decode when present — a per-tile index into a
+// per-slice name table, mirroring the Smoothed/FloorItems coverage above.
+// Two distinct minerals confirm the index (not just presence) round-trips.
+func TestDecodeSliceMinerals(t *testing.T) {
+	raw := []byte(`{"z":110,"x1":70,"y1":80,"rows":["=="],"minerals":[[70,80,0],[71,80,1]],"mineral_names":["limonite","native copper"]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(s.Minerals) != 2 || s.Minerals[0] != [3]int16{70, 80, 0} || s.Minerals[1] != [3]int16{71, 80, 1} {
+		t.Fatalf("minerals mismatch: %+v", s.Minerals)
+	}
+	if len(s.MineralNames) != 2 || s.MineralNames[0] != "limonite" || s.MineralNames[1] != "native copper" {
+		t.Fatalf("mineral_names mismatch: %+v", s.MineralNames)
+	}
+}
+
+// An older plugin simply omits minerals/mineral_names — both fields must
+// decode to nil/empty, no error, mirroring TestDecodeSlicePendingBuildingAbsentIsFine.
+func TestDecodeSliceMineralsAbsentIsFine(t *testing.T) {
+	raw := []byte(`{"z":110,"x1":70,"y1":80,"rows":["##"]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("an older-plugin payload without minerals must still decode: %v", err)
+	}
+	if len(s.Minerals) != 0 || len(s.MineralNames) != 0 {
+		t.Fatalf("expected empty Minerals/MineralNames, got %+v / %+v", s.Minerals, s.MineralNames)
 	}
 }
 

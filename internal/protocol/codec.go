@@ -642,12 +642,14 @@ func serializeEntityUpdate(w io.Writer, msg *EntityUpdateMessage) error {
 	}
 
 	// Zones block -- additive, appended after FortInfo. Byte layout must
-	// exactly match dfhack-plugin/entities.cpp's serialize_entity_update.
-	hasZones := uint8(0)
-	if len(msg.Zones) > 0 {
-		hasZones = 1
-	}
-	if err := binary.Write(w, binary.BigEndian, hasZones); err != nil {
+	// exactly match dfhack-plugin/entities.cpp's serialize_entity_update,
+	// which writes HasZones=1 UNCONDITIONALLY (even when ZoneCount==0) --
+	// mirrored here rather than gated on len(msg.Zones)>0 because the
+	// deserializer below only reads the 4-byte ZoneCount when hasZones==1;
+	// a conditional 0 here would desync every block written after Zones
+	// (bytes go unconsumed) even though it happened to be harmless while
+	// Zones was the last block in the message.
+	if err := binary.Write(w, binary.BigEndian, uint8(1)); err != nil { // HasZones
 		return err
 	}
 	if err := binary.Write(w, binary.BigEndian, uint32(len(msg.Zones))); err != nil {
@@ -675,6 +677,28 @@ func serializeEntityUpdate(w io.Writer, msg *EntityUpdateMessage) error {
 			if err := binary.Write(w, binary.BigEndian, uid); err != nil {
 				return err
 			}
+		}
+	}
+
+	// DeadUnits block -- additive, appended after Zones. Lists the ids of
+	// entities in msg.Entities whose Dead field is set. Byte layout must
+	// exactly match dfhack-plugin/entities.cpp's serialize_entity_update.
+	// [1: HasDeadUnits] [4: DeadCount] [4xDeadCount: UnitID]
+	var deadIDs []uint32
+	for _, e := range msg.Entities {
+		if e.Dead {
+			deadIDs = append(deadIDs, e.ID)
+		}
+	}
+	if err := binary.Write(w, binary.BigEndian, uint8(1)); err != nil { // HasDeadUnits
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, uint32(len(deadIDs))); err != nil {
+		return err
+	}
+	for _, id := range deadIDs {
+		if err := binary.Write(w, binary.BigEndian, id); err != nil {
+			return err
 		}
 	}
 
@@ -762,6 +786,34 @@ func deserializeEntityUpdate(data []byte) (*EntityUpdateMessage, error) {
 					if err := binary.Read(buf, binary.BigEndian, &z.AssignedUnits[j]); err != nil {
 						return nil, err
 					}
+				}
+			}
+		}
+	}
+
+	// DeadUnits block (additive -- absent on an old peer, decoded as no
+	// unit marked dead, i.e. every entity keeps its zero-value Dead=false).
+	// Cross-referenced into msg.Entities by id rather than carried inline
+	// in each entity's fixed 13-byte record -- see EntityInfo.Dead's doc
+	// comment.
+	var hasDeadUnits uint8
+	if err := binary.Read(buf, binary.BigEndian, &hasDeadUnits); err == nil && hasDeadUnits == 1 {
+		var deadCount uint32
+		if err := binary.Read(buf, binary.BigEndian, &deadCount); err != nil {
+			return nil, err
+		}
+		deadSet := make(map[uint32]struct{}, deadCount)
+		for i := uint32(0); i < deadCount; i++ {
+			var id uint32
+			if err := binary.Read(buf, binary.BigEndian, &id); err != nil {
+				return nil, err
+			}
+			deadSet[id] = struct{}{}
+		}
+		if len(deadSet) > 0 {
+			for i := range msg.Entities {
+				if _, dead := deadSet[msg.Entities[i].ID]; dead {
+					msg.Entities[i].Dead = true
 				}
 			}
 		}
@@ -873,9 +925,16 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 			return err
 		}
 	case CommandTypeBuild:
-		// [2: X] [2: Y] [2: Z] [1: BuildType] [1: MaterialClass]
-		// The material byte is ALWAYS appended by this encoder; the plugin
-		// treats a payload without it as MaterialClassAny (backward compat).
+		// [2: X] [2: Y] [2: Z] [1: BuildType] [1: MaterialClass] [1: QualityTier]
+		// [1: Orientation] [2: NameLen][N: Name]
+		// The material, quality, and orientation bytes are ALWAYS appended
+		// by this encoder; the plugin treats a payload missing one or more
+		// trailing bytes as MaterialClassAny/QualityTierAny/BuildOrientAny
+		// (backward compat). The final name tail is present ONLY when
+		// BuildType == BuildTypeByName — mirrors CommandTypeQueueJob's
+		// identical trailing-name shape. Existing curated-vocabulary
+		// callers (any other BuildType byte) produce the exact same payload
+		// as before this change.
 		if err := binary.Write(w, binary.BigEndian, msg.Build.X); err != nil {
 			return err
 		}
@@ -890,6 +949,24 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		}
 		if err := binary.Write(w, binary.BigEndian, msg.Build.Material); err != nil {
 			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Build.Quality); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Build.Orientation); err != nil {
+			return err
+		}
+		if msg.Build.BuildType == BuildTypeByName {
+			nameBytes := []byte(msg.Build.BuildTypeName)
+			if len(nameBytes) > 255 {
+				return errors.New("build type name too long (max 255 bytes)")
+			}
+			if err := binary.Write(w, binary.BigEndian, uint16(len(nameBytes))); err != nil {
+				return err
+			}
+			if _, err := w.Write(nameBytes); err != nil {
+				return err
+			}
 		}
 	case CommandTypeChop, CommandTypeGather:
 		// [2: X1] [2: Y1] [2: Z1] [2: X2] [2: Y2] [2: Z2]
@@ -970,11 +1047,46 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 			}
 		}
 	case CommandTypeWorkOrder:
-		// [1: OrderType] [2: Quantity]
+		// [1: OrderType] [2: Quantity] [2: NameLen][N: Name]
+		// [2: MaterialLen][N: Material] [1: Frequency]
+		// The name tail is present ONLY when OrderType == OrderTypeByName —
+		// mirrors CommandTypeQueueJob's trailing length-prefixed name below,
+		// just appended after Quantity instead of after coordinates (this
+		// command has none). Existing byte-vocabulary callers (OrderType
+		// 0x01-0x0C) produce the exact same 3-byte payload as before this
+		// change. Material and Frequency are ALWAYS appended (Material may
+		// be zero-length) after the conditional name tail — the plugin
+		// treats a payload missing either as Material="" / Frequency=
+		// WorkOrderFrequencyOneTime (backward compat).
 		if err := binary.Write(w, binary.BigEndian, msg.Order.OrderType); err != nil {
 			return err
 		}
 		if err := binary.Write(w, binary.BigEndian, msg.Order.Quantity); err != nil {
+			return err
+		}
+		if msg.Order.OrderType == OrderTypeByName {
+			nameBytes := []byte(msg.Order.JobTypeName)
+			if len(nameBytes) > 255 {
+				return errors.New("order job type name too long (max 255 bytes)")
+			}
+			if err := binary.Write(w, binary.BigEndian, uint16(len(nameBytes))); err != nil {
+				return err
+			}
+			if _, err := w.Write(nameBytes); err != nil {
+				return err
+			}
+		}
+		orderMaterialBytes := []byte(msg.Order.Material)
+		if len(orderMaterialBytes) > 255 {
+			return errors.New("order material token too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(orderMaterialBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(orderMaterialBytes); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.Order.Frequency); err != nil {
 			return err
 		}
 	case CommandTypeStockpile:
@@ -1129,11 +1241,14 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		}
 	case CommandTypeQueueJob:
 		// [2: X] [2: Y] [2: Z] [1: OrderType] [2: NameLen][N: Name]
+		// [2: MaterialLen][N: Material]
 		// The name tail is present ONLY when OrderType == OrderTypeByName or
 		// OrderTypeCustomReaction — mirrors CommandTypeBlueprint's
 		// length-prefixed name below. Existing byte-vocabulary callers
 		// (OrderType 0x01-0x0C) produce the exact same 12-byte payload as
-		// before this change.
+		// before this change. The Material tail is ALWAYS appended (may be
+		// zero-length) after the conditional name tail — the plugin treats
+		// a payload missing it entirely as Material="" (backward compat).
 		for _, v := range []int16{msg.QueueJob.X, msg.QueueJob.Y, msg.QueueJob.Z} {
 			if err := binary.Write(w, binary.BigEndian, v); err != nil {
 				return err
@@ -1160,6 +1275,16 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 			if _, err := w.Write(nameBytes); err != nil {
 				return err
 			}
+		}
+		materialBytes := []byte(msg.QueueJob.Material)
+		if len(materialBytes) > 255 {
+			return errors.New("queue_job material token too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(materialBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(materialBytes); err != nil {
+			return err
 		}
 	case CommandTypeSetLabor:
 		// [4: UnitID] [1: LaborID] [1: Enable]
@@ -1225,6 +1350,102 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		if err := binary.Write(w, binary.BigEndian, msg.BuildBridge.Direction); err != nil {
 			return err
 		}
+	case CommandTypeSetWorkshopProfile:
+		// [2: X] [2: Y] [2: Z] [4: MinSkillLevel] [4: MaxSkillLevel] [4: WorkerUnitID]
+		for _, v := range []int16{msg.SetWorkshopProfile.X, msg.SetWorkshopProfile.Y, msg.SetWorkshopProfile.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.SetWorkshopProfile.MinSkillLevel); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.SetWorkshopProfile.MaxSkillLevel); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.SetWorkshopProfile.WorkerUnitID); err != nil {
+			return err
+		}
+	case CommandTypeAssignWorkDetail:
+		// [2: DetailIndex] [4: UnitID] [1: Add]
+		if err := binary.Write(w, binary.BigEndian, msg.AssignWorkDetail.DetailIndex); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.AssignWorkDetail.UnitID); err != nil {
+			return err
+		}
+		add := uint8(0)
+		if msg.AssignWorkDetail.Add {
+			add = 1
+		}
+		if err := binary.Write(w, binary.BigEndian, add); err != nil {
+			return err
+		}
+	case CommandTypeSetWorkDetailMode:
+		// [2: DetailIndex] [1: Mode]
+		if err := binary.Write(w, binary.BigEndian, msg.SetWorkDetailMode.DetailIndex); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.SetWorkDetailMode.Mode); err != nil {
+			return err
+		}
+	case CommandTypeCreateWorkDetail:
+		// [2: NameLen] [N: Name] [1: Mode] [2: LaborCount] [LaborCount x 1: LaborID]
+		nameBytes := []byte(msg.CreateWorkDetail.Name)
+		if len(nameBytes) > 255 {
+			return errors.New("create_work_detail name too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(nameBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(nameBytes); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.CreateWorkDetail.Mode); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(msg.CreateWorkDetail.LaborIDs))); err != nil {
+			return err
+		}
+		if len(msg.CreateWorkDetail.LaborIDs) > 0 {
+			if _, err := w.Write(msg.CreateWorkDetail.LaborIDs); err != nil {
+				return err
+			}
+		}
+	case CommandTypeBringGoodsToDepot:
+		// [2: X] [2: Y] [2: Z] [2: ItemTypeLen][N: ItemType]
+		// [2: MaterialLen][N: Material] [4: MaxCount] [8: MaxTotalValue]
+		for _, v := range []int16{msg.BringGoodsToDepot.X, msg.BringGoodsToDepot.Y, msg.BringGoodsToDepot.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		itemTypeBytes := []byte(msg.BringGoodsToDepot.ItemTypeFilter)
+		if len(itemTypeBytes) > 255 {
+			return errors.New("bring_goods_to_depot item type filter too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(itemTypeBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(itemTypeBytes); err != nil {
+			return err
+		}
+		materialFilterBytes := []byte(msg.BringGoodsToDepot.MaterialFilter)
+		if len(materialFilterBytes) > 255 {
+			return errors.New("bring_goods_to_depot material filter too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(materialFilterBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(materialFilterBytes); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.BringGoodsToDepot.MaxCount); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.BringGoodsToDepot.MaxTotalValue); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -1272,7 +1493,8 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 			return nil, err
 		}
 	case CommandTypeBuild:
-		// Read build designation (7 bytes + optional trailing material byte)
+		// Read build designation (7 bytes + optional trailing material and
+		// quality bytes)
 		if err := binary.Read(buf, binary.BigEndian, &msg.Build.X); err != nil {
 			return nil, err
 		}
@@ -1292,6 +1514,39 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 				return nil, err
 			}
 			msg.Build.Material = MaterialClassAny
+		}
+		// Optional quality tier byte: a payload without it (pre-quality peer,
+		// including one that only appends Material) decodes as
+		// QualityTierAny — same backward-compat rule as Material above.
+		if err := binary.Read(buf, binary.BigEndian, &msg.Build.Quality); err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
+			msg.Build.Quality = QualityTierAny
+		}
+		// Optional orientation byte: a payload without it (pre-orientation
+		// peer, including one that only appends Material/Quality) decodes
+		// as BuildOrientAny — same backward-compat rule as Material/Quality
+		// above.
+		if err := binary.Read(buf, binary.BigEndian, &msg.Build.Orientation); err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
+			msg.Build.Orientation = BuildOrientAny
+		}
+		// Name tail present ONLY when BuildType == BuildTypeByName — a
+		// pre-existing curated-vocabulary payload (any other BuildType byte)
+		// ends here, same as before this change.
+		if msg.Build.BuildType == BuildTypeByName {
+			var nameLen uint16
+			if err := binary.Read(buf, binary.BigEndian, &nameLen); err != nil {
+				return nil, err
+			}
+			nameBytes := make([]byte, nameLen)
+			if _, err := io.ReadFull(buf, nameBytes); err != nil {
+				return nil, err
+			}
+			msg.Build.BuildTypeName = string(nameBytes)
 		}
 	case CommandTypeChop, CommandTypeGather:
 		for _, p := range []*int16{&msg.Region.X1, &msg.Region.Y1, &msg.Region.Z1, &msg.Region.X2, &msg.Region.Y2, &msg.Region.Z2} {
@@ -1373,6 +1628,44 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 		}
 		if err := binary.Read(buf, binary.BigEndian, &msg.Order.Quantity); err != nil {
 			return nil, err
+		}
+		// Name tail present ONLY when OrderType == OrderTypeByName — a
+		// pre-existing byte-vocabulary payload (0x01-0x0C) ends here, same
+		// as before this change.
+		if msg.Order.OrderType == OrderTypeByName {
+			var nameLen uint16
+			if err := binary.Read(buf, binary.BigEndian, &nameLen); err != nil {
+				return nil, err
+			}
+			nameBytes := make([]byte, nameLen)
+			if _, err := io.ReadFull(buf, nameBytes); err != nil {
+				return nil, err
+			}
+			msg.Order.JobTypeName = string(nameBytes)
+		}
+		// Optional Material tail (length-prefixed string): a payload without
+		// it (pre-material peer) decodes as Material="" — same EOF-tolerant
+		// backward-compat rule as CommandTypeBuild's trailing bytes.
+		var orderMaterialLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &orderMaterialLen); err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
+		} else {
+			orderMaterialBytes := make([]byte, orderMaterialLen)
+			if _, err := io.ReadFull(buf, orderMaterialBytes); err != nil {
+				return nil, err
+			}
+			msg.Order.Material = string(orderMaterialBytes)
+		}
+		// Optional Frequency byte: a payload without it (pre-frequency peer,
+		// including one that only appends Material) decodes as
+		// WorkOrderFrequencyOneTime — same backward-compat rule as above.
+		if err := binary.Read(buf, binary.BigEndian, &msg.Order.Frequency); err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
+			msg.Order.Frequency = WorkOrderFrequencyOneTime
 		}
 	case CommandTypeStockpile:
 		for _, p := range []*int16{&msg.Stockpile.X1, &msg.Stockpile.Y1, &msg.Stockpile.Z, &msg.Stockpile.X2, &msg.Stockpile.Y2} {
@@ -1528,6 +1821,21 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 				msg.QueueJob.ReactionCode = string(nameBytes)
 			}
 		}
+		// Optional Material tail (length-prefixed string): a payload without
+		// it (pre-material peer) decodes as Material="" — same EOF-tolerant
+		// backward-compat rule as CommandTypeWorkOrder's Material tail above.
+		var queueJobMaterialLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &queueJobMaterialLen); err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
+		} else {
+			queueJobMaterialBytes := make([]byte, queueJobMaterialLen)
+			if _, err := io.ReadFull(buf, queueJobMaterialBytes); err != nil {
+				return nil, err
+			}
+			msg.QueueJob.Material = string(queueJobMaterialBytes)
+		}
 	case CommandTypeSetLabor:
 		if err := binary.Read(buf, binary.BigEndian, &msg.SetLabor.UnitID); err != nil {
 			return nil, err
@@ -1584,6 +1892,94 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 			}
 		}
 		if err := binary.Read(buf, binary.BigEndian, &msg.BuildBridge.Direction); err != nil {
+			return nil, err
+		}
+	case CommandTypeSetWorkshopProfile:
+		for _, p := range []*int16{&msg.SetWorkshopProfile.X, &msg.SetWorkshopProfile.Y, &msg.SetWorkshopProfile.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.SetWorkshopProfile.MinSkillLevel); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.SetWorkshopProfile.MaxSkillLevel); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.SetWorkshopProfile.WorkerUnitID); err != nil {
+			return nil, err
+		}
+	case CommandTypeAssignWorkDetail:
+		if err := binary.Read(buf, binary.BigEndian, &msg.AssignWorkDetail.DetailIndex); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.AssignWorkDetail.UnitID); err != nil {
+			return nil, err
+		}
+		var add uint8
+		if err := binary.Read(buf, binary.BigEndian, &add); err != nil {
+			return nil, err
+		}
+		msg.AssignWorkDetail.Add = add != 0
+	case CommandTypeSetWorkDetailMode:
+		if err := binary.Read(buf, binary.BigEndian, &msg.SetWorkDetailMode.DetailIndex); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.SetWorkDetailMode.Mode); err != nil {
+			return nil, err
+		}
+	case CommandTypeCreateWorkDetail:
+		var nameLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &nameLen); err != nil {
+			return nil, err
+		}
+		nameBytes := make([]byte, nameLen)
+		if _, err := io.ReadFull(buf, nameBytes); err != nil {
+			return nil, err
+		}
+		msg.CreateWorkDetail.Name = string(nameBytes)
+		if err := binary.Read(buf, binary.BigEndian, &msg.CreateWorkDetail.Mode); err != nil {
+			return nil, err
+		}
+		var laborCount uint16
+		if err := binary.Read(buf, binary.BigEndian, &laborCount); err != nil {
+			return nil, err
+		}
+		laborIDs := make([]byte, laborCount)
+		if laborCount > 0 {
+			if _, err := io.ReadFull(buf, laborIDs); err != nil {
+				return nil, err
+			}
+		}
+		msg.CreateWorkDetail.LaborIDs = laborIDs
+	case CommandTypeBringGoodsToDepot:
+		for _, p := range []*int16{&msg.BringGoodsToDepot.X, &msg.BringGoodsToDepot.Y, &msg.BringGoodsToDepot.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		var itemTypeLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &itemTypeLen); err != nil {
+			return nil, err
+		}
+		itemTypeBytes := make([]byte, itemTypeLen)
+		if _, err := io.ReadFull(buf, itemTypeBytes); err != nil {
+			return nil, err
+		}
+		msg.BringGoodsToDepot.ItemTypeFilter = string(itemTypeBytes)
+		var materialFilterLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &materialFilterLen); err != nil {
+			return nil, err
+		}
+		materialFilterBytes := make([]byte, materialFilterLen)
+		if _, err := io.ReadFull(buf, materialFilterBytes); err != nil {
+			return nil, err
+		}
+		msg.BringGoodsToDepot.MaterialFilter = string(materialFilterBytes)
+		if err := binary.Read(buf, binary.BigEndian, &msg.BringGoodsToDepot.MaxCount); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.BringGoodsToDepot.MaxTotalValue); err != nil {
 			return nil, err
 		}
 	default:

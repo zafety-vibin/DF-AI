@@ -36,16 +36,22 @@ extern void write_int16_be(std::vector<uint8_t> &buf, int16_t value);
 
 // Shared flag computation (implemented in tile_extractor.cpp) — single
 // source of truth for tile flags across the full-state and delta paths.
-// `dig_job_targets` must be built once per pass via collect_dig_job_targets
-// and threaded through unchanged -- see the comment on compute_tile_flags
-// in tile_extractor.cpp for why (the 062455f asymmetry bug this guards
-// against).
+// `dig_job_targets` and `bridge_tiles` must each be built once per pass via
+// collect_dig_job_targets / collect_bridge_tiles and threaded through
+// unchanged -- see the comment on compute_tile_flags in tile_extractor.cpp
+// for why (the 062455f asymmetry bug this guards against).
 uint8_t compute_tile_flags(MapExtras::MapCache &map_cache, const df::coord &pos, df::tiletype tile_type,
-                            const std::unordered_set<df::coord> &dig_job_targets);
+                            const std::unordered_set<df::coord> &dig_job_targets,
+                            const std::unordered_map<df::coord, bool> &bridge_tiles);
 
 // Builds the set of tiles with an in-flight dig-designation job (implemented
 // in tile_extractor.cpp).
 std::unordered_set<df::coord> collect_dig_job_targets();
+
+// Builds the tile-coord -> is-currently-walkable map for fully-built Bridge
+// buildings (implemented in tile_extractor.cpp; see its doc comment for why
+// a bridge deck can't be trusted from raw tiletype shape alone).
+std::unordered_map<df::coord, bool> collect_bridge_tiles();
 
 // Detect changed tiles by comparing current state to cache
 // Returns binary tile data for changed tiles only (9 bytes per tile)
@@ -65,9 +71,11 @@ std::vector<uint8_t> detect_tile_changes()
 
     MapExtras::MapCache map_cache;
 
-    // Job-target coords with an in-flight dig job, built once for this pass
-    // (see compute_tile_flags's declaration comment above).
+    // Job-target coords with an in-flight dig job, and bridge-tile
+    // walkability, each built once for this pass (see compute_tile_flags's
+    // declaration comment above).
     std::unordered_set<df::coord> dig_job_targets = collect_dig_job_targets();
+    std::unordered_map<df::coord, bool> bridge_tiles = collect_bridge_tiles();
 
     // Scan all tiles and compare to cache
     for (int32_t z = 0; z < z_max; z++) {
@@ -79,7 +87,7 @@ std::vector<uint8_t> detect_tile_changes()
                 // Full flag byte — same computation as the full-state path
                 // (compute_tile_flags in tile_extractor.cpp), so delta tiles
                 // carry real hidden/designated/wall/floor/liquid knowledge.
-                uint8_t flags = compute_tile_flags(map_cache, pos, current_type, dig_job_targets);
+                uint8_t flags = compute_tile_flags(map_cache, pos, current_type, dig_job_targets, bridge_tiles);
 
                 uint64_t key = make_tile_key(x, y, z);
                 uint32_t state = make_tile_state(current_type, flags);

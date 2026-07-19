@@ -48,8 +48,10 @@ bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &err
 bool applySmoothDesignation(const std::vector<uint8_t> &payload, std::string &error);
 
 // Forward declarations for functions from work_orders.cpp
-bool applyWorkOrder(uint8_t orderType, uint16_t quantity, std::string &error);
-bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std::string &jobTypeName, std::string &error);
+bool applyWorkOrder(uint8_t orderType, uint16_t quantity, const std::string &jobTypeName,
+                     const std::string &material, uint8_t frequencyByte, std::string &error);
+bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std::string &jobTypeName,
+                    const std::string &material, std::string &error);
 
 // Forward declarations for functions from plants.cpp
 bool applyChopDesignation(int16_t x1, int16_t y1, int16_t z1, int16_t x2, int16_t y2, int16_t z2, std::string &error);
@@ -61,11 +63,22 @@ bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error);
 bool applyRemoveZone(int16_t x, int16_t y, int16_t z, std::string &error);
 bool applySetLabor(int32_t unitID, uint8_t laborID, bool enable, std::string &error);
 
+// Forward declarations for functions from work_details.cpp
+bool applyAssignWorkDetail(uint16_t detailIndex, int32_t unitID, bool add, std::string &error);
+bool applySetWorkDetailMode(uint16_t detailIndex, uint8_t mode, std::string &error);
+bool applyCreateWorkDetail(const std::string &name, uint8_t mode, const std::vector<uint8_t> &laborIDs, std::string &error);
+
+// Forward declaration for function from trade.cpp
+bool applyBringGoodsToDepot(int16_t x, int16_t y, int16_t z,
+                            const std::string &itemTypeFilter, const std::string &materialFilter,
+                            int32_t maxCount, int64_t maxTotalValue, std::string &error);
+
 // Forward declarations for functions in buildings.cpp
 bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint32_t groupMask, std::string &error, bool &partial);
 bool placeFarmPlot(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
 bool applySetFarmCrop(int16_t x, int16_t y, int16_t z, uint8_t season, const std::string &cropName, std::string &error);
 bool placeBridge(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint8_t wireDirection, std::string &error);
+bool applySetWorkshopProfile(int16_t x, int16_t y, int16_t z, int32_t minSkillLevel, int32_t maxSkillLevel, int32_t workerUnitID, std::string &error);
 
 // Forward declarations for functions from mechanisms.cpp
 bool applyPullLever(int16_t x, int16_t y, int16_t z, std::string &error);
@@ -210,8 +223,12 @@ const uint8_t ENTITY_TYPE_OTHER = 0x04;
 // Forward declarations - implementations in entities.cpp
 // serialize_entity_update also appends the FortInfo calendar block
 // (cur_year / cur_year_tick) — the single source of truth for fort info.
-std::vector<EntityInfo> extract_entities();
-std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &entities);
+// dead_ids, when non-null, is appended with the ids of dead units found
+// during extraction (Units::isDead()); pass the same vector into
+// serialize_entity_update to include the DeadUnits wire block.
+std::vector<EntityInfo> extract_entities(std::vector<uint32_t> *dead_ids);
+std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &entities,
+                                              const std::vector<uint32_t> &dead_ids);
 
 // Designation command handling (inline implementation)
 
@@ -451,6 +468,16 @@ bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error)
 // on that labor (same "silently skips invalid targets" principle already
 // documented at designations.cpp:426-428 for dig designations). No error,
 // no crash, just a toggle that never fires a job.
+//
+// IMPORTANT: status.labors is a DERIVED CACHE, not the source of truth --
+// DF recomputes it from df::global::plotinfo->labor_info.work_details
+// (the work_detail vector; see work_details.cpp) via
+// Units::setAutomaticProfessions(unit) whenever a work detail's membership
+// or mode changes, and that recompute will silently overwrite a labor this
+// function just set. The work-detail commands (ASSIGN_WORK_DETAIL /
+// SET_WORK_DETAIL_MODE / CREATE_WORK_DETAIL, work_details.cpp) are the
+// AUTHORITATIVE path for durable labor assignment; this direct write is a
+// one-off toggle that a later work-detail recompute can clobber.
 bool applySetLabor(int32_t unitID, uint8_t laborID, bool enable, std::string &error)
 {
     using namespace DFHack;
@@ -559,8 +586,9 @@ static void push_state_refresh()
     }
 
     // Entities (dwarf positions/jobs move every step).
-    std::vector<EntityInfo> entities = extract_entities();
-    std::vector<uint8_t> entity_msg = serialize_entity_update(entities);
+    std::vector<uint32_t> dead_ids;
+    std::vector<EntityInfo> entities = extract_entities(&dead_ids);
+    std::vector<uint8_t> entity_msg = serialize_entity_update(entities, dead_ids);
     socket_send_locked(entity_msg.data(), entity_msg.size());
 
     // Announcements since the last poll.
@@ -763,6 +791,26 @@ void executeCommand(const std::vector<uint8_t> &payload)
         }
         case 0x09: {  // WORK_ORDER
             // Payload: [4: cmdID] [1: cmdType] [1: OrderType] [2: Quantity]
+            //          [2: NameLen][N: Name]  -- the name tail is present
+            //          ONLY when OrderType == ORDER_TYPE_BY_NAME (0x00).
+            //          Mirrors QUEUE_JOB's (case COMMAND_TYPE_QUEUE_JOB
+            //          below) trailing length-prefixed name, just appended
+            //          after Quantity instead of after coordinates (this
+            //          command has none). Old 8-byte payloads (OrderType
+            //          0x01-0x0C) parse exactly as before -- purely
+            //          additive. ORDER_TYPE_CUSTOM_REACTION is deliberately
+            //          NOT accepted here -- see work_orders.cpp
+            //          applyWorkOrder's doc comment.
+            //
+            //          2026-07-19 manager-work-order fix wave: two more
+            //          trailing fields, ALWAYS appended by the Go encoder
+            //          after the (conditional) name tail --
+            //          [2:MaterialLen][N:Material] then [1:Frequency]. A
+            //          payload ending before either is present (old
+            //          pre-this-change encodings) decodes as Material=""
+            //          and Frequency=WORK_ORDER_FREQUENCY_ONE_TIME --
+            //          mirrors internal/protocol/codec.go's EOF-tolerant
+            //          decode of the same two fields.
             if (payload.size() < 8) {
                 sendCommandAck(cmdID, 0x02, "Invalid WORK_ORDER payload");
                 return;
@@ -773,7 +821,36 @@ void executeCommand(const std::vector<uint8_t> &payload)
                 sendCommandAck(cmdID, 0x02, "WORK_ORDER quantity out of range (1-100)");
                 return;
             }
-            success = applyWorkOrder(orderType, quantity, error);
+            std::string jobTypeName;
+            size_t offset = 8;
+            if (orderType == ORDER_TYPE_BY_NAME) {
+                if (payload.size() < offset + 2) {
+                    sendCommandAck(cmdID, 0x02, "Invalid WORK_ORDER by-name payload");
+                    return;
+                }
+                uint16_t nameLen = ((uint16_t)payload[offset] << 8) | payload[offset + 1];
+                offset += 2;
+                if (payload.size() < offset + nameLen) {
+                    sendCommandAck(cmdID, 0x02, "Invalid WORK_ORDER by-name payload size");
+                    return;
+                }
+                jobTypeName.assign(payload.begin() + offset, payload.begin() + offset + nameLen);
+                offset += nameLen;
+            }
+            std::string material;
+            uint8_t frequencyByte = WORK_ORDER_FREQUENCY_ONE_TIME;
+            if (payload.size() >= offset + 2) {
+                uint16_t materialLen = ((uint16_t)payload[offset] << 8) | payload[offset + 1];
+                size_t matStart = offset + 2;
+                if (payload.size() >= matStart + materialLen) {
+                    material.assign(payload.begin() + matStart, payload.begin() + matStart + materialLen);
+                    size_t freqOffset = matStart + materialLen;
+                    if (payload.size() >= freqOffset + 1) {
+                        frequencyByte = payload[freqOffset];
+                    }
+                }
+            }
+            success = applyWorkOrder(orderType, quantity, jobTypeName, material, frequencyByte, error);
             break;
         }
         case 0x0B: {  // SMOOTH
@@ -859,6 +936,15 @@ void executeCommand(const std::vector<uint8_t> &payload)
             //          length-prefixed name. Old 12-byte payloads
             //          (OrderType 0x01-0x0C) parse exactly as before —
             //          this is purely additive.
+            //
+            //          2026-07-19 manager-work-order fix wave (SmeltOre
+            //          direct-queue unlock): one more trailing field,
+            //          ALWAYS appended by the Go encoder after the
+            //          (conditional) name/reaction tail --
+            //          [2:MaterialLen][N:Material]. A payload ending before
+            //          it is present (old pre-this-change encodings)
+            //          decodes as Material="" -- mirrors internal/protocol/
+            //          codec.go's EOF-tolerant decode of the same field.
             if (payload.size() < 12) {
                 sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid QUEUE_JOB payload");
                 return;
@@ -868,19 +954,30 @@ void executeCommand(const std::vector<uint8_t> &payload)
             int16_t z = ((int16_t)payload[9] << 8) | payload[10];
             uint8_t orderType = payload[11];
             std::string jobTypeName;
+            size_t offset = 12;
             if (orderType == ORDER_TYPE_BY_NAME || orderType == ORDER_TYPE_CUSTOM_REACTION) {
-                if (payload.size() < 14) {  // 12 existing + NameLen(2)
+                if (payload.size() < offset + 2) {  // 12 existing + NameLen(2)
                     sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid QUEUE_JOB by-name payload");
                     return;
                 }
-                uint16_t nameLen = ((uint16_t)payload[12] << 8) | payload[13];
-                if (payload.size() < 14 + nameLen) {
+                uint16_t nameLen = ((uint16_t)payload[offset] << 8) | payload[offset + 1];
+                offset += 2;
+                if (payload.size() < offset + nameLen) {
                     sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid QUEUE_JOB by-name payload size");
                     return;
                 }
-                jobTypeName.assign(payload.begin() + 14, payload.begin() + 14 + nameLen);
+                jobTypeName.assign(payload.begin() + offset, payload.begin() + offset + nameLen);
+                offset += nameLen;
             }
-            success = applyQueueJob(x, y, z, orderType, jobTypeName, error);
+            std::string material;
+            if (payload.size() >= offset + 2) {
+                uint16_t materialLen = ((uint16_t)payload[offset] << 8) | payload[offset + 1];
+                size_t matStart = offset + 2;
+                if (payload.size() >= matStart + materialLen) {
+                    material.assign(payload.begin() + matStart, payload.begin() + matStart + materialLen);
+                }
+            }
+            success = applyQueueJob(x, y, z, orderType, jobTypeName, material, error);
             break;
         }
         case COMMAND_TYPE_SET_LABOR: {
@@ -1128,6 +1225,104 @@ void executeCommand(const std::vector<uint8_t> &payload)
             int16_t y2 = ((int16_t)payload[13] << 8) | payload[14];
             uint8_t direction = payload[15];
             success = placeBridge(x1, y1, z, x2, y2, direction, error);
+            break;
+        }
+        case COMMAND_TYPE_SET_WORKSHOP_PROFILE: {
+            // Payload: [4:cmdID][1:cmdType][2:X][2:Y][2:Z][4:MinSkillLevel][4:MaxSkillLevel][4:WorkerUnitID]
+            if (payload.size() < 23) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SET_WORKSHOP_PROFILE payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            int32_t minSkillLevel = (int32_t)read_uint32_be(payload, 11);
+            int32_t maxSkillLevel = (int32_t)read_uint32_be(payload, 15);
+            int32_t workerUnitID  = (int32_t)read_uint32_be(payload, 19);
+            success = applySetWorkshopProfile(x, y, z, minSkillLevel, maxSkillLevel, workerUnitID, error);
+            break;
+        }
+        case COMMAND_TYPE_ASSIGN_WORK_DETAIL: {
+            // Payload: [4:cmdID][1:cmdType][2:DetailIndex][4:UnitID][1:Add(1)/Remove(0)]
+            if (payload.size() < 12) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid ASSIGN_WORK_DETAIL payload");
+                return;
+            }
+            uint16_t detailIndex = ((uint16_t)payload[5] << 8) | payload[6];
+            int32_t unitID = (int32_t)read_uint32_be(payload, 7);
+            bool add = payload[11] != 0;
+            success = applyAssignWorkDetail(detailIndex, unitID, add, error);
+            break;
+        }
+        case COMMAND_TYPE_SET_WORK_DETAIL_MODE: {
+            // Payload: [4:cmdID][1:cmdType][2:DetailIndex][1:Mode]
+            if (payload.size() < 8) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SET_WORK_DETAIL_MODE payload");
+                return;
+            }
+            uint16_t detailIndex = ((uint16_t)payload[5] << 8) | payload[6];
+            uint8_t mode = payload[7];
+            success = applySetWorkDetailMode(detailIndex, mode, error);
+            break;
+        }
+        case COMMAND_TYPE_CREATE_WORK_DETAIL: {
+            // Payload: [4:cmdID][1:cmdType][2:NameLen][N:Name][1:Mode][2:LaborCount][LaborCount x 1:LaborID]
+            if (payload.size() < 7) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid CREATE_WORK_DETAIL payload");
+                return;
+            }
+            uint16_t nameLen = ((uint16_t)payload[5] << 8) | payload[6];
+            if (payload.size() < 7 + (size_t)nameLen + 3) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid CREATE_WORK_DETAIL payload size");
+                return;
+            }
+            std::string name(payload.begin() + 7, payload.begin() + 7 + nameLen);
+            size_t offset = 7 + nameLen;
+            uint8_t mode = payload[offset];
+            uint16_t laborCount = ((uint16_t)payload[offset + 1] << 8) | payload[offset + 2];
+            offset += 3;
+            if (payload.size() < offset + (size_t)laborCount) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid CREATE_WORK_DETAIL labor list size");
+                return;
+            }
+            std::vector<uint8_t> laborIDs(payload.begin() + offset, payload.begin() + offset + laborCount);
+            success = applyCreateWorkDetail(name, mode, laborIDs, error);
+            break;
+        }
+        case COMMAND_TYPE_BRING_GOODS_TO_DEPOT: {
+            // Payload: [4:cmdID][1:cmdType][2:X][2:Y][2:Z]
+            //          [2:ItemTypeLen][N:ItemType][2:MaterialLen][N:Material]
+            //          [4:MaxCount][8:MaxTotalValue]
+            if (payload.size() < 11 + 2) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid BRING_GOODS_TO_DEPOT payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            size_t offset = 11;
+            uint16_t itemTypeLen = ((uint16_t)payload[offset] << 8) | payload[offset + 1];
+            offset += 2;
+            if (payload.size() < offset + (size_t)itemTypeLen + 2) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid BRING_GOODS_TO_DEPOT item type filter");
+                return;
+            }
+            std::string itemTypeFilter(payload.begin() + offset, payload.begin() + offset + itemTypeLen);
+            offset += itemTypeLen;
+            uint16_t materialLen = ((uint16_t)payload[offset] << 8) | payload[offset + 1];
+            offset += 2;
+            if (payload.size() < offset + (size_t)materialLen + 4 + 8) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid BRING_GOODS_TO_DEPOT material filter");
+                return;
+            }
+            std::string materialFilter(payload.begin() + offset, payload.begin() + offset + materialLen);
+            offset += materialLen;
+            int32_t maxCount = (int32_t)read_uint32_be(payload, offset);
+            offset += 4;
+            uint64_t maxTotalValueRaw = 0;
+            for (int i = 0; i < 8; i++) maxTotalValueRaw = (maxTotalValueRaw << 8) | payload[offset + i];
+            int64_t maxTotalValue = (int64_t)maxTotalValueRaw;
+            success = applyBringGoodsToDepot(x, y, z, itemTypeFilter, materialFilter, maxCount, maxTotalValue, error);
             break;
         }
         default:
@@ -1464,12 +1659,13 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector<PluginC
             }
 
             out.print("Scanning entities...\n");
-            std::vector<EntityInfo> entities = extract_entities();
+            std::vector<uint32_t> dead_ids;
+            std::vector<EntityInfo> entities = extract_entities(&dead_ids);
 
             out.print("Found %d entities\n", (int)entities.size());
 
             // Serialize and send
-            std::vector<uint8_t> message = serialize_entity_update(entities);
+            std::vector<uint8_t> message = serialize_entity_update(entities, dead_ids);
 
             int sent = socket_send_locked(message.data(), message.size());
             if (sent != (int)message.size()) {
@@ -2178,8 +2374,9 @@ void message_receive_loop(color_ostream &out)
                             }
 
                             // Send entity updates
-                            std::vector<EntityInfo> entities = extract_entities();
-                            std::vector<uint8_t> entity_msg = serialize_entity_update(entities);
+                            std::vector<uint32_t> dead_ids;
+                            std::vector<EntityInfo> entities = extract_entities(&dead_ids);
+                            std::vector<uint8_t> entity_msg = serialize_entity_update(entities, dead_ids);
                             if (g_socket && g_socket->IsSocketValid()) {
                                 socket_send_locked(entity_msg.data(), entity_msg.size());
                             }

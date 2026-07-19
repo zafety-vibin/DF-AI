@@ -104,3 +104,62 @@ func TestRenderZones_Truncated(t *testing.T) {
 		t.Fatalf("expected a truncation note, got:\n%s", out)
 	}
 }
+
+func TestRenderZoneValue(t *testing.T) {
+	raw := []byte(`{"kind":1,"type_name":"Bedroom","room_value_field":"required_bedroom",
+		"x1":1,"y1":1,"x2":3,"y2":3,"z":90,
+		"components":[
+			{"building_type":"Bed","item_type":"BED","material":"silver","quality":"FineCrafted","value":120},
+			{"building_type":"Cabinet","item_type":"CABINET","material":"oak","quality":"Ordinary","value":30}
+		],
+		"component_count":2,"estimated_value":150,
+		"tiles_total":9,"tiles_smoothed":9,
+		"engravings_count":2,"engravings_by_quality":[{"quality":"FineCrafted","count":2}],
+		"experimental_personal_value":9001}`)
+	out := renderZoneValue(raw)
+	if !strings.Contains(out, "Bedroom at (1,1)-(3,3) z=90") {
+		t.Fatalf("missing zone header:\n%s", out)
+	}
+	if !strings.Contains(out, "sum of 2 furniture components") || !strings.Contains(out, "150") {
+		t.Fatalf("missing estimated_value line:\n%s", out)
+	}
+	if !strings.Contains(out, "required_bedroom") {
+		t.Fatalf("missing room_value_field comparison note:\n%s", out)
+	}
+	if !strings.Contains(out, "silver BED") || !strings.Contains(out, "oak CABINET") {
+		t.Fatalf("missing component lines:\n%s", out)
+	}
+	if !strings.Contains(out, "9/9 smoothed") {
+		t.Fatalf("missing tile smoothing line:\n%s", out)
+	}
+	if !strings.Contains(out, "engravings: 2") || !strings.Contains(out, "2 FineCrafted") {
+		t.Fatalf("missing engraving breakdown:\n%s", out)
+	}
+	if !strings.Contains(out, "UNCALIBRATED/experimental") || !strings.Contains(out, "9001") {
+		t.Fatalf("experimental_personal_value must be clearly labeled and reported:\n%s", out)
+	}
+}
+
+func TestRenderZoneValue_NoRoomValueField(t *testing.T) {
+	// A zone kind with no noble_demands analog (e.g. Dungeon) must omit the
+	// comparison note entirely rather than printing a bogus field name.
+	raw := []byte(`{"kind":17,"type_name":"Dungeon","room_value_field":null,
+		"x1":1,"y1":1,"x2":1,"y2":1,"z":90,
+		"components":[],"component_count":0,"estimated_value":0,
+		"tiles_total":1,"tiles_smoothed":0,
+		"engravings_count":0,"engravings_by_quality":[],
+		"experimental_personal_value":0}`)
+	out := renderZoneValue(raw)
+	if strings.Contains(out, "compare against") {
+		t.Fatalf("must not print a room_value_field comparison note when null:\n%s", out)
+	}
+	if !strings.Contains(out, "engravings: none") {
+		t.Fatalf("expected 'engravings: none' for zero engravings:\n%s", out)
+	}
+}
+
+func TestRenderZoneValue_BadJSON(t *testing.T) {
+	if out := renderZoneValue([]byte(`not json`)); !strings.Contains(out, "unparseable zone_value response") {
+		t.Fatalf("bad JSON must be reported, got: %q", out)
+	}
+}

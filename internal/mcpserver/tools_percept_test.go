@@ -54,6 +54,52 @@ func TestPerceptToolsRegistered(t *testing.T) {
 	}
 }
 
+// TestLookDescriptionDocumentsPendingBuildingMarker asserts the look tool
+// tells the model about the always-on 'u' pending-building glyph in its
+// registered description — otherwise a model has no way to learn a queued
+// building (wall/floor Construction included) is now visible without
+// lens=buildings. The rendering behavior itself (glyph/legend/count line)
+// is pinned at the unit level by TestRenderCropPendingBuilding in
+// internal/mapview/render_test.go, which exercises the exact RenderCrop
+// call look's handler makes when no lens is requested; a full live/fake
+// plugin-connection round trip through Bridge.MapSlice is out of scope
+// here — no such TCP-mocking test harness exists yet in this repo for
+// dfhack.Client, and building one is a separate concern from this
+// rendering-visibility fix.
+func TestLookDescriptionDocumentsPendingBuildingMarker(t *testing.T) {
+	ctx := context.Background()
+	srv := New(nil)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := srv.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	res, err := clientSession.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name != "look" {
+			continue
+		}
+		if !strings.Contains(tool.Description, "marked u") {
+			t.Fatalf("look description must document the pending-building 'u' marker: %q", tool.Description)
+		}
+		return
+	}
+	t.Fatal("look tool not found")
+}
+
 // solidTestBridge builds a Bridge whose world model holds a real 20x20x2
 // all-solid topology overlay (FlagDiscovered|FlagWall everywhere), so
 // find_dig_site input validation can be exercised end-to-end.

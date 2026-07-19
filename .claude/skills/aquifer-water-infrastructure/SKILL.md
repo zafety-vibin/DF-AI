@@ -1,6 +1,6 @@
 ---
 name: aquifer-water-infrastructure
-description: PLANNED — procedure never executed, but the shutoff tooling now exists. Use when a sealed aquifer pierce (see aquifer-piercing) needs to become a deliberate water source (cistern, tap, or well) instead of a sealed-off hazard. The lever→door/hatch/bridge mechanism chain (build + link_building + pull_lever) was live-verified 2026-07-17; floodgate is pending live verification (its crafting bug is fixed but not yet deployed) and wells remain missing entirely — read this to know what's real vs. missing before promising water infrastructure, and note that no shutoff has ever been tested against actual flowing water.
+description: PLANNED — procedure never executed, but the shutoff tooling now exists. Use when a sealed aquifer pierce (see aquifer-piercing) needs to become a deliberate water source (cistern, tap, or well) instead of a sealed-off hazard. The lever→door/hatch/bridge mechanism chain (build + link_building + pull_lever) was live-verified 2026-07-17; floodgate is pending live verification (its crafting bug is fixed but not yet deployed); `build type=well` shipped 2026-07-18 (compile-verified only, not yet live-tested — see `building_types` for its exact requirements) — read this to know what's real vs. still unverified before promising water infrastructure, and note that no shutoff has ever been tested against actual flowing water.
 ---
 
 # Aquifer Water Infrastructure (PLANNED)

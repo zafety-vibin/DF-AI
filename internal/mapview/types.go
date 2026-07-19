@@ -43,6 +43,22 @@ type Slice struct {
 	// in Rows but can still block a new building placement. Optional: an
 	// older plugin simply omits it.
 	FloorItems [][3]int16 `json:"floor_items"`
+	// PendingBuilding tiles as [x,y] in absolute map coords — DF's
+	// tile_building_occ::Planned occupancy value, set the instant a
+	// building of ANY type (including a wall/floor/ramp Construction) is
+	// placed and cleared/promoted on completion or removal. This is the
+	// always-on "something is queued here, not yet real" signal — exact
+	// type/category still needs lens=buildings. Optional: an older
+	// plugin simply omits it.
+	PendingBuilding [][2]int16 `json:"pending_building"`
+	// Minerals is per-vein-tile identity as [x,y,idx] in absolute map
+	// coords, where idx indexes MineralNames — a per-slice table, so a
+	// vein-ringed area doesn't repeat the same inorganic name per tile.
+	// Base terrain (Rows) already renders these tiles '=' either way;
+	// this is only reachable via lens=minerals. Optional: an older plugin
+	// simply omits both fields.
+	Minerals     [][3]int16 `json:"minerals"`
+	MineralNames []string   `json:"mineral_names"`
 }
 
 type ColumnLevel struct {

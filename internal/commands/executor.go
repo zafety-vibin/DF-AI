@@ -79,6 +79,30 @@ func (e *CommandExecutor) SendDigRegion(digType uint8, x1, y1, z1, x2, y2, z2 in
 	return e.SendCommand(cmd)
 }
 
+// buildDesignation is the SOLE constructor of a BuildDesignation literal —
+// every SendBuildCommand* helper below funnels through it, so the wire's
+// trailing Material/Quality/Orientation bytes are always set explicitly to
+// their real "no constraint" sentinel rather than left at a Go zero-value:
+// Material=0 is a legitimate "any" already, but Quality=0 is Ordinary and
+// Orientation=0 is Horizontal/North — neither is "no preference".
+func (e *CommandExecutor) buildDesignation(x, y, z int16, buildType, material, quality, orientation uint8, name string) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeBuild,
+		Build: protocol.BuildDesignation{
+			X:             x,
+			Y:             y,
+			Z:             z,
+			BuildType:     buildType,
+			BuildTypeName: name,
+			Material:      material,
+			Quality:       quality,
+			Orientation:   orientation,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
 // SendBuildCommand sends a build designation command with no material
 // class preference (DF's job system picks any suitable item).
 func (e *CommandExecutor) SendBuildCommand(x, y, z int16, buildType uint8) (*CommandResult, error) {
@@ -91,19 +115,67 @@ func (e *CommandExecutor) SendBuildCommand(x, y, z int16, buildType uint8) (*Com
 // picks the specific item within the class. The wire payload always
 // carries the material byte — MaterialClassAny means "no constraint".
 func (e *CommandExecutor) SendBuildCommandWithMaterial(x, y, z int16, buildType, material uint8) (*CommandResult, error) {
-	cmd := &protocol.CommandMessage{
-		CommandID:   e.tracker.GenerateCommandID(),
-		CommandType: protocol.CommandTypeBuild,
-		Build: protocol.BuildDesignation{
-			X:         x,
-			Y:         y,
-			Z:         z,
-			BuildType: buildType,
-			Material:  material,
-		},
-	}
+	return e.SendBuildCommandWithMaterialAndQuality(x, y, z, buildType, material, protocol.QualityTierAny)
+}
 
-	return e.SendCommand(cmd)
+// SendBuildCommandWithMaterialAndQuality sends a build designation command
+// with both an explicit material class constraint and a quality-tier
+// constraint (protocol.QualityTier*). QualityTierAny means no constraint
+// (DF/the plugin picks any matching item via constructWithFilters, same as
+// SendBuildCommandWithMaterial); any other tier switches the plugin to
+// constructWithItems, selecting an EXISTING item of at least that quality
+// instead — see protocol.QualityTier*'s doc comment. Only meaningful for
+// furniture build types; the plugin rejects a non-Any quality for anything
+// else. Orientation is left at BuildOrientAny (no preference) — see
+// SendBuildCommandFull for the water/power-transmission family, which needs
+// it instead.
+func (e *CommandExecutor) SendBuildCommandWithMaterialAndQuality(x, y, z int16, buildType, material, quality uint8) (*CommandResult, error) {
+	return e.SendBuildCommandFull(x, y, z, buildType, material, quality, protocol.BuildOrientAny)
+}
+
+// SendBuildCommandFull sends a build designation command with all three
+// trailing constraints (protocol.MaterialClass*/QualityTier*/
+// BuildOrientation*) explicit. Orientation only applies to the
+// water/power-transmission building family (ScrewPump/AxleHorizontal/
+// WaterWheel/Rollers — protocol.BuildOrientation*'s doc comment); none of
+// those seven building types accept a material or quality constraint
+// either (every reagent is already a specific finished item or a fixed
+// WOOD filter, never a raw building-material class DF could narrow, and
+// none are furniture) — same as Material is meaningless for furniture and
+// Quality is meaningless for everything else, the plugin is the truthful
+// authority on which combos apply and rejects the rest rather than the
+// caller having to know in advance.
+func (e *CommandExecutor) SendBuildCommandFull(x, y, z int16, buildType, material, quality, orientation uint8) (*CommandResult, error) {
+	return e.buildDesignation(x, y, z, buildType, material, quality, orientation, "")
+}
+
+// SendBuildCommandByName sends a build designation command via the
+// generalized name-based path (protocol.BuildTypeByName) instead of one of
+// the curated BuildType* byte constants — reaches any
+// building_type/workshop_type/furnace_type/trap_type name the plugin can
+// resolve (dfhack-plugin/buildings.cpp: resolveBuildTypeByName, via
+// DFHack's find_enum_item tried against all four enums in turn), no new
+// byte constant or plugin rebuild needed for a type DFHack already knows
+// about. Discover resolvable, ACTUALLY BUILDABLE names via the
+// building_types tool. name is the DFHack enum key name verbatim
+// (case-sensitive CamelCase, e.g. "Well"), NOT lowercased.
+//
+// KNOWN LIMITATION (mirrors SendQueueJob's OrderTypeByName path): a name
+// resolving successfully does not by itself mean the plugin has a
+// placement recipe (job_item filters) for it yet — only building types the
+// building_types tool lists are actually buildable today; anything else
+// fails with a truthful "resolved but no placement recipe" error.
+func (e *CommandExecutor) SendBuildCommandByName(x, y, z int16, name string, material, quality uint8) (*CommandResult, error) {
+	return e.SendBuildCommandByNameFull(x, y, z, name, material, quality, protocol.BuildOrientAny)
+}
+
+// SendBuildCommandByNameFull is SendBuildCommandByName plus an explicit
+// orientation constraint (protocol.BuildOrientation*) — reaches the
+// water/power-transmission family (e.g. "ScrewPump", exact DFHack
+// CamelCase) via the by-name path with orientation still settable, the
+// same way SendBuildCommandFull does for the curated BuildType* path.
+func (e *CommandExecutor) SendBuildCommandByNameFull(x, y, z int16, name string, material, quality, orientation uint8) (*CommandResult, error) {
+	return e.buildDesignation(x, y, z, protocol.BuildTypeByName, material, quality, orientation, name)
 }
 
 // SendCancelCommand sends a cancel designation command
@@ -275,14 +347,37 @@ func (e *CommandExecutor) SendRemoveZone(x, y, z int16) (*CommandResult, error) 
 // SendWorkOrderCommand adds a manager work order to produce N items of
 // the given type. The manager dispatches to whichever workshop can fulfill
 // the order, drawing reagents from stockpiles automatically.
-func (e *CommandExecutor) SendWorkOrderCommand(orderType uint8, quantity uint16) (*CommandResult, error) {
+//
+// orderType is normally one of the protocol.OrderType* byte constants.
+// Pass protocol.OrderTypeByName with jobTypeName set to a DFHack job_type
+// enum key name (e.g. "ProcessPlants") to reach any job type the plugin
+// can resolve by name instead — no new byte constant needed (see the
+// job_types tool for discovery). No hand-maintained workshop-compatibility
+// TABLE is needed on this side: the manager itself picks a compatible
+// workshop once it dispatches the order. jobTypeName is ignored (and left
+// unset on the wire) for the plain byte-vocabulary orderTypes.
+//
+// material is a job_material_category keyword (wood, bone, shell, leather,
+// silk, plant, cloth, yarn) or an exact DFHack material token (e.g.
+// "INORGANIC", "INORGANIC:LIMONITE") — needed for job types with real
+// material ambiguity (e.g. MakeFigurine, whose material choice also picks
+// the workshop); pass "" for job types with none. frequency is a
+// protocol.WorkOrderFrequency* constant selecting a recurring cadence
+// instead of the default one-time order.
+func (e *CommandExecutor) SendWorkOrderCommand(orderType uint8, quantity uint16, jobTypeName, material string, frequency uint8) (*CommandResult, error) {
+	order := protocol.WorkOrderDesignation{
+		OrderType: orderType,
+		Quantity:  quantity,
+		Material:  material,
+		Frequency: frequency,
+	}
+	if orderType == protocol.OrderTypeByName {
+		order.JobTypeName = jobTypeName
+	}
 	cmd := &protocol.CommandMessage{
 		CommandID:   e.tracker.GenerateCommandID(),
 		CommandType: protocol.CommandTypeWorkOrder,
-		Order: protocol.WorkOrderDesignation{
-			OrderType: orderType,
-			Quantity:  quantity,
-		},
+		Order:       order,
 	}
 	return e.SendCommand(cmd)
 }
@@ -303,10 +398,17 @@ func (e *CommandExecutor) SendWorkOrderCommand(orderType uint8, quantity uint16)
 // reaction directly instead — this is how brewing and anything else with
 // no job_type mapping gets queued. name is ignored (and left unset on the
 // wire) for the plain byte-vocabulary orderTypes.
-func (e *CommandExecutor) SendQueueJob(x, y, z int16, orderType uint8, name string) (*CommandResult, error) {
+//
+// material is required only for OrderTypeByName name "SmeltOre" (an exact
+// ore token, e.g. "INORGANIC:LIMONITE" — pins job.mat_type/mat_index and
+// the BOULDER job_item to that one ore raw); the plugin returns a truthful
+// FAILED ack if it's missing there. Ignored (and left unset on the wire)
+// otherwise.
+func (e *CommandExecutor) SendQueueJob(x, y, z int16, orderType uint8, name, material string) (*CommandResult, error) {
 	qj := protocol.QueueJobDesignation{
 		X: x, Y: y, Z: z,
 		OrderType: orderType,
+		Material:  material,
 	}
 	switch orderType {
 	case protocol.OrderTypeByName:
@@ -452,7 +554,7 @@ func (e *CommandExecutor) SendSetAlert(name string, active bool) (*CommandResult
 }
 
 // SendLinkBuilding wires the lever at (leverX,leverY,leverZ) to the
-// trigger target (bridge/floodgate/door/hatch) at
+// trigger target (bridge/floodgate/door/hatch/support/gear_assembly) at
 // (targetX,targetY,targetZ). Consumes two free mechanisms from the fort's
 // stockpiles; the plugin rejects the call truthfully if fewer than two are
 // available, if either building is still under construction, or if the
@@ -492,6 +594,93 @@ func (e *CommandExecutor) SendBuildBridge(x1, y1, z, x2, y2 int16, direction uin
 			X1: x1, Y1: y1, Z: z,
 			X2: x2, Y2: y2,
 			Direction: direction,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendSetWorkshopProfile writes min/max skill-level gating and (optionally)
+// appends one permitted worker to the workshop_profile of the ACTUAL BUILT
+// workshop, furnace, or mechanism trap at (x,y,z). maxSkillLevel == -1
+// means uncapped; workerUnitID == -1 means "don't touch permitted_workers".
+func (e *CommandExecutor) SendSetWorkshopProfile(x, y, z int16, minSkillLevel, maxSkillLevel, workerUnitID int32) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeSetWorkshopProfile,
+		SetWorkshopProfile: protocol.SetWorkshopProfileDesignation{
+			X: x, Y: y, Z: z,
+			MinSkillLevel: minSkillLevel,
+			MaxSkillLevel: maxSkillLevel,
+			WorkerUnitID:  workerUnitID,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendAssignWorkDetail adds (add=true) or removes (add=false) unitID
+// from the work detail at detailIndex's membership (assigned_units) --
+// see protocol.AssignWorkDetailDesignation. detailIndex is a position in
+// the work_details tool's response, not a stable id.
+func (e *CommandExecutor) SendAssignWorkDetail(detailIndex uint16, unitID int32, add bool) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeAssignWorkDetail,
+		AssignWorkDetail: protocol.AssignWorkDetailDesignation{
+			DetailIndex: detailIndex,
+			UnitID:      unitID,
+			Add:         add,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendSetWorkDetailMode changes the work detail at detailIndex's mode
+// (protocol.WorkDetailMode* constant) and triggers a fort-wide labor
+// recompute (every current citizen, not just the detail's own
+// membership).
+func (e *CommandExecutor) SendSetWorkDetailMode(detailIndex uint16, mode uint8) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeSetWorkDetailMode,
+		SetWorkDetailMode: protocol.SetWorkDetailModeDesignation{
+			DetailIndex: detailIndex,
+			Mode:        mode,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendCreateWorkDetail allocates a new custom work detail (name + mode +
+// pre-enabled labor list) into a free CUSTOM_1..CUSTOM_8 icon slot.
+// Truthful FAILED ack results if all 8 slots are already in use.
+func (e *CommandExecutor) SendCreateWorkDetail(name string, mode uint8, laborIDs []uint8) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeCreateWorkDetail,
+		CreateWorkDetail: protocol.CreateWorkDetailDesignation{
+			Name:     name,
+			Mode:     mode,
+			LaborIDs: laborIDs,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendBringGoodsToDepot marks up to maxCount free fort items (filtered by
+// itemTypeFilter/materialFilter substrings, "" = no filter) for hauling to
+// the built trade depot at (x,y,z) — see protocol.BringGoodsToDepotDesignation
+// for the exact eligibility rules and known limitations. maxTotalValue <= 0
+// means no cap on the running total estimated value of marked items.
+func (e *CommandExecutor) SendBringGoodsToDepot(x, y, z int16, itemTypeFilter, materialFilter string, maxCount int32, maxTotalValue int64) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeBringGoodsToDepot,
+		BringGoodsToDepot: protocol.BringGoodsToDepotDesignation{
+			X: x, Y: y, Z: z,
+			ItemTypeFilter: itemTypeFilter,
+			MaterialFilter: materialFilter,
+			MaxCount:       maxCount,
+			MaxTotalValue:  maxTotalValue,
 		},
 	}
 	return e.SendCommand(cmd)

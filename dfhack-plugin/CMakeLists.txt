@@ -45,7 +45,9 @@ DFHACK_PLUGIN(df_ai_protocol
     locations.cpp
     burrows.cpp
     work_orders.cpp
+    work_details.cpp
     mechanisms.cpp
+    trade.cpp
     queries.cpp
     announcements.cpp
     LINK_LIBRARIES clsocket lua

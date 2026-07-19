@@ -37,6 +37,11 @@ var lenses = map[string]LensDef{
 		Legend: "lens=zones: H housing (bedroom/office/tomb/dining/meeting/dormitory) K barracks A animal (pen/pond/training/archery) R resource-gather (water/dump/sand/fishing/clay/plants) J dungeon — exact owner/roster: list_zones",
 		Gather: gatherZonesLens,
 	},
+	"minerals": {
+		Name:   "minerals",
+		Legend: "lens=minerals: vein tiles painted a,b,c... (skipping t/u, reserved elsewhere) keyed to THIS view's mineral names, listed in a footnote below",
+		Gather: gatherMineralsLens,
+	},
 }
 
 // lensNames returns the registered lens names, sorted, for error messages.
@@ -61,10 +66,28 @@ func lensGlyphSet(name string) []rune {
 		return []rune{'d', 'c', 'r', 's', 'm'}
 	case "zones":
 		return []rune{'H', 'K', 'A', 'R', 'J'}
+	case "minerals":
+		return mineralLetterAlphabet
 	default:
 		return nil
 	}
 }
+
+// mineralLetterAlphabet is a-z minus 't' (sapling/shrub, base terrain glyph)
+// and 'u' (pending-building, an always-on overlay) — the two lowercase
+// letters already reserved outside any lens. 24 letters remain for
+// per-view mineral identities; a view with more distinct minerals than
+// that just stops labeling beyond the cap (see gatherMineralsLens).
+var mineralLetterAlphabet = func() []rune {
+	var out []rune
+	for c := 'a'; c <= 'z'; c++ {
+		if c == 't' || c == 'u' {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}()
 
 // buildingCategoryGlyph maps a DFHack building_type enum key name (as
 // returned by list_buildings' "type" field) to one of 8 category
@@ -228,6 +251,41 @@ func zoneCategoryGlyph(typeName string) rune {
 	default:
 		return 'H'
 	}
+}
+
+// gatherMineralsLens paints vein tiles with a-z (minus t/u — see
+// mineralLetterAlphabet) keyed to THIS slice's own MineralNames table
+// (queries.cpp's queryMapSlice builds it fresh per call, not a fixed
+// per-fort catalog — a different look call over different terrain gets a
+// different letter->name mapping). The legend line itself must therefore
+// be dynamic, unlike buildings/zones/designations' fixed category text —
+// carried as a Footnote (appended after the static legend by RenderCrop)
+// rather than LensDef.Legend, which is a compile-time constant.
+func gatherMineralsLens(ctx context.Context, b *Bridge, s *mapview.Slice, z int16) (mapview.Overlay, error) {
+	marks := map[[2]int16]rune{}
+	if len(s.MineralNames) == 0 {
+		return mapview.Overlay{Marks: marks}, nil
+	}
+	for _, m := range s.Minerals {
+		idx := int(m[2])
+		if idx < 0 || idx >= len(mineralLetterAlphabet) {
+			continue // beyond the lettered cap — tile stays plain '=' in the grid
+		}
+		marks[[2]int16{m[0], m[1]}] = mineralLetterAlphabet[idx]
+	}
+	var legend strings.Builder
+	legend.WriteString("this view's minerals:")
+	shown := len(s.MineralNames)
+	if shown > len(mineralLetterAlphabet) {
+		shown = len(mineralLetterAlphabet)
+	}
+	for i := 0; i < shown; i++ {
+		fmt.Fprintf(&legend, " %c=%s", mineralLetterAlphabet[i], s.MineralNames[i])
+	}
+	if len(s.MineralNames) > shown {
+		fmt.Fprintf(&legend, " (+%d more mineral(s) in view, unlabeled)", len(s.MineralNames)-shown)
+	}
+	return mapview.Overlay{Marks: marks, Footnotes: []string{legend.String()}}, nil
 }
 
 func gatherZonesLens(ctx context.Context, b *Bridge, s *mapview.Slice, z int16) (mapview.Overlay, error) {

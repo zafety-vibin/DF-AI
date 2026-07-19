@@ -1,6 +1,6 @@
 // dfhack-plugin/locations.cpp
 //
-// Location (Tavern/Temple/Library/Guildhall) creation and lodging
+// Location (Tavern/Temple/Library/Guildhall/Hospital) creation and lodging
 // assignment. A Location is a df::abstract_building linked to an
 // existing MeetingHall civzone -- a completely separate DFHack
 // subsystem from civzone ownership/roster assignment (see zones.cpp).
@@ -38,6 +38,7 @@
 #include "df/abstract_building_templest.h"
 #include "df/abstract_building_libraryst.h"
 #include "df/abstract_building_guildhallst.h"
+#include "df/abstract_building_hospitalst.h"
 #include "df/profession.h"
 
 #include "protocol.h"
@@ -52,6 +53,7 @@ df::abstract_building_type abstractBuildingTypeFromWire(uint8_t wire) {
         case LOCATION_TYPE_TEMPLE:    return df::abstract_building_type::TEMPLE;
         case LOCATION_TYPE_LIBRARY:   return df::abstract_building_type::LIBRARY;
         case LOCATION_TYPE_GUILDHALL: return df::abstract_building_type::GUILDHALL;
+        case LOCATION_TYPE_HOSPITAL:  return df::abstract_building_type::HOSPITAL;
         default:                       return df::abstract_building_type::NONE;
     }
 }
@@ -62,12 +64,13 @@ uint8_t wireFromAbstractBuildingType(df::abstract_building_type t) {
         case df::abstract_building_type::TEMPLE:      return LOCATION_TYPE_TEMPLE;
         case df::abstract_building_type::LIBRARY:     return LOCATION_TYPE_LIBRARY;
         case df::abstract_building_type::GUILDHALL:   return LOCATION_TYPE_GUILDHALL;
-        default:                                        return 0; // not one of the 4 supported types
+        case df::abstract_building_type::HOSPITAL:    return LOCATION_TYPE_HOSPITAL;
+        default:                                        return 0; // not one of the 5 supported types
     }
 }
 
 // applyCreateLocation converts an existing MeetingHall civzone into a
-// Tavern/Temple/Library/Guildhall Location, mirroring set_location()
+// Tavern/Temple/Library/Guildhall/Hospital Location, mirroring set_location()
 // (zone.lua:300-354) step for step.
 bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, const std::string &profession, std::string &error)
 {
@@ -167,6 +170,28 @@ bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, 
             }
             guildhall->contents.profession = prof;
             bld = guildhall;
+            break;
+        }
+        case df::abstract_building_type::HOSPITAL: {
+            auto *hospital = (df::abstract_building_hospitalst*)
+                df::abstract_building_hospitalst::_identity.instantiate();
+            if (!hospital) {
+                error = "failed to allocate hospital building";
+                return false;
+            }
+            // Defaults match zone.lua's valid_locations.hospital table
+            // verbatim (thread/cloth/powder/soap are pre-multiplied there --
+            // see abstract_building_contents's comments for the per-unit
+            // factors -- so these are the final stored values, not raw
+            // item counts).
+            hospital->contents.desired_splints = 5;
+            hospital->contents.desired_thread = 75000;
+            hospital->contents.desired_cloth = 50000;
+            hospital->contents.desired_crutches = 5;
+            hospital->contents.desired_powder = 750;
+            hospital->contents.desired_buckets = 2;
+            hospital->contents.desired_soap = 750;
+            bld = hospital;
             break;
         }
         default:

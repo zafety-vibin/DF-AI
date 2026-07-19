@@ -235,6 +235,18 @@ type EntityInfo struct {
 	Z       int16  // Z coordinate
 	Type    uint8  // 1=dwarf, 2=enemy, 3=animal, 4=other
 	Subtype uint16 // Race ID for detailed classification
+
+	// Dead reports DFHack's own Units::isDead() (flags2.bits.killed ||
+	// flags3.bits.ghostly) for this unit. It is NOT part of each entity's
+	// fixed 13-byte wire record -- it is cross-referenced from the
+	// optional trailing DeadUnits block (see deserializeEntityUpdate) so
+	// old peers that don't emit that block simply decode Dead=false for
+	// everyone (backward compatible, same additive pattern as Zones).
+	// A dead unit typically stays in units.active (and thus in this list)
+	// reporting a frozen last-known position -- Dead is the only truthful
+	// signal that it's a corpse, not an idle citizen; never infer death
+	// from position staleness elsewhere.
+	Dead bool
 }
 
 // Entity type constants
@@ -313,9 +325,39 @@ const (
 	CommandTypeRemoveBurrow    uint8 = 0x19 // Delete a named burrow entirely (unassigns units/tiles first)
 	CommandTypeAssignBurrow    uint8 = 0x1A // Assign/unassign one unit, or all current citizens, to/from a named burrow
 	CommandTypeSetAlert        uint8 = 0x1B // Sound/clear the v50 civilian alert against a named burrow
-	CommandTypeLinkBuilding    uint8 = 0x1C // Wire a lever to a trigger target (bridge/floodgate/door/hatch)
+	CommandTypeLinkBuilding    uint8 = 0x1C // Wire a lever or pressure plate to a trigger target (bridge/floodgate/door/hatch/support/gear_assembly)
 	CommandTypePullLever       uint8 = 0x1D // Queue DF's real PullLever job against a built lever
 	CommandTypeBuildBridge     uint8 = 0x1E // Designate a rectangular bridge with a raise/retract direction
+
+	// CommandTypeSetWorkshopProfile writes df::workshop_profile's
+	// min_level/max_level (skill-rating gate) and optionally appends one
+	// unit to permitted_workers on an existing BUILT workshop, furnace, or
+	// mechanism trap (Lever) -- DF's real mechanism for probabilistically
+	// improving job output quality, complementing BuildDesignation.Quality
+	// (which picks among items that already exist).
+	CommandTypeSetWorkshopProfile uint8 = 0x1F
+
+	// Work Detail (labor-group) commands -- DF's own work_detail mechanism
+	// (df.plotinfo.xml labor_infost.work_details, since v0.50.01). This is
+	// the AUTHORITATIVE store behind a unit's derived status.labors cache
+	// (see SetLaborDesignation's doc comment). CommandTypeAssignWorkDetail
+	// edits one detail's membership (assigned_units); CommandTypeSetWorkDetailMode
+	// changes a detail's mode (WorkDetailMode* constants) and recomputes
+	// derived labors for EVERY current citizen, not just the detail's own
+	// membership, since a mode change (e.g. EverybodyDoesThis) reshuffles
+	// who does what fort-wide; CommandTypeCreateWorkDetail allocates a
+	// brand-new custom detail into a free CUSTOM_1..CUSTOM_8 icon slot.
+	// Matches dfhack-plugin/protocol.h COMMAND_TYPE_ASSIGN_WORK_DETAIL /
+	// COMMAND_TYPE_SET_WORK_DETAIL_MODE / COMMAND_TYPE_CREATE_WORK_DETAIL.
+	CommandTypeAssignWorkDetail   uint8 = 0x20
+	CommandTypeSetWorkDetailMode uint8 = 0x21
+	CommandTypeCreateWorkDetail  uint8 = 0x22
+
+	// CommandTypeBringGoodsToDepot marks up to MaxCount free fort items
+	// (filtered by ItemTypeFilter/MaterialFilter substrings) for hauling to
+	// the built trade depot at (X,Y,Z) -- see BringGoodsToDepotDesignation's
+	// doc comment and dfhack-plugin/protocol.h COMMAND_TYPE_BRING_GOODS_TO_DEPOT.
+	CommandTypeBringGoodsToDepot uint8 = 0x23
 )
 
 // Labor constants for the SET_LABOR command. The value IS the real
@@ -355,16 +397,102 @@ const (
 	LaborMaxIndex uint8 = 93
 )
 
-// MaterialClass constants for the BUILD command's trailing material_class
-// byte. Constrains which item CLASS DF's job system may claim for the
-// build; DF still picks the specific item within that class. The plugin
-// treats a BUILD payload without the byte as MaterialClassAny (backward
-// compatible); new Go always appends it.
+// WorkDetailMode constants for the SET_WORK_DETAIL_MODE and
+// CREATE_WORK_DETAIL commands' Mode byte. Matches df::work_detail_mode
+// directly (df.plotinfo.xml) — no translation table. NobodyDoesThis's
+// actual in-game effect beyond "not auto-assigned via this detail" is NOT
+// confirmed by anything in the DFHack 53.15-r2 checkout; acks stay
+// truthful about what byte was written, not a guess about DF's
+// job-assignment behavior. Kept in sync with dfhack-plugin/protocol.h
+// WORK_DETAIL_MODE_* constants.
+const (
+	WorkDetailModeDefault              uint8 = 0x00
+	WorkDetailModeEverybodyDoesThis    uint8 = 0x01
+	WorkDetailModeNobodyDoesThis       uint8 = 0x02
+	WorkDetailModeOnlySelectedDoesThis uint8 = 0x03
+)
+
+// MaterialClass constants for the BUILD command's first trailing byte.
+// Constrains which item CLASS DF's job system may claim for a generic
+// building-material job_item filter (constructions, workshops, furnaces,
+// trade depot); DF still picks the specific item within that class. Does
+// NOT apply to furniture or doors/hatches/levers/floodgates, which already
+// filter on one specific finished item type rather than a raw material
+// class -- the plugin rejects a non-ANY class for those build types. The
+// plugin treats a BUILD payload without the byte as MaterialClassAny
+// (backward compatible); new Go always appends it.
 const (
 	MaterialClassAny    uint8 = 0x00 // no constraint (DF picks anything suitable)
 	MaterialClassWood   uint8 = 0x01 // logs (job_item item_type=WOOD)
 	MaterialClassStone  uint8 = 0x02 // boulders (item_type=BOULDER)
 	MaterialClassBlocks uint8 = 0x03 // blocks (item_type=BLOCKS)
+)
+
+// QualityTier constants for the BUILD command's second trailing byte
+// (right after Material). Matches df::item_quality (DFHack-only enum,
+// confirmed against df.dfhack.xml: Ordinary/WellCrafted/FinelyCrafted/
+// Superior/Exceptional/Masterful/Artifact -- "Masterful", NOT
+// "Masterwork"). Only meaningful for furniture build types (Bed/Table/
+// Chair/Cabinet/Coffer/Coffin): selects an EXISTING item of at least this
+// quality at PLACEMENT time (Buildings::constructWithItems) instead of
+// accepting any matching item (Buildings::constructWithFilters) -- quality
+// cannot be requested at craft time in vanilla DF, only chosen among what
+// already exists. The plugin rejects a non-Any tier for any non-furniture
+// build type. QualityTierAny (0xFF) is the backward-compatible "no
+// constraint" sentinel: a BUILD payload without this byte (pre-quality
+// peer, or one that only appends Material) decodes as QualityTierAny; new
+// Go always appends it.
+const (
+	QualityTierOrdinary      uint8 = 0x00
+	QualityTierWellCrafted   uint8 = 0x01
+	QualityTierFinelyCrafted uint8 = 0x02
+	QualityTierSuperior      uint8 = 0x03
+	QualityTierExceptional   uint8 = 0x04
+	QualityTierMasterful     uint8 = 0x05
+	QualityTierArtifact      uint8 = 0x06
+	QualityTierAny           uint8 = 0xFF // sentinel: no constraint (default)
+)
+
+// BuildOrientation constants for the BUILD command's THIRD trailing byte
+// (right after Quality) -- used only by the water/power-transmission
+// building family (BuildTypeScrewPump/BuildTypeAxleHorizontal/
+// BuildTypeWaterWheel/BuildTypeRollers). Mirrors DF's own single
+// `direction` int parameter to Buildings::setSize (dfhack-build
+// library/modules/Buildings.cpp:922-991), which the engine casts TWO
+// different ways depending on building type:
+//
+//	AxleHorizontal, WaterWheel  -> axis: Horizontal (0, an E-W line) or
+//	                               Vertical (nonzero, an N-S line) -- DF
+//	                               casts via `!!direction`, so ANY nonzero
+//	                               value means vertical; this package only
+//	                               ever emits/accepts 0 or 1.
+//	ScrewPump, Rollers          -> compass direction, matching
+//	                               df::screw_pump_direction (FromNorth=0,
+//	                               FromEast=1, FromSouth=2, FromWest=3).
+//	                               ScrewPump: which side draws water FROM.
+//	                               Rollers: which direction items are
+//	                               pushed.
+//	GearAssembly, AxleVertical  -> ignored entirely (always 1x1 --
+//	                               Buildings::getCorrectSize has no case
+//	                               for either).
+//
+// BuildOrientHorizontal/BuildOrientNorth (and BuildOrientVertical/
+// BuildOrientEast) are deliberately the SAME wire byte value -- DF's own
+// `direction` field is one int with dual meaning depending on building
+// type, not two separate concepts; the alias names just let a caller
+// spell whichever reads naturally for the type it's building.
+// BuildOrientAny (0xFF) is the backward-compatible "unspecified" sentinel:
+// a BUILD payload without this byte decodes as BuildOrientAny, and the
+// plugin treats BuildOrientAny as 0 -- a legal default for every one of
+// these types.
+const (
+	BuildOrientHorizontal uint8 = 0x00
+	BuildOrientVertical   uint8 = 0x01
+	BuildOrientNorth      uint8 = 0x00
+	BuildOrientEast       uint8 = 0x01
+	BuildOrientSouth      uint8 = 0x02
+	BuildOrientWest       uint8 = 0x03
+	BuildOrientAny        uint8 = 0xFF // sentinel: unspecified (plugin default: 0)
 )
 
 // SmoothType constants (matches df::tile_designation::smooth bitfield: 1=smooth, 2=engrave).
@@ -429,7 +557,7 @@ const (
 )
 
 // LocationType constants -- DF-AI's own wire values for
-// df::abstract_building_type's INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL.
+// df::abstract_building_type's INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL/HOSPITAL.
 // A Location is created FROM an existing MeetingHall civzone via
 // create_location, not designated directly.
 const (
@@ -437,6 +565,7 @@ const (
 	LocationTypeTemple    uint8 = 0x02
 	LocationTypeLibrary   uint8 = 0x03
 	LocationTypeGuildhall uint8 = 0x04 // requires CreateLocationDesignation.Profession
+	LocationTypeHospital  uint8 = 0x05
 )
 
 // FarmSeason constants for the SET_FARM_CROP command's Season byte. 0-3
@@ -474,19 +603,39 @@ const (
 	// df::job_type. This is how queue_job reaches reactions like brewing
 	// that have no job_type mapping at all (protocolToJobType returns -1
 	// for OrderTypeBrewDrink — see work_orders.cpp). Only
-	// CommandTypeQueueJob understands this sentinel, same scope
-	// restriction as OrderTypeByName below. Matches dfhack-plugin/
-	// protocol.h ORDER_TYPE_CUSTOM_REACTION. Discover valid codes via the
+	// CommandTypeQueueJob understands this sentinel — unlike OrderTypeByName
+	// below, WorkOrderDesignation does NOT support it; OrderTypeBrewDrink
+	// above remains the one reaction-backed order type the manager-queue
+	// path supports. Matches dfhack-plugin/protocol.h
+	// ORDER_TYPE_CUSTOM_REACTION. Discover valid codes via the
 	// list_reactions query/tool.
 	OrderTypeCustomReaction uint8 = 0x0D
 
 	// OrderTypeByName is not one of the hand-maintained order types above —
-	// it's the sentinel for QueueJobDesignation's generalized name-based
-	// path (see that type's doc comment). Only CommandTypeQueueJob
-	// (SendQueueJob) understands it; CommandTypeWorkOrder
-	// (SendWorkOrderCommand) does not and still only accepts the bytes
-	// above. Matches dfhack-plugin/protocol.h ORDER_TYPE_BY_NAME.
+	// it's the sentinel for the generalized name-based job-type path,
+	// shared by BOTH QueueJobDesignation and, as of a later pass,
+	// WorkOrderDesignation (see each type's doc comment for its own
+	// trailing-name wire shape). CommandTypeWorkOrder
+	// (SendWorkOrderCommand) needs no per-job_type workshop-compatibility
+	// or material-class filter to use this — DF's own manager fills in
+	// job_items and picks a compatible workshop once dispatched, so any
+	// job_type find_enum_item resolves is immediately queueable there.
+	// Matches dfhack-plugin/protocol.h ORDER_TYPE_BY_NAME.
 	OrderTypeByName uint8 = 0x00
+)
+
+// WorkOrderFrequency constants for WorkOrderDesignation.Frequency — matches
+// df::workquota_frequency_type directly (library/xml/df.workquota.xml, DFHack
+// 53.15-r1 checkout): OneTime=0 (also df::manager_order::frequency's own
+// struct-zero default, so an omitted/legacy payload and an explicit
+// WorkOrderFrequencyOneTime byte decode identically), Daily=1, Monthly=2,
+// Seasonally=3, Yearly=4. Matches dfhack-plugin/protocol.h WORK_ORDER_FREQUENCY_*.
+const (
+	WorkOrderFrequencyOneTime    uint8 = 0x00
+	WorkOrderFrequencyDaily      uint8 = 0x01
+	WorkOrderFrequencyMonthly    uint8 = 0x02
+	WorkOrderFrequencySeasonally uint8 = 0x03
+	WorkOrderFrequencyYearly     uint8 = 0x04
 )
 
 // DigType constants (matches df::tile_dig_designation enum)
@@ -514,17 +663,49 @@ const (
 //	              a single material reagent against a tile.
 //	0x10 – 0x2F : Workshops — built from one of several material reagents
 //	              over a multi-tile footprint. This includes
-//	              MetalsmithsForge: DF models it as a Workshop subtype
-//	              (df::workshop_type), not a separate building_type.
+//	              MetalsmithsForge AND MagmaForge: DF models BOTH as
+//	              Workshop subtypes (df::workshop_type), not a separate
+//	              building_type — confirmed against df.building.xml, where
+//	              MagmaForge (original-name LAVAMILL) sits inside the
+//	              workshop_type enum-type block, not the neighboring
+//	              furnace_type block, despite "Magma Forge" sounding like a
+//	              furnace-family member.
 //	0x30 – 0x4F : Furniture — single-tile placed buildings using one item
 //	              from a stockpile.
 //	0x50 – 0x6F : Doors / Hatches — single-tile portal buildings.
 //	0x70 – 0x7F : Furnaces — df::building_type::Furnace (a top-level type
 //	              distinct from Workshop, DFHack source-verified in
 //	              df.building.xml). Multi-tile footprint like a workshop,
-//	              but its own subtype enum (df::furnace_type).
+//	              but its own subtype enum (df::furnace_type) — all seven
+//	              real values are covered: WoodFurnace, Smelter,
+//	              GlassFurnace, Kiln (all four fire-safe-material), and the
+//	              magma-fueled MagmaSmelter/MagmaGlassFurnace/MagmaKiln
+//	              (magma-safe-material instead — see
+//	              dfhack-plugin/buildings.cpp placeFurnace's doc comment for
+//	              the fire-safe/magma-safe distinction and for what magma
+//	              placement validation DFHack does/does not perform).
 //	0x80 – 0x8F : Trade Depot — its own building_type, forced 5x5 by DF
 //	              (Buildings::getCorrectSize), not a workshop/furnace.
+//	0x90 – 0x9F : Misc/infrastructure (Well, Support, ArcheryTarget, the
+//	              room-value furniture family Statue/Slab/WindowGlass/
+//	              WindowGem/Bookcase/DisplayFurniture/OfferingPlace/
+//	              Instrument, and TractionBench/NestBox/Hive) — each its
+//	              own top-level building_type, forced 1x1 by DF like the
+//	              doors/hatches range.
+//	0xA0 – 0xAF : Water/power-transmission infrastructure (ScrewPump,
+//	              GearAssembly, AxleHorizontal, AxleVertical, WaterWheel,
+//	              Windmill, Rollers) — each its own top-level
+//	              building_type. ScrewPump/AxleHorizontal/WaterWheel/
+//	              Rollers additionally take the Orientation trailing byte
+//	              (see BuildOrientation* consts); GearAssembly/AxleVertical
+//	              are forced 1x1 and Windmill forced 3x3, none with an
+//	              orientation concept.
+//	0xB0 – 0xBF : More df::trap_type subtypes (building_type::Trap) beyond
+//	              Lever, which stays at BuildTypeLever in the doors/hatches
+//	              range, sharing its single-mechanism-item shape —
+//	              PressurePlate, StoneFallTrap, WeaponTrap, TrackStop. See
+//	              dfhack-plugin/buildings.cpp placeTrap for the exact filter
+//	              shape and known limitations of each.
 //
 // Add new values at the end of each range as plugin support expands.
 const (
@@ -547,6 +728,32 @@ const (
 	BuildTypeWorkshopKitchen     uint8 = 0x17
 	BuildTypeWorkshopFishery     uint8 = 0x18
 	BuildTypeWorkshopMetalsmith  uint8 = 0x19
+	BuildTypeWorkshopMagmaForge  uint8 = 0x1A // df::workshop_type::MagmaForge -- NOT a furnace_type (see range comment above); needs an anvil (magma-safe, not fire-safe) + magma-safe building material
+
+	// Cloth/leather-industry and misc remaining workshop types -- closes out
+	// "the entire cloth/leather industry is absent end to end" (a prior
+	// research pass's finding). Recipes per buildings.lua workshop_inputs;
+	// see dfhack-plugin/buildings.cpp placeWorkshop for the exact filter
+	// shape of each. Deliberately NOT included: df::workshop_type::Tool and
+	// ::Custom -- buildings.lua's workshop_inputs table has no entry for
+	// either (confirmed by reading the table directly), and DFHack's own
+	// gui/buildings.lua BuildingDialog excludes Tool from its default
+	// workshop list the same opt-in-gated way it excludes Custom -- i.e.
+	// DFHack's own canonical consumer treats Tool as belonging to the same
+	// "no universal recipe" class as Custom, not merely an oversight here.
+	// Both remain resolvable via BuildTypeByName (real df::workshop_type
+	// keys) but yield a truthful "no placement recipe yet" ACK rather than
+	// a guessed filter -- see the building_types tool.
+	BuildTypeWorkshopJewelers     uint8 = 0x1B // df::workshop_type::Jewelers -- 1x generic building material
+	BuildTypeWorkshopBowyers      uint8 = 0x1C // df::workshop_type::Bowyers -- 1x generic building material
+	BuildTypeWorkshopSiege        uint8 = 0x1D // df::workshop_type::Siege -- 3x generic building material (quantity=3); the ammunition-prep Siege Workshop, NOT df::building_type::SiegeEngine (the catapult/ballista building, deliberately out of scope)
+	BuildTypeWorkshopLeatherworks uint8 = 0x1E // df::workshop_type::Leatherworks -- 1x generic building material
+	BuildTypeWorkshopTanners      uint8 = 0x1F // df::workshop_type::Tanners -- 1x generic building material
+	BuildTypeWorkshopClothiers    uint8 = 0x20 // df::workshop_type::Clothiers -- 1x generic building material
+	BuildTypeWorkshopLoom         uint8 = 0x21 // df::workshop_type::Loom -- 1x generic building material
+	BuildTypeWorkshopKennels      uint8 = 0x22 // df::workshop_type::Kennels -- 1x generic building material
+	BuildTypeWorkshopAshery       uint8 = 0x23 // df::workshop_type::Ashery -- 3 specific-item reagents (BLOCKS, empty BARREL, lye_milk_free BUCKET), no generic building-material reagent -- materialClass is rejected
+	BuildTypeWorkshopDyers        uint8 = 0x24 // df::workshop_type::Dyers -- 2 specific-item reagents (empty BARREL, lye_milk_free BUCKET), no generic building-material reagent -- materialClass is rejected
 
 	// Furniture (single-tile, requires an item from stockpile).
 	BuildTypeBed     uint8 = 0x30
@@ -554,18 +761,113 @@ const (
 	BuildTypeChair   uint8 = 0x32
 	BuildTypeCabinet uint8 = 0x33
 	BuildTypeCoffer  uint8 = 0x34
+	BuildTypeCoffin  uint8 = 0x35
 
 	// Doors / hatches.
 	BuildTypeDoor  uint8 = 0x50
 	BuildTypeHatch uint8 = 0x51
 
-	// Furnaces (3x3, require a fire-safe build material).
-	BuildTypeFurnaceSmelter uint8 = 0x70
-	BuildTypeFurnaceWood    uint8 = 0x71
+	// Furnaces (3x3, forced by DF regardless of requested size).
+	BuildTypeFurnaceSmelter      uint8 = 0x70 // fire-safe build material
+	BuildTypeFurnaceWood         uint8 = 0x71 // fire-safe build material
+	BuildTypeFurnaceKiln         uint8 = 0x72 // df::furnace_type::Kiln -- fire-safe build material
+	BuildTypeFurnaceGlass        uint8 = 0x73 // df::furnace_type::GlassFurnace -- fire-safe build material
+	BuildTypeFurnaceMagmaSmelter uint8 = 0x74 // df::furnace_type::MagmaSmelter -- magma-safe (NOT fire-safe) build material; see dfhack-plugin/buildings.cpp placeFurnace for magma-placement-validation details
+	BuildTypeFurnaceMagmaGlass   uint8 = 0x75 // df::furnace_type::MagmaGlassFurnace -- magma-safe build material
+	BuildTypeFurnaceMagmaKiln    uint8 = 0x76 // df::furnace_type::MagmaKiln -- magma-safe build material
 
 	// Trade depot (5x5, forced by DF regardless of requested size).
 	BuildTypeTradeDepot uint8 = 0x80
+
+	// Misc/infrastructure (1x1, forced by DF like doors/hatches).
+	BuildTypeWell    uint8 = 0x90
+	BuildTypeSupport uint8 = 0x91
+
+	// Room-value furniture family (1x1, forced by DF like doors/hatches;
+	// placed from one already-crafted/existing item, no quality-tier
+	// selection support — see dfhack-plugin/buildings.cpp
+	// placeRoomValueFurniture). Closes the "craftable but not placeable"
+	// gap for Statue/Slab specifically (ConstructStatue/ConstructSlab were
+	// already whitelisted for Carpenters/Masons in a prior wave).
+	BuildTypeStatue           uint8 = 0x92
+	BuildTypeSlab             uint8 = 0x93
+	BuildTypeWindowGlass      uint8 = 0x94
+	BuildTypeWindowGem        uint8 = 0x95
+	BuildTypeBookcase         uint8 = 0x96
+	BuildTypeDisplayFurniture uint8 = 0x97
+	BuildTypeOfferingPlace    uint8 = 0x98
+	BuildTypeInstrument       uint8 = 0x99
+
+	// Additional 1x1-forced-footprint building types, byte-range neighbors
+	// of the two families above but not members of either: ArcheryTarget
+	// takes a generic building-material filter (like Well/Support), while
+	// TractionBench/NestBox/Hive share the room-value-furniture family's
+	// dispatch mechanism in dfhack-plugin/buildings.cpp purely as code
+	// reuse (single specific-item or tool-use filter, no materialClass
+	// knob) — none of the three actually raises a bedroom's
+	// furnishing-value score the way Statue/Slab/etc. do.
+	BuildTypeArcheryTarget uint8 = 0x9A // df::building_type::ArcheryTarget -- 1x generic building material; marksman-dwarf training target, not justice-related
+	BuildTypeTractionBench uint8 = 0x9B // df::building_type::TractionBench -- 1x TRACTION_BENCH item; hospital splint-traction furniture, crafted via ConstructTractionBench at a Mechanic's workshop (see queue_job)
+	BuildTypeNestBox       uint8 = 0x9C // df::building_type::NestBox -- 1x TOOL item with has_tool_use=NEST_BOX; egg-laying animal nesting -- crafting the NEST_BOX tool item itself needs a job_item item_subtype queue_job cannot express yet (pre-existing, out of scope)
+	BuildTypeHive          uint8 = 0x9D // df::building_type::Hive -- 1x TOOL item with has_tool_use=HIVE; beekeeping -- same TOOL item_subtype gap as NestBox
+
+	// Water/power-transmission infrastructure family. Recipes per
+	// buildings.lua building_inputs (dfhack-build library/lua/dfhack/
+	// buildings.lua) — see dfhack-plugin/buildings.cpp
+	// placeWaterPowerBuilding for the exact filter shape of each and for
+	// the orientation-byte handling shared by ScrewPump/AxleHorizontal/
+	// WaterWheel/Rollers (see BuildOrientation* consts above).
+	//
+	// KNOWN LIMITATION -- adjacency is NOT modeled: DF links two touching
+	// machine buildings (an axle end abutting a gear assembly's tile, a
+	// gear abutting a water wheel, etc.) automatically at the ENGINE
+	// level purely from tile adjacency once both exist and the fort is
+	// unpaused — there is no separate "connect A to B" parameter to set
+	// at placement time, so placement here is exactly as automatable as
+	// vanilla DF's own build UI: place each piece touching its intended
+	// neighbor and DF's machine-network code (not this plugin) does the
+	// rest. Neither the plugin nor this package can verify two placed
+	// pieces actually formed one working machine short of a live
+	// in-game check.
+	BuildTypeScrewPump      uint8 = 0xA0 // df::building_type::ScrewPump -- BLOCKS + screw (TRAPCOMP) + pipe (PIPE_SECTION); orientation = intake side
+	BuildTypeGearAssembly   uint8 = 0xA1 // df::building_type::GearAssembly -- 1x mechanism (TRAPPARTS); no orientation
+	BuildTypeAxleHorizontal uint8 = 0xA2 // df::building_type::AxleHorizontal -- WOOD; orientation = axis (horizontal vs vertical); ALWAYS 1 tile long today -- see dfhack-plugin/buildings.cpp placeWaterPowerBuilding's KNOWN LIMITATION 2 (no caller-chosen length parameter yet; DF itself supports a multi-tile line)
+	BuildTypeAxleVertical   uint8 = 0xA3 // df::building_type::AxleVertical -- 1x WOOD; no orientation (single-tile Z-shaft)
+	BuildTypeWaterWheel     uint8 = 0xA4 // df::building_type::WaterWheel -- 3x WOOD; orientation = axis (horizontal vs vertical)
+	BuildTypeWindmill       uint8 = 0xA5 // df::building_type::Windmill -- 4x WOOD; no orientation, forced 3x3
+	BuildTypeRollers        uint8 = 0xA6 // df::building_type::Rollers -- mechanism (TRAPPARTS) + CHAIN; orientation = push direction; ALWAYS 1 tile long today (same limitation as AxleHorizontal)
+
+	// More df::trap_type subtypes (building_type::Trap) beyond
+	// BuildTypeLever below -- see dfhack-plugin/buildings.cpp placeTrap for
+	// the exact filter shape of each and for known limitations
+	// (StoneFallTrap builds unarmed; PressurePlate's trigger-condition
+	// fields are left at DF's raw constructor defaults; TrackStop is basic
+	// placement only, no minecart track-piece linkage).
+	BuildTypePressurePlate uint8 = 0xB0 // df::trap_type::PressurePlate -- 1x mechanism (TRAPPARTS), same shape as Lever; can also serve as a link_building SOURCE, same as Lever (see LinkBuildingDesignation)
+	BuildTypeStoneFallTrap uint8 = 0xB1 // df::trap_type::StoneFallTrap -- 1x mechanism (TRAPPARTS), same shape as Lever; builds UNARMED -- arming with a boulder is DF's own separate post-construction Load Stone Trap job, not queued by this command
+	BuildTypeWeaponTrap    uint8 = 0xB2 // df::trap_type::WeaponTrap -- 2x reagents: mechanism (TRAPPARTS) + weapon/trap-component (ANY_WEAPON) -- armed at construction time (unlike StoneFallTrap)
+	BuildTypeTrackStop     uint8 = 0xB3 // df::trap_type::TrackStop -- 1x generic building material, same shape as Support/ArcheryTarget; anchors minecart track infrastructure -- basic placement only
 )
+
+// BuildTypeByName is not one of the curated BuildType values above — it's
+// the sentinel for BuildDesignation's generalized name-based path (see
+// that type's doc comment below). Set BuildTypeName to a DFHack
+// building_type/workshop_type/furnace_type/trap_type enum key name (e.g.
+// "Statue", "Jewelers", "StoneFallTrap") to reach any building type the
+// plugin can resolve by name (dfhack-plugin/buildings.cpp:
+// resolveBuildTypeByName, via DFHack's find_enum_item tried against all
+// four enums in turn) — no new BuildType byte or plugin rebuild needed for
+// a type DFHack already knows about. Matches dfhack-plugin/protocol.h
+// BUILD_TYPE_BY_NAME. Discover resolvable, ACTUALLY BUILDABLE names via the
+// building_types tool.
+//
+// KNOWN LIMITATION (mirrors OrderTypeByName/work_orders.cpp
+// resolveJobTypeByName): resolving a name to a real DFHack building_type/
+// workshop_type/furnace_type/trap_type does NOT by itself mean the plugin
+// has a placement recipe (job_item filters) for it yet — only names the
+// building_types tool lists are buildable today; anything else fails with
+// a truthful "resolved but no placement recipe" error.
+const BuildTypeByName uint8 = 0x00
 
 // BuildTypeLever and BuildTypeFloodgate share the doors/hatches wire range
 // (0x50-0x6F, isBuildTypeDoor) — both are 1x1 ACTUAL buildings taking one
@@ -617,17 +919,41 @@ func IsBuildTypeFurnace(t uint8) bool { return t >= 0x70 && t < 0x80 }
 // trade depot.
 func IsBuildTypeDepot(t uint8) bool { return t >= 0x80 && t < 0x90 }
 
+// IsBuildTypeInfra reports whether the given BuildType refers to a
+// misc/infrastructure building (Well, Support, or the room-value furniture
+// family Statue/Slab/WindowGlass/WindowGem/Bookcase/DisplayFurniture/
+// OfferingPlace/Instrument).
+func IsBuildTypeInfra(t uint8) bool { return t >= 0x90 && t < 0xA0 }
+
+// IsBuildTypeWaterPower reports whether the given BuildType refers to a
+// water/power-transmission infrastructure building (ScrewPump,
+// GearAssembly, AxleHorizontal, AxleVertical, WaterWheel, Windmill,
+// Rollers).
+func IsBuildTypeWaterPower(t uint8) bool { return t >= 0xA0 && t < 0xB0 }
+
+// IsBuildTypeTrap reports whether the given BuildType refers to one of the
+// df::trap_type subtypes in this range (PressurePlate, StoneFallTrap,
+// WeaponTrap, TrackStop). Lever lives in the doors/hatches range instead
+// (IsBuildTypeDoor) — see BuildTypeLever's doc comment.
+func IsBuildTypeTrap(t uint8) bool { return t >= 0xB0 && t < 0xC0 }
+
 // Region represents a 3D bounding box for designations
 type Region struct {
 	X1, Y1, Z1 int16 // Start coordinates
 	X2, Y2, Z2 int16 // End coordinates (inclusive)
 }
 
-// BuildDesignation represents a single build command
+// BuildDesignation represents a single build command. BuildTypeName is only
+// used when BuildType == BuildTypeByName (see that constant's doc comment
+// above) — ignored, and left empty on the wire, for the curated
+// BuildType* vocabulary.
 type BuildDesignation struct {
-	X, Y, Z   int16 // Build location
-	BuildType uint8 // Type of construction
-	Material  uint8 // MaterialClass* constraint (MaterialClassAny = no preference)
+	X, Y, Z       int16  // Build location
+	BuildType     uint8  // Type of construction, or BuildTypeByName
+	Material      uint8  // MaterialClass* constraint (MaterialClassAny = no preference)
+	Quality       uint8  // QualityTier* constraint (QualityTierAny = no preference); furniture only
+	Orientation   uint8  // BuildOrientation* constraint (BuildOrientAny = no preference); water/power infra only (ScrewPump/AxleHorizontal/WaterWheel/Rollers)
+	BuildTypeName string // DFHack building_type/workshop_type/furnace_type/trap_type enum key name; only used when BuildType == BuildTypeByName
 }
 
 // ZoneDesignation represents a zone assignment command
@@ -760,13 +1086,22 @@ type UnassignLodgingDesignation struct {
 	BedroomX, BedroomY, BedroomZ int16
 }
 
-// LinkBuildingDesignation wires the lever at (LeverX,LeverY,LeverZ) to the
-// trigger target (bridge/floodgate/door/hatch) at
-// (TargetX,TargetY,TargetZ) — DF's mechanism-linking mechanism. Consumes
-// two free mechanisms (TRAPPARTS items) from the fort's stockpiles;
-// rejected with a truthful error if fewer than two are available, if
-// either building is still under construction, or if the target isn't a
-// supported trigger type.
+// LinkBuildingDesignation wires the lever OR pressure plate at
+// (LeverX,LeverY,LeverZ) to the trigger target (bridge/floodgate/door/
+// hatch/support/gear_assembly) at (TargetX,TargetY,TargetZ) — DF's
+// mechanism-linking mechanism. Field names stay Lever*-prefixed for
+// wire/history continuity, but the plugin (dfhack-plugin/mechanisms.cpp
+// applyLinkBuilding) accepts either trap_type::Lever or
+// trap_type::PressurePlate as the source since 2026-07-18 — both share the
+// same underlying building_trapst struct and linked_mechanisms field.
+// Support (collapse trigger) and GearAssembly (power shutoff) joined the
+// accepted TARGET set in a later 2026-07-18 pass — both carry their own
+// dedicated mechanism-response bitfield (support_flags.bits.triggered,
+// gear_flags.bits.disengaged) confirming they're genuinely triggerable,
+// same as bridge/floodgate/door/hatch. Consumes two free mechanisms
+// (TRAPPARTS items) from the fort's stockpiles; rejected with a truthful
+// error if fewer than two are available, if either building is still under
+// construction, or if the target isn't a supported trigger type.
 type LinkBuildingDesignation struct {
 	LeverX, LeverY, LeverZ    int16
 	TargetX, TargetY, TargetZ int16
@@ -788,6 +1123,32 @@ type BuildBridgeDesignation struct {
 	X1, Y1, Z int16
 	X2, Y2    int16
 	Direction uint8
+}
+
+// SetWorkshopProfileDesignation writes DF's workshop_profile struct
+// (df.building.xml struct-type workshop_profile: permitted_workers vector,
+// min_level, max_level) on the ACTUAL BUILT workshop, furnace, or
+// mechanism trap (Lever) occupying (X,Y,Z) -- df::building::
+// getWorkshopProfile() returns null for anything else. This is DF's real
+// mechanism for probabilistically improving job output quality (gate a
+// shop to a legendary worker), the complement to BuildDesignation.Quality
+// (which picks a specific already-existing item at placement time).
+//
+// MinSkillLevel/MaxSkillLevel are raw df::skill_rating tier indices
+// (DFHack-only enum, dfhack-build/library/xml/df.dfhack.xml: 0=Dabbling
+// .. 20=Legendary+5). MaxSkillLevel == -1 means uncapped (translated to
+// DF's own 3000 sentinel, dfhack-build/plugins/lua/orders.lua
+// MAX_SKILL_RATINGS[#MAX_SKILL_RATINGS]).
+//
+// WorkerUnitID, if >= 0, is appended to permitted_workers if not already
+// present -- a non-empty permitted_workers list restricts the shop to
+// ONLY listed workers, overriding the skill range entirely for them
+// (DF's own vanilla semantics). -1 means "don't touch permitted_workers".
+type SetWorkshopProfileDesignation struct {
+	X, Y, Z       int16
+	MinSkillLevel int32
+	MaxSkillLevel int32
+	WorkerUnitID  int32
 }
 
 // UnsuspendDesignation represents a single-tile unsuspend command, used to
@@ -828,11 +1189,24 @@ type RemoveBuildingDesignation struct {
 // else with no job_type mapping at all. ReactionCode is ignored unless
 // OrderType == OrderTypeCustomReaction. Only QueueJobDesignation supports
 // either generalized path; WorkOrderDesignation does not.
+//
+// Material is a raw, unresolved caller token (mirrors JobTypeName/
+// ReactionCode's pass-through convention) — either a job_material_category
+// keyword (wood, bone, shell, leather, silk, plant, cloth, yarn) or an exact
+// DFHack material token (e.g. "INORGANIC", "INORGANIC:LIMONITE", "COAL"),
+// resolved plugin-side (dfhack-plugin/work_orders.cpp). Required for
+// OrderType naming SmeltOre (the direct-queue path needs an exact ore raw to
+// pin job.mat_type/mat_index and the BOULDER job_item — see work_orders.cpp
+// applyQueueJob's SmeltOre case); ignored for job types with no material
+// ambiguity. Wire shape: unconditionally appended [2:MaterialLen][N:Material]
+// after the existing (conditional) name/reaction tail — old encoded payloads
+// missing this trailer decode with Material="".
 type QueueJobDesignation struct {
 	X, Y, Z      int16
 	OrderType    uint8  // What to produce (OrderTypeMakeBed etc.), OrderTypeByName, or OrderTypeCustomReaction
 	JobTypeName  string // DFHack job_type enum key name; only used when OrderType == OrderTypeByName
 	ReactionCode string // df::reaction.code; only used when OrderType == OrderTypeCustomReaction
+	Material     string // job_material_category keyword or DFHack material token; required for SmeltOre, else optional
 }
 
 // SetLaborDesignation represents a single labor toggle on one unit.
@@ -846,12 +1220,114 @@ type SetLaborDesignation struct {
 	Enable  bool
 }
 
+// AssignWorkDetailDesignation adds (Add=true) or removes (Add=false)
+// UnitID from the work detail at DetailIndex's assigned_units
+// (df::work_detail.assigned_units) -- DF's own work-details membership
+// list, the authoritative store behind a unit's derived status.labors
+// cache (see SetLaborDesignation's doc comment). DetailIndex is a
+// position in the work_details tool's response, not a stable ID --
+// work_details carries no ID field of its own, so a caller that deletes
+// or reorders details between calls must re-resolve the index.
+type AssignWorkDetailDesignation struct {
+	DetailIndex uint16
+	UnitID      int32
+	Add         bool
+}
+
+// SetWorkDetailModeDesignation changes the work detail at DetailIndex's
+// mode (df::work_detail_mode, via its flags.bits.mode subfield). A mode
+// change reshuffles every current citizen's derived labors fort-wide, not
+// just the detail's own assigned_units membership.
+type SetWorkDetailModeDesignation struct {
+	DetailIndex uint16
+	Mode        uint8 // WorkDetailMode* constant
+}
+
+// CreateWorkDetailDesignation allocates a new custom work detail into the
+// first free CUSTOM_1..CUSTOM_8 icon slot (df::work_detail_icon_type) --
+// a truthful FAILED ack results if all 8 are already in use. LaborIDs is
+// a list of Labor* constants (the real df::unit_labor enum index) to
+// pre-enable on the new detail's allowed_labors; may be empty (an
+// empty-labor detail is legal DF state, just useless until edited
+// further via AssignWorkDetailDesignation/SetWorkDetailModeDesignation).
+type CreateWorkDetailDesignation struct {
+	Name     string
+	Mode     uint8 // WorkDetailMode* constant
+	LaborIDs []uint8
+}
+
 // WorkOrderDesignation represents a manager work order: produce N items of
 // the given type. The manager dispatches to whichever workshop can fulfill
 // the order, drawing reagents from stockpiles automatically.
+//
+// OrderType is normally one of the OrderType* byte constants. Set it to
+// OrderTypeByName instead to reach ANY DFHack job_type the plugin can
+// resolve by name (dfhack-plugin/work_orders.cpp: resolveJobTypeByName,
+// via DFHack's find_enum_item) — no new OrderType byte or plugin rebuild
+// needed for a job_type DFHack already knows about. This is structurally
+// the cheapest way to reach job types with no ORDER_TYPE_* byte at all,
+// e.g. the Farmers-workshop economy (ProcessPlants, MakeCheese,
+// MilkCreature, ShearCreature, SpinThread): unlike QueueJobDesignation's
+// by-name path, no workshop-compatibility or material-class filter is
+// needed on this side at all — the manager itself fills in job_items and
+// picks a compatible workshop once it dispatches the order. JobTypeName is
+// the DFHack job_type enum key name (e.g. "ProcessPlants", not the raw
+// bay12 token) and is ignored unless OrderType == OrderTypeByName.
+// WorkOrderDesignation does NOT support OrderTypeCustomReaction (the
+// reaction-code path) — that remains QueueJobDesignation-only;
+// OrderTypeBrewDrink is still the one reaction-backed order type this path
+// supports.
+//
+// Material is a raw, unresolved caller token — a job_material_category
+// keyword (wood, bone, shell, leather, silk, plant, cloth, yarn) or an exact
+// DFHack material token (e.g. "INORGANIC", "INORGANIC:LIMONITE") — resolved
+// plugin-side onto the manager_order's material_category bitfield or
+// mat_type/mat_index pair (dfhack-plugin/work_orders.cpp applyWorkOrder).
+// Needed for job types with real material ambiguity (e.g. MakeFigurine's
+// wood/stone/metal choice, which also picks the workshop); a job type with
+// none (PrepareMeal, ConstructBlocks' generic-INORGANIC default) needs no
+// Material at all. Frequency is a WorkOrderFrequency* constant selecting a
+// recurring cadence (df::workquota_frequency_type) instead of the default
+// one-time order. Wire shape: both are unconditionally appended
+// ([2:MaterialLen][N:Material] then [1:Frequency]) after the existing
+// (conditional) name tail — old encoded payloads missing this trailer
+// decode with Material="" and Frequency=WorkOrderFrequencyOneTime.
 type WorkOrderDesignation struct {
-	OrderType uint8  // What to produce (OrderTypeMakeBed etc.)
-	Quantity  uint16 // How many to produce (1..100)
+	OrderType   uint8  // What to produce (OrderTypeMakeBed etc.), or OrderTypeByName
+	Quantity    uint16 // How many to produce (1..100)
+	JobTypeName string // DFHack job_type enum key name; only used when OrderType == OrderTypeByName
+	Material    string // job_material_category keyword or DFHack material token; optional
+	Frequency   uint8  // WorkOrderFrequency* constant; default WorkOrderFrequencyOneTime
+}
+
+// BringGoodsToDepotDesignation marks up to MaxCount free fort items for
+// hauling to the built trade depot at (X,Y,Z) -- DFHack's own
+// Items::markForTrade commit (library/modules/Items.cpp:1912), the same
+// mechanism scripts/internal/caravan/movegoods.lua uses, reached here
+// without the viewscreen. Filter-based, not ID-based (no tool today
+// surfaces individual item IDs — see depot_goods/stocks): ItemTypeFilter
+// and MaterialFilter are optional case-sensitive/case-insensitive
+// substring matches (respectively) against the plugin's own decoded
+// item_type name and material state_name — "" matches everything, mirroring
+// stockpile_inventory's category filter (dfhack-plugin/queries.cpp
+// handleStockpileInventory) rather than requiring an exact DFHack enum key.
+//
+// MaxCount is a required cap (>=1) — this is a bulk filter-driven action
+// with real consequences (arbitrarily many fort items marked away), so
+// there is no "unlimited" sentinel; pass a large number to approximate one.
+// MaxTotalValue caps the running total estimated value of marked items;
+// <= 0 means no value cap. Reachability (DFHack's own
+// Maps::canWalkBetween) and DF's own build-stage/pending-removal checks on
+// the depot are additional gates — see dfhack-plugin/trade.cpp
+// applyBringGoodsToDepot for the full eligibility rules and KNOWN
+// LIMITATIONs (nested/carried items and items already committed to some
+// other building are not reached).
+type BringGoodsToDepotDesignation struct {
+	X, Y, Z        int16
+	ItemTypeFilter string
+	MaterialFilter string
+	MaxCount       int32
+	MaxTotalValue  int64
 }
 
 // StockpileDesignation represents a stockpile zone designation. The
@@ -927,6 +1403,14 @@ type CommandMessage struct {
 	PullLever    PullLeverDesignation    // For PULL_LEVER commands
 	BuildBridge  BuildBridgeDesignation  // For BUILD_BRIDGE commands
 
+	SetWorkshopProfile SetWorkshopProfileDesignation // For SET_WORKSHOP_PROFILE commands
+
+	AssignWorkDetail  AssignWorkDetailDesignation  // For ASSIGN_WORK_DETAIL commands
+	SetWorkDetailMode SetWorkDetailModeDesignation // For SET_WORK_DETAIL_MODE commands
+	CreateWorkDetail  CreateWorkDetailDesignation  // For CREATE_WORK_DETAIL commands
+
+	BringGoodsToDepot BringGoodsToDepotDesignation // For BRING_GOODS_TO_DEPOT commands
+
 	CreateLocation  CreateLocationDesignation  // For CREATE_LOCATION commands
 	AssignLodging   AssignLodgingDesignation   // For ASSIGN_LODGING commands
 	UnassignLodging UnassignLodgingDesignation // For UNASSIGN_LODGING commands
@@ -942,7 +1426,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeBuildBridge {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeBringGoodsToDepot {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -959,18 +1443,32 @@ func (m *CommandMessage) Validate() error {
 		// for the symmetric case of clearing a stair shaft.
 	case CommandTypeBuild:
 		// Validate BuildType — accept any defined construction, workshop,
-		// furniture, or door value. Plugin will reject specific values it
-		// doesn't yet implement.
-		if !IsBuildTypeConstruction(m.Build.BuildType) &&
+		// furniture, door, furnace, depot, or misc/infrastructure value, or
+		// the generalized by-name sentinel. Plugin will reject specific values it doesn't
+		// yet implement.
+		if m.Build.BuildType != BuildTypeByName &&
+			!IsBuildTypeConstruction(m.Build.BuildType) &&
 			!IsBuildTypeWorkshop(m.Build.BuildType) &&
 			!IsBuildTypeFurniture(m.Build.BuildType) &&
 			!IsBuildTypeDoor(m.Build.BuildType) &&
 			!IsBuildTypeFurnace(m.Build.BuildType) &&
-			!IsBuildTypeDepot(m.Build.BuildType) {
+			!IsBuildTypeDepot(m.Build.BuildType) &&
+			!IsBuildTypeInfra(m.Build.BuildType) &&
+			!IsBuildTypeWaterPower(m.Build.BuildType) &&
+			!IsBuildTypeTrap(m.Build.BuildType) {
 			return fmt.Errorf("invalid build type: 0x%02X", m.Build.BuildType)
+		}
+		if m.Build.BuildType == BuildTypeByName && m.Build.BuildTypeName == "" {
+			return errors.New("build by-name path (BuildTypeByName) requires a non-empty BuildTypeName")
 		}
 		if m.Build.Material > MaterialClassBlocks {
 			return fmt.Errorf("invalid material class: 0x%02X", m.Build.Material)
+		}
+		if m.Build.Quality != QualityTierAny && m.Build.Quality > QualityTierArtifact {
+			return fmt.Errorf("invalid quality tier: 0x%02X", m.Build.Quality)
+		}
+		if m.Build.Orientation != BuildOrientAny && m.Build.Orientation > BuildOrientWest {
+			return fmt.Errorf("invalid orientation: 0x%02X", m.Build.Orientation)
 		}
 	case CommandTypePause:
 		if m.Pause.Mode > PauseModeStep {
@@ -989,6 +1487,13 @@ func (m *CommandMessage) Validate() error {
 		}
 		if m.QueueJob.OrderType == OrderTypeCustomReaction && m.QueueJob.ReactionCode == "" {
 			return errors.New("queue_job custom-reaction path (OrderTypeCustomReaction) requires a non-empty ReactionCode")
+		}
+	case CommandTypeWorkOrder:
+		if m.Order.OrderType == OrderTypeByName && m.Order.JobTypeName == "" {
+			return errors.New("order by-name path (OrderTypeByName) requires a non-empty JobTypeName")
+		}
+		if m.Order.Frequency > WorkOrderFrequencyYearly {
+			return fmt.Errorf("invalid work order frequency: 0x%02X", m.Order.Frequency)
 		}
 	case CommandTypeBuildFarmPlot:
 		if m.FarmPlot.X2 < m.FarmPlot.X1 || m.FarmPlot.Y2 < m.FarmPlot.Y1 {
@@ -1026,6 +1531,31 @@ func (m *CommandMessage) Validate() error {
 		}
 		if m.BuildBridge.Direction > BridgeDirectionRaiseW {
 			return fmt.Errorf("invalid bridge direction: 0x%02X", m.BuildBridge.Direction)
+		}
+	case CommandTypeSetWorkshopProfile:
+		if m.SetWorkshopProfile.MinSkillLevel < 0 || m.SetWorkshopProfile.MinSkillLevel > 20 {
+			return fmt.Errorf("invalid min_skill_level: %d (want 0-20)", m.SetWorkshopProfile.MinSkillLevel)
+		}
+		if m.SetWorkshopProfile.MaxSkillLevel != -1 && (m.SetWorkshopProfile.MaxSkillLevel < 0 || m.SetWorkshopProfile.MaxSkillLevel > 20) {
+			return fmt.Errorf("invalid max_skill_level: %d (want 0-20, or -1 for uncapped)", m.SetWorkshopProfile.MaxSkillLevel)
+		}
+		if m.SetWorkshopProfile.MaxSkillLevel != -1 && m.SetWorkshopProfile.MaxSkillLevel < m.SetWorkshopProfile.MinSkillLevel {
+			return errors.New("set_workshop_profile: max_skill_level must be >= min_skill_level")
+		}
+	case CommandTypeSetWorkDetailMode:
+		if m.SetWorkDetailMode.Mode > WorkDetailModeOnlySelectedDoesThis {
+			return fmt.Errorf("invalid work detail mode: 0x%02X", m.SetWorkDetailMode.Mode)
+		}
+	case CommandTypeCreateWorkDetail:
+		if m.CreateWorkDetail.Name == "" {
+			return errors.New("create_work_detail requires a non-empty Name")
+		}
+		if m.CreateWorkDetail.Mode > WorkDetailModeOnlySelectedDoesThis {
+			return fmt.Errorf("invalid work detail mode: 0x%02X", m.CreateWorkDetail.Mode)
+		}
+	case CommandTypeBringGoodsToDepot:
+		if m.BringGoodsToDepot.MaxCount < 1 {
+			return errors.New("bring_goods_to_depot requires MaxCount >= 1")
 		}
 	}
 

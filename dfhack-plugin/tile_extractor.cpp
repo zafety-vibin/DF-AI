@@ -11,11 +11,16 @@
 #include "df/tiletype_material.h"
 #include "df/job.h"
 #include "df/job_list_link.h"
+#include "df/building.h"
+#include "df/building_type.h"
+#include "df/building_bridgest.h"
+#include "df/building_bridge_flag.h"
 
 #include "protocol.h"
 
 #include <vector>
 #include <unordered_set>
+#include <unordered_map>
 #include <cstdint>
 #include <cstdio>
 
@@ -69,6 +74,61 @@ std::unordered_set<df::coord> collect_dig_job_targets()
     return targets;
 }
 
+// Build a map from tile coord -> "is this Bridge tile currently walkable"
+// (gate_flags.bits.raised == false) for every FULLY BUILT Bridge on the
+// map. Call once per extraction pass and thread the result into
+// compute_tile_flags -- mirrors collect_dig_job_targets's own "build once,
+// O(1) lookup per tile" shape, for the same reason (walking
+// buildings.all per-tile would be O(tiles * buildings)).
+//
+// Why this exists: a bridge is a BUILDING sitting on top of a tile, not a
+// change to the tile's own raw tiletype -- DF never alters the underlying
+// tile when a bridge is built, raised, or lowered. Shape-based
+// classification alone is therefore wrong in BOTH directions for any
+// bridge deck: a LOWERED bridge over a real gap (a dug pit/channel, a
+// moat) still reads FLAG_VOID off the untouched EMPTY/ENDLESS_PIT shape
+// underneath, exactly as if no bridge existed; a RAISED bridge over
+// ordinary floor still reads FLAG_FLOOR as if nothing were blocking it.
+// Confirmed root cause of a live bug (fortress/memory/goals.md
+// 2026-07-18): designate_dig's connector-hint search treats a currently-
+// passable bridge crossing as impassable void, permanently severing the
+// Go-side region graph at every bridge tile regardless of its real
+// raised/lowered state -- the "nearest open tile" search then falls back
+// across the split, landing on some unrelated, often distant region
+// (reported live as a map-corner coordinate). Mid-construction bridges
+// (getBuildStage() != getMaxBuildStage()) are skipped: the deck doesn't
+// functionally exist yet, so the underlying terrain's own classification
+// should still stand.
+std::unordered_map<df::coord, bool> collect_bridge_tiles()
+{
+    std::unordered_map<df::coord, bool> tiles;
+
+    if (!df::global::world) {
+        return tiles;
+    }
+
+    for (auto *b : df::global::world->buildings.all) {
+        if (!b || b->getType() != df::building_type::Bridge) {
+            continue;
+        }
+        if (b->getBuildStage() != b->getMaxBuildStage()) {
+            continue;
+        }
+        auto *bridge = strict_virtual_cast<df::building_bridgest>(b);
+        if (!bridge) {
+            continue;
+        }
+        bool walkable = !bridge->gate_flags.bits.raised;
+        for (int32_t x = b->x1; x <= b->x2; x++) {
+            for (int32_t y = b->y1; y <= b->y2; y++) {
+                tiles[df::coord(x, y, b->z)] = walkable;
+            }
+        }
+    }
+
+    return tiles;
+}
+
 // Helper to serialize uint16 big-endian
 void write_uint16_be(std::vector<uint8_t> &buf, uint16_t value) {
     buf.push_back((value >> 8) & 0xFF);
@@ -106,16 +166,18 @@ void write_uint64_be(std::vector<uint8_t> &buf, uint64_t value) {
 // (extract_full_map_state below) and the delta path (detect_tile_changes
 // in tile_updates.cpp) so the two can never drift.
 //
-// `dig_job_targets` must be built ONCE per extraction pass by both callers
-// (via collect_dig_job_targets above) and threaded through here as a
-// parameter -- an earlier version of this fix computed the flag byte
-// straight from the designation bit in each path independently, which is
-// exactly the asymmetry that caused the 062455f regression: one path
-// picked up a follow-on tweak and the other didn't, and the two silently
-// diverged again. A shared parameter makes that class of bug impossible --
-// there's only one signature to change.
+// `dig_job_targets` and `bridge_tiles` must each be built ONCE per
+// extraction pass by both callers (via collect_dig_job_targets /
+// collect_bridge_tiles above) and threaded through here as parameters --
+// an earlier version of this fix computed the flag byte straight from the
+// designation bit in each path independently, which is exactly the
+// asymmetry that caused the 062455f regression: one path picked up a
+// follow-on tweak and the other didn't, and the two silently diverged
+// again. Shared parameters make that class of bug impossible -- there's
+// only one signature to change.
 uint8_t compute_tile_flags(MapExtras::MapCache &map_cache, const df::coord &pos, df::tiletype tile_type,
-                            const std::unordered_set<df::coord> &dig_job_targets)
+                            const std::unordered_set<df::coord> &dig_job_targets,
+                            const std::unordered_map<df::coord, bool> &bridge_tiles)
 {
     uint8_t flags = 0;
 
@@ -228,6 +290,16 @@ uint8_t compute_tile_flags(MapExtras::MapCache &map_cache, const df::coord &pos,
             break;
     }
 
+    // Bridges override the shape-based read above -- see
+    // collect_bridge_tiles's doc comment for why the raw tiletype can't
+    // be trusted for a bridge deck either direction (walkable-but-void or
+    // blocked-but-floor).
+    auto bridgeIt = bridge_tiles.find(pos);
+    if (bridgeIt != bridge_tiles.end()) {
+        flags &= ~(FLAG_FLOOR | FLAG_WALL | FLAG_VOID);
+        flags |= bridgeIt->second ? FLAG_FLOOR : FLAG_WALL;
+    }
+
     // Check for dangerous liquids (7/7 depth only) —
     // independent of shape classification.
     if (des.bits.flow_size == 7) {
@@ -277,10 +349,12 @@ std::vector<uint8_t> extract_full_map_state()
     // Use MapCache for efficient tile access
     MapExtras::MapCache map_cache;
 
-    // Job-target coords with an in-flight dig job, built once for this
-    // whole pass (see compute_tile_flags's comment on why this must be
-    // shared/threaded rather than recomputed per path).
+    // Job-target coords with an in-flight dig job, and bridge-tile
+    // walkability, each built once for this whole pass (see
+    // compute_tile_flags's comment on why these must be shared/threaded
+    // rather than recomputed per path).
     std::unordered_set<df::coord> dig_job_targets = collect_dig_job_targets();
+    std::unordered_map<df::coord, bool> bridge_tiles = collect_bridge_tiles();
 
     // Iterate in row-major order: Z outermost, then Y, then X innermost
     for (int32_t z = 0; z < z_max; z++) {
@@ -293,7 +367,7 @@ std::vector<uint8_t> extract_full_map_state()
 
                 // Full flag byte — shared with the delta path
                 // (see compute_tile_flags above).
-                uint8_t flags = compute_tile_flags(map_cache, pos, tile_type, dig_job_targets);
+                uint8_t flags = compute_tile_flags(map_cache, pos, tile_type, dig_job_targets, bridge_tiles);
 
                 // Histogram + classification counts for diagnostics,
                 // derived from the computed flags. Shape values are -1..18

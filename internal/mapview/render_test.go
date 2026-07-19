@@ -161,6 +161,45 @@ func TestRenderCropFloorItems(t *testing.T) {
 	}
 }
 
+// TestRenderCropPendingBuilding: a tile carrying a pending-building entry
+// (DF's tile_building_occ::Planned occupancy — any building type, including
+// a wall/floor Construction) renders the always-on 'u' glyph, gains a
+// legend entry, and gets a count line — the same "always on, count line
+// only when nonzero" treatment as designations/aquifer/smoothed/floor
+// items. This is the actual fix: plain look (no lens) must show a queued
+// building without requiring lens=buildings.
+func TestRenderCropPendingBuilding(t *testing.T) {
+	s := &Slice{Z: 100, X1: 10, Y1: 20, Rows: []string{"##", "##"},
+		PendingBuilding: [][2]int16{{10, 20}}}
+	out := RenderCrop(s, nil, "")
+	if !strings.Contains(out, "  20 u#") {
+		t.Fatalf("pending-building glyph not painted on y=20 row (want \"u#\"):\n%s", out)
+	}
+	if !strings.Contains(out, "u pending-building") {
+		t.Fatalf("legend missing pending-building entry:\n%s", out)
+	}
+	if !strings.Contains(out, "pending buildings in view: 1 tiles (exact type: lens=buildings)") {
+		t.Fatalf("pending-building count line missing:\n%s", out)
+	}
+	// y=21 carries no pending-building entry — must stay plain base glyphs.
+	if !strings.Contains(out, "  21 ##") {
+		t.Fatalf("pending-building must not leak onto y=21 row:\n%s", out)
+	}
+}
+
+// TestRenderCropNoPendingBuildingFields: a slice without the pending_building
+// field (older plugin) renders exactly as before — no glyph, no count line.
+func TestRenderCropNoPendingBuildingFields(t *testing.T) {
+	s := &Slice{Z: 5, X1: 0, Y1: 0, Rows: []string{"##"}}
+	out := RenderCrop(s, nil, "")
+	if strings.Contains(out, "pending building") {
+		t.Fatalf("no pending-building line expected without pending_building data:\n%s", out)
+	}
+	if !strings.Contains(out, "   0 ##") {
+		t.Fatalf("base glyphs must be untouched:\n%s", out)
+	}
+}
+
 func TestRenderCropDesignated(t *testing.T) {
 	s := &Slice{Z: 5, X1: 0, Y1: 0, Rows: []string{"##", "##"},
 		Designated: [][2]int16{{0, 0}, {1, 1}}}
@@ -217,6 +256,34 @@ func TestRenderCrop_NoLensNoAddendum(t *testing.T) {
 	out := RenderCrop(s, nil, "")
 	if strings.Contains(out, "lens=") {
 		t.Fatalf("no lens active must mean no lens addendum:\n%s", out)
+	}
+}
+
+// TestRenderCropMinerals exercises RenderCrop the way lens=minerals uses it
+// (internal/mcpserver's gatherMineralsLens builds this exact overlay shape
+// from a Slice's Minerals/MineralNames fields — those live on the Slice
+// itself, set here, even though RenderCrop only ever consumes the Overlay,
+// never the raw fields directly): a fake slice with 2+ distinct minerals in
+// view, painted as letters keyed to a per-view legend footnote, mirroring
+// lens=buildings' category-glyph treatment but with a dynamic (not fixed)
+// legend line.
+func TestRenderCropMinerals(t *testing.T) {
+	s := &Slice{Z: 100, X1: 10, Y1: 20, Rows: []string{"=="},
+		Minerals:     [][3]int16{{10, 20, 0}, {11, 20, 1}},
+		MineralNames: []string{"limonite", "native copper"}}
+	mineralsOverlay := Overlay{
+		Marks:     map[[2]int16]rune{{10, 20}: 'a', {11, 20}: 'b'},
+		Footnotes: []string{"this view's minerals: a=limonite b=native copper"},
+	}
+	out := RenderCrop(s, []Overlay{mineralsOverlay}, "lens=minerals: vein tiles painted a,b,c...")
+	if !strings.Contains(out, "  20 ab") {
+		t.Fatalf("mineral letters not painted on y=20 row (want \"ab\"):\n%s", out)
+	}
+	if !strings.Contains(out, "lens=minerals: vein tiles painted a,b,c...") {
+		t.Fatalf("expected the lens legend addendum:\n%s", out)
+	}
+	if !strings.Contains(out, "a=limonite b=native copper") {
+		t.Fatalf("expected the per-view mineral footnote:\n%s", out)
 	}
 }
 

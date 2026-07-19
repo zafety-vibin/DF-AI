@@ -11,6 +11,8 @@
 #include "df/tile_dig_designation.h"
 #include "df/tiletype_shape.h"
 #include "df/world.h"
+#include "df/building.h"
+#include "df/building_type.h"
 
 #include "protocol.h"
 #include "ActiveSocket.h"
@@ -112,6 +114,49 @@ static bool stairContinuesBelow(MapExtras::MapCache &cache, int16_t x, int16_t y
     df::tile_dig_designation dig = cache.designationAt(below).bits.dig;
     return dig == df::tile_dig_designation::UpStair ||
            dig == df::tile_dig_designation::UpDownStair;
+}
+
+// Informational-only check: does the requested footprint overlap any
+// EXISTING building's footprint? DF itself is the sole authority on
+// whether a dig actually goes through -- overlapping a building commonly
+// produces a silent "Inappropriate dig square" job-cancel later, with no
+// coordinate or building name in the announcement text, which live play
+// hit twice with no tool-visible way to learn the cause short of
+// cross-referencing `buildings` by hand (fortress/memory/goals.md
+// 2026-07-18: a cabinet tile, then a 3x3 mechanic workshop, both under
+// stair-shaft designations). This never blocks or rejects the
+// designation -- it only annotates the ACK so the model can check before
+// the cancel spam starts. Capped at 5 named buildings; buildings.all is
+// small relative to tile counts so a full per-call scan is cheap, unlike
+// scanning per-tile.
+static std::string checkBuildingFootprintOverlap(int16_t x1, int16_t y1, int16_t z1,
+                                                  int16_t x2, int16_t y2, int16_t z2)
+{
+    if (!df::global::world) {
+        return "";
+    }
+    std::string note;
+    int count = 0;
+    for (auto *b : df::global::world->buildings.all) {
+        if (!b) continue;
+        if (b->z < z1 || b->z > z2) continue;
+        if (b->x2 < x1 || b->x1 > x2 || b->y2 < y1 || b->y1 > y2) continue;
+        if (count >= 5) {
+            note += ", ...";
+            break;
+        }
+        if (count > 0) note += ", ";
+        note += ENUM_KEY_STR(building_type, b->getType());
+        char buf[64];
+        snprintf(buf, sizeof(buf), " at (%d,%d,%d)", b->centerx, b->centery, b->z);
+        note += buf;
+        count++;
+    }
+    if (count == 0) {
+        return "";
+    }
+    return "note: footprint overlaps existing building(s) " + note +
+           " -- DF may silently cancel affected tiles (\"Inappropriate dig square\")";
 }
 
 // Apply dig designation to a region
@@ -365,6 +410,10 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
             stairText += ", bottom joined to existing shaft below";
     }
 
+    // Computed once against the requested rectangle regardless of what the
+    // designation loop above did with it -- see the function's doc comment.
+    std::string footprintNote = checkBuildingFootprintOverlap(x1, y1, z1, x2, y2, z2);
+
     if (designated == 0 && promotedCarved == 0) {
         if (skippedCarved > 0) {
             // Every tile in the range is a carved stair with nothing
@@ -372,6 +421,8 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
             // not a failure; report the truthful counts so the model
             // doesn't re-issue.
             error = stairText;
+            if (!footprintNote.empty())
+                error += "; " + footprintNote;
             return true;
         }
         error = "No tiles designated (all blocked or hidden)";
@@ -387,35 +438,82 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
         // Still return true for partial success
     }
 
-    // Append the stair notes to any existing partial message rather than
-    // overwriting it — blocked is structurally 0 in the dig path today,
-    // but future per-tile rejection paths must not have their message
-    // clobbered.
+    // Append the stair notes and footprint-overlap note to any existing
+    // partial message rather than overwriting it — blocked is structurally
+    // 0 in the dig path today, but future per-tile rejection paths must
+    // not have their message clobbered.
     if (!stairText.empty())
         error = error.empty() ? stairText : error + "; " + stairText;
+    if (!footprintNote.empty())
+        error = error.empty() ? footprintNote : error + "; " + footprintNote;
 
     return true;
 }
 
 // Forward declarations of category placers (implemented in buildings.cpp).
-extern bool placeWorkshop(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
-extern bool placeFurniture(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
-extern bool placeConstruction(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
-extern bool placeDoor(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
-extern bool placeFurnace(int16_t x, int16_t y, int16_t z, uint8_t buildType, std::string &error);
-extern bool placeTradeDepot(int16_t x, int16_t y, int16_t z, std::string &error);
+// materialClass constrains a generic building-material job_item filter
+// (constructions/workshops/furnaces/depot only -- see MATERIAL_CLASS_*'s
+// doc comment in protocol.h); placeDoor and placeFurniture reject a
+// non-ANY class themselves since their filters are already a specific
+// finished item type, not a raw material class. qualityTier (placeFurniture
+// only) selects an EXISTING item of at least that quality at placement
+// time instead of accepting any matching item.
+extern bool placeWorkshop(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, std::string &error);
+extern bool placeFurniture(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, uint8_t qualityTier, std::string &error);
+extern bool placeConstruction(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, std::string &error);
+extern bool placeDoor(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, std::string &error);
+extern bool placeFurnace(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, std::string &error);
+extern bool placeTradeDepot(int16_t x, int16_t y, int16_t z, uint8_t materialClass, std::string &error);
+extern bool placeWell(int16_t x, int16_t y, int16_t z, uint8_t materialClass, std::string &error);
+extern bool placeSupport(int16_t x, int16_t y, int16_t z, uint8_t materialClass, std::string &error);
+extern bool placeArcheryTarget(int16_t x, int16_t y, int16_t z, uint8_t materialClass, std::string &error);
+extern bool placeRoomValueFurniture(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, std::string &error);
+extern bool placeWaterPowerBuilding(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, uint8_t orientation, std::string &error);
+extern bool placeTrap(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, std::string &error);
+
+// Forward declarations of the generalized by-name build-type resolution
+// (implemented in buildings.cpp, next to the enums it scans). Primitive
+// int in/out params only -- no shared struct/header exists between .cpp
+// files in this plugin, and neither function needs designations.cpp to
+// include any building_type/workshop_type/furnace_type/trap_type header.
+// See buildings.cpp for full doc comments (KNOWN LIMITATION included).
+extern bool resolveBuildTypeByName(const std::string &name, int &outBuildingType, int &outSubtype, std::string &error);
+extern int resolveCuratedBuildTypeByte(int buildingType, int subtype, const std::string &name, std::string &error);
 
 // applyBuildDesignation dispatches BUILD commands to category-specific
 // placers based on the BuildType byte's range:
+//   0x00       → BUILD_TYPE_BY_NAME: resolve BuildTypeName, then re-dispatch
+//                below using the curated byte it resolves to (if any)
 //   0x01-0x0F → constructions (wall, floor, stairs, ramp)
 //   0x10-0x2F → workshops (incl. MetalsmithsForge)
 //   0x30-0x4F → furniture
 //   0x50-0x6F → doors / hatches
 //   0x70-0x7F → furnaces (Smelter, WoodFurnace)
 //   0x80-0x8F → trade depot
+//   0x90-0x9F → misc/infrastructure (Well, Support, ArcheryTarget, the
+//               room-value furniture family Statue/Slab/WindowGlass/
+//               WindowGem/Bookcase/DisplayFurniture/OfferingPlace/
+//               Instrument, and TractionBench/NestBox/Hive)
+//   0xA0-0xAF → water/power-transmission infrastructure (ScrewPump,
+//               GearAssembly, AxleHorizontal, AxleVertical, WaterWheel,
+//               Windmill, Rollers)
+//   0xB0-0xBF → more df::trap_type subtypes beyond Lever (PressurePlate,
+//               StoneFallTrap, WeaponTrap, TrackStop)
 bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &error)
 {
     // Parse: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z] [1: BuildType]
+    //        [1: MaterialClass (optional)] [1: QualityTier (optional)]
+    //        [1: Orientation (optional)] [2: NameLen][N: Name] (present
+    //        ONLY when BuildType == BUILD_TYPE_BY_NAME -- mirrors
+    //        QUEUE_JOB's identical trailing length-prefixed name, see
+    //        df_ai_protocol.cpp case COMMAND_TYPE_QUEUE_JOB)
+    // The three material/quality/orientation bytes are each independently
+    // optional for backward compatibility: an older peer's payload may end
+    // right after BuildType (no material support yet), right after
+    // MaterialClass (material support shipped before quality did), or
+    // right after QualityTier (quality support shipped before orientation
+    // did) -- see internal/protocol/codec.go's matching encode-side
+    // comment. Absent bytes default to "no constraint".
     if (payload.size() < 12) {
         error = "Invalid build payload size";
         return false;
@@ -425,29 +523,99 @@ bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &err
     int16_t y = read_int16_be(payload, 7);
     int16_t z = read_int16_be(payload, 9);
     uint8_t buildType = payload[11];
+    uint8_t materialClass = (payload.size() >= 13) ? payload[12] : MATERIAL_CLASS_ANY;
+    uint8_t qualityTier   = (payload.size() >= 14) ? payload[13] : QUALITY_TIER_ANY;
+    uint8_t orientation   = (payload.size() >= 15) ? payload[14] : BUILD_ORIENT_ANY;
+
+    std::string buildTypeName;
+    if (buildType == BUILD_TYPE_BY_NAME) {
+        if (payload.size() < 17) {  // 15 existing + NameLen(2)
+            error = "Invalid build-by-name payload (missing name length)";
+            return false;
+        }
+        uint16_t nameLen = ((uint16_t)payload[15] << 8) | payload[16];
+        if (payload.size() < 17 + (size_t)nameLen) {
+            error = "Invalid build-by-name payload size";
+            return false;
+        }
+        buildTypeName.assign(payload.begin() + 17, payload.begin() + 17 + nameLen);
+    }
 
     if (!Maps::isValidTilePos(x, y, z)) {
         error = "Coordinates out of map bounds";
         return false;
     }
 
+    if (buildType == BUILD_TYPE_BY_NAME) {
+        int resolvedBuildingType, resolvedSubtype;
+        if (!resolveBuildTypeByName(buildTypeName, resolvedBuildingType, resolvedSubtype, error)) {
+            return false;
+        }
+        // Reuse an EXISTING, already-verified placement path byte-for-byte
+        // if the resolved type matches one -- see resolveCuratedBuildTypeByte's
+        // KNOWN LIMITATION comment (buildings.cpp) for why this is not yet
+        // possible for every resolvable name.
+        int curatedByte = resolveCuratedBuildTypeByte(resolvedBuildingType, resolvedSubtype, buildTypeName, error);
+        if (curatedByte < 0) {
+            return false; // error already set by resolveCuratedBuildTypeByte
+        }
+        buildType = (uint8_t)curatedByte;
+        // Falls through to the exact same dispatch below, now using the
+        // derived curated byte -- byte-for-byte identical to a caller who
+        // had passed that byte directly (including the quality-tier check
+        // immediately below, now evaluated against the RESOLVED type).
+    }
+
+    if (qualityTier != QUALITY_TIER_ANY) {
+        if (!isBuildTypeFurniture(buildType)) {
+            error = "quality tier only applies to furniture placement (bed/table/chair/cabinet/coffer/coffin)";
+            return false;
+        }
+        if (qualityTier > QUALITY_TIER_ARTIFACT) {
+            error = "invalid quality tier byte";
+            return false;
+        }
+    }
+
     if (isBuildTypeWorkshop(buildType)) {
-        return placeWorkshop(x, y, z, buildType, error);
+        return placeWorkshop(x, y, z, buildType, materialClass, error);
     }
     if (isBuildTypeFurniture(buildType)) {
-        return placeFurniture(x, y, z, buildType, error);
+        return placeFurniture(x, y, z, buildType, materialClass, qualityTier, error);
     }
     if (isBuildTypeConstruction(buildType)) {
-        return placeConstruction(x, y, z, buildType, error);
+        return placeConstruction(x, y, z, buildType, materialClass, error);
     }
     if (isBuildTypeDoor(buildType)) {
-        return placeDoor(x, y, z, buildType, error);
+        return placeDoor(x, y, z, buildType, materialClass, error);
     }
     if (isBuildTypeFurnace(buildType)) {
-        return placeFurnace(x, y, z, buildType, error);
+        return placeFurnace(x, y, z, buildType, materialClass, error);
     }
     if (isBuildTypeDepot(buildType)) {
-        return placeTradeDepot(x, y, z, error);
+        return placeTradeDepot(x, y, z, materialClass, error);
+    }
+    if (buildType == BUILD_TYPE_WELL) {
+        return placeWell(x, y, z, materialClass, error);
+    }
+    if (buildType == BUILD_TYPE_SUPPORT) {
+        return placeSupport(x, y, z, materialClass, error);
+    }
+    if (buildType == BUILD_TYPE_ARCHERY_TARGET) {
+        return placeArcheryTarget(x, y, z, materialClass, error);
+    }
+    // BUILD_TYPE_ARCHERY_TARGET (0x9A) is checked above BEFORE this range so
+    // it takes priority even though its byte value numerically falls inside
+    // [BUILD_TYPE_STATUE, BUILD_TYPE_HIVE] -- it needs placeArcheryTarget's
+    // materialClass-accepting shape, not placeRoomValueFurniture's.
+    if (buildType >= BUILD_TYPE_STATUE && buildType <= BUILD_TYPE_HIVE) {
+        return placeRoomValueFurniture(x, y, z, buildType, materialClass, error);
+    }
+    if (isBuildTypeWaterPower(buildType)) {
+        return placeWaterPowerBuilding(x, y, z, buildType, materialClass, orientation, error);
+    }
+    if (isBuildTypeTrap(buildType)) {
+        return placeTrap(x, y, z, buildType, materialClass, error);
     }
 
     char buf[64];

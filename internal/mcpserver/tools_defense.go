@@ -94,7 +94,7 @@ func registerDefenseTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "assign_burrow",
-		Description: "Assign a unit (unit_id) or every current citizen (all_citizens=true) to a named burrow. NOT needed before set_alert: DF's civilian alert pulls every non-military citizen to the alerted burrow regardless of assignment. Use this for ordinary standing burrow restrictions (job/living-area confinement) that should persist independent of any alert -- note such an assignment lingers after set_alert is cleared and must be unassigned separately if unwanted.",
+		Description: "Assign a unit (unit_id) or every current citizen (all_citizens=true) to a named burrow. Independent of set_alert -- DF's civilian alert pulls every non-military citizen to the alerted burrow regardless of assignment -- and an assignment made here persists after the alert clears (unassign_burrow to remove it).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in assignBurrowIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -151,7 +151,7 @@ func registerDefenseTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "set_alert",
-		Description: "Sound or clear DF's vanilla civilian alert against a named burrow. active=true rushes every non-military citizen to that burrow and confines them there for the duration -- assign_burrow is NOT a prerequisite; DF's own gui/civ-alert never assigns units, it only paints the burrow and flips this alert. Deactivate (active=false) promptly once the danger passes: leaving it active keeps every citizen confined and they can grow unhappy or starve. active=false clears the alert (and auto-clears the underlying alarm if this was the last burrow restricting it).",
+		Description: "Sound or clear DF's vanilla civilian alert against a named burrow. active=true rushes every non-military citizen to that burrow and confines them there; active=false clears it (and auto-clears the underlying alarm if this was the last burrow restricting it). assign_burrow is NOT a prerequisite -- DF's own gui/civ-alert never assigns units, it only paints the burrow and flips this alert.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in setAlertIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil

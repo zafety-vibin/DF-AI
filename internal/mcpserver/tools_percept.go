@@ -153,12 +153,12 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 		Y      int    `json:"y" jsonschema:"center y"`
 		Z      int    `json:"z" jsonschema:"z-level to view"`
 		Radius int    `json:"radius,omitempty" jsonschema:"radius 12 (25x25) default; up to 23 (47x47, ~2.3k tokens). For whole-fort orientation use scope=overview instead."`
-		Lens   string `json:"lens,omitempty" jsonschema:"optional overlay: buildings|designations. Paints one annotation layer onto the terrain grid; omit for the plain terrain view (which still shows dig designations as 'd'). Exact building/zone types via buildings/building_status."`
+		Lens   string `json:"lens,omitempty" jsonschema:"optional overlay: buildings|designations|minerals. Paints one annotation layer onto the terrain grid; omit for the plain terrain view (which still shows dig designations as 'd' and queued-but-unfinished buildings as 'u'). Exact building/zone types via buildings/building_status."`
 		Scope  string `json:"scope,omitempty" jsonschema:"Cost table (tokens ~= 1.05*W*H + 80): local (default, ignores z-window scoping) terrain crop around (x,y) at radius, up to 47x47 ~2.3k tokens. overview: whole-map downsampled orientation (ignores x/y/radius/lens), ~1-1.5k tokens on any map size, no plugin round-trip. elevation: the FULL z-level (ignores x/y/radius/lens) at full ~1 tok/tile fidelity when the map is <=100 wide/tall (e.g. 96x96 ~9.6k tokens); auto-downsamples into majority-vote blocks above that, with the block size disclosed in the header. fort: the bounding box of tiles you've actually modified at z (dug/built/smoothed) plus an 8-tile margin, same fidelity/downsample rule as elevation but scoped to your footprint instead of the whole map — the recommended planning view once you have dug something."`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "look",
-		Description: "Render an annotated map view of one z-level. Glyph grid with legend; dwarves marked @, dig designations marked d. Pass lens=buildings or lens=designations for detail overlays. '?' tiles are hidden fog — solid undug ground you CAN designate digging into. Default scope=local is a small crop around (x,y); use find_dig_site for choosing dig locations. scope=overview/elevation/fort give whole-map or whole-footprint views instead — see the scope parameter for the cost/fidelity tradeoffs of each.",
+		Description: "Render an annotated map view of one z-level. Glyph grid with legend; dwarves marked @, dig designations marked d, queued-but-unfinished buildings (any type, including a wall/floor Construction) marked u. Pass lens=buildings or lens=designations for detail overlays. '?' tiles are hidden fog — solid undug ground you CAN designate digging into. Default scope=local is a small crop around (x,y); use find_dig_site for choosing dig locations. scope=overview/elevation/fort give whole-map or whole-footprint views instead — see the scope parameter for the cost/fidelity tradeoffs of each.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in lookIn) (*mcp.CallToolResult, any, error) {
 		switch in.Scope {
 		case "", "local":
@@ -170,6 +170,11 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 			}
 			var dwarfXY [][2]int16
 			for _, dw := range b.Snapshot().Entities.Dwarves {
+				// See the local-scope marks loop below: a dead dwarf's
+				// frozen last-known position isn't a live actor to show.
+				if dw.Dead {
+					continue
+				}
 				if dw.Z == int16(in.Z) {
 					dwarfXY = append(dwarfXY, [2]int16{dw.X, dw.Y})
 				}
@@ -231,6 +236,15 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 		}
 		marks := map[[2]int16]rune{}
 		for _, d := range b.Snapshot().Entities.Dwarves {
+			// A dead dwarf's df::unit lingers in the source list at a frozen
+			// last-known position (see EntityInfo.Dead's doc comment) --
+			// painting it as '@' put a corpse on the map like a live actor
+			// to path around, sometimes for a week of game time after
+			// burial. Omit it entirely; dwarves/dwarf_detail already
+			// surface "last-known (dead)" position and burial state.
+			if d.Dead {
+				continue
+			}
 			if d.Z == int16(in.Z) {
 				marks[[2]int16{d.X, d.Y}] = '@'
 			}

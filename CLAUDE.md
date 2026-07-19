@@ -75,6 +75,7 @@ cmake --build build --target df_ai_protocol --config Release
 ## House rules
 
 - **Skills carry procedural knowledge, never specifics**: order, dependencies, tradeoffs — no dimensions, materials, or coordinates. Emergence comes from the model's parameter choices. (A "make bedrooms 4x4" line in a skill is a bug.)
+- **Tool schemas carry shape, never guidance**: an enum parameter lists a short curated vocabulary (~15 values or fewer) plus a name-passthrough where one exists — never the WHEN/WHY of a particular value, which belongs in a skill instead. Per-value facts (footprint, materials, prerequisites) live in an on-demand discovery tool, not the schema description: `build`'s `type` param + the `building_types` tool, and `queue_job`'s `item` param + the `job_types` tool, are the two working examples. (More than one clause of guidance on a single enum value, or more than ~15 names spelled out directly in a schema, is schema bloat — the same bug as the rule above, facing the other direction.)
 - Stairwells default 2×2, span many z-levels in ONE designation, rooms branch beside the spine.
 - **Cognition stays in-house**: no external memory/retrieval MCPs; external servers only at presentation boundaries (OBS/Twitch, Phase 3). The learning loop is the experiment.
 - The fortress memory files (`fortress/memory/`) belong to the playing AI — tooling may read them, humans may audit them, but don't "clean them up" outside a play session.

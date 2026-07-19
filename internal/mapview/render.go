@@ -21,7 +21,10 @@ type Overlay struct {
 //  2. water digits 1-7 (s.Water) — always on
 //  3. designations 'd' (s.Designated) — always on; two live incidents
 //     this session trace to designations being invisible by default
-//  4. overlays, in the order passed — dwarves '@' is conventionally
+//  4. pending buildings 'u' (s.PendingBuilding) — always on; a queued
+//     building (including a wall/floor Construction) was otherwise
+//     completely invisible without lens=buildings
+//  5. overlays, in the order passed — dwarves '@' is conventionally
 //     overlays[0]; a lens (buildings/designations detail) is later in
 //     the slice so it paints last, since the model explicitly asked for
 //     that layer. A later overlay hiding an earlier overlay's mark
@@ -70,9 +73,17 @@ func RenderCrop(s *Slice, overlays []Overlay, legendExtra string) string {
 	for _, dpos := range s.Designated {
 		designated[[2]int16{dpos[0], dpos[1]}] = 'd'
 	}
+	// Pending buildings: 'u' ("unbuilt") replaces the base glyph. Always
+	// on — the generic, type-agnostic counterpart to 'd' for buildings:
+	// something is queued here but not yet real. Exact category (wall,
+	// door, workshop, ...) still needs lens=buildings.
+	pendingBuilding := map[[2]int16]rune{}
+	for _, pb := range s.PendingBuilding {
+		pendingBuilding[[2]int16{pb[0], pb[1]}] = 'u'
+	}
 
-	paintLayers := make([]map[[2]int16]rune, 0, 2+len(overlays))
-	paintLayers = append(paintLayers, water, designated)
+	paintLayers := make([]map[[2]int16]rune, 0, 3+len(overlays))
+	paintLayers = append(paintLayers, water, designated, pendingBuilding)
 	for _, ov := range overlays {
 		paintLayers = append(paintLayers, ov.Marks)
 	}
@@ -90,9 +101,14 @@ func RenderCrop(s *Slice, overlays []Overlay, legendExtra string) string {
 		fmt.Fprintf(&sb, "%4d %s\n", y, string(glyphs))
 	}
 
-	sb.WriteString("\nlegend: @ dwarf d designated " + Legend + "\n")
+	sb.WriteString("\nlegend: @ dwarf d designated u pending-building " + Legend + "\n")
 	if len(s.Designated) > 0 {
 		fmt.Fprintf(&sb, "designated for digging: %d tiles in view\n", len(s.Designated))
+	}
+	// Pending buildings get a count line alongside their 'u' glyph, same
+	// convention as designated — exact type needs lens=buildings.
+	if len(s.PendingBuilding) > 0 {
+		fmt.Fprintf(&sb, "pending buildings in view: %d tiles (exact type: lens=buildings)\n", len(s.PendingBuilding))
 	}
 	// Aquifer tiles get a count line, not a glyph — the grid stays scannable.
 	if len(s.Aquifer) > 0 {

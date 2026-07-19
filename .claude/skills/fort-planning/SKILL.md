@@ -1,15 +1,16 @@
 ---
 name: fort-planning
-description: Use when embarking on a fresh fort (alongside fort-opening) or when an established fort's growth is being driven ad hoc — "dig a room near the stairs whenever someone's homeless" — instead of against a whole-fort, multi-year plan. Covers laying out every z-level's function at embark, sequencing the dig-ahead/furnish-gate cycle across migration waves, staging defense as tooling allows, and the aesthetic canon that costs nothing to keep. Replaces "orient everything around the main staircase" with real forward planning.
+description: Use when embarking on a fresh fort (alongside fort-opening) or when an established fort's growth is being driven ad hoc — "dig a room near the stairs whenever someone's homeless" — instead of against a whole-fort, multi-year plan. Covers laying out every z-level's function at embark, sequencing the dig-ahead/furnish-gate cycle across migration waves, staging defense/industry/noble-response/water-power as tooling and observed fort state allow, and the aesthetic canon that costs nothing to keep. Replaces "orient everything around the main staircase" with real forward planning.
 ---
 
 # Fort Planning — Whole-Fort, Multi-Year Layout
 
 This skill is the planning layer above `fort-opening` (first-hours gate
-checklist), `aquifer-piercing` (descending through a wet layer), and
-`df-farming` (the plot chain itself). Use it to decide WHAT the fort's
-shape is and WHEN each part gets built; hand off to those skills for HOW
-to execute the pieces they own.
+checklist), `aquifer-piercing` (descending through a wet layer),
+`aquifer-water-infrastructure` (turning a sealed pierce into a water
+source), and `df-farming` (the plot chain itself). Use it to decide WHAT
+the fort's shape is and WHEN each part gets built; hand off to those
+skills for HOW to execute the pieces they own.
 
 Sections below marked **[OVERSEER-CONFIRMED 2026-07-15]** carry taste
 defaults the overseer explicitly confirmed — treat them as settled canon
@@ -58,7 +59,7 @@ you're about to place on it. Any other stone level works as a stockpile
 extension, but the FIRST one is the one that pays for its own dig.
 
 **Everything else is order-flexible by site**: services (tavern +
-hospital — see the gap note below), guildhall/temple/library, private
+hospital), guildhall/temple/library, private
 suites, general apartment levels, the crypt. Sequence these by what the
 site and population actually need first, not by a template. `tomb`
 already exists as a zone type for the crypt; suites/apartments are just
@@ -171,30 +172,70 @@ real tooling status — don't promise a stage the tooling can't back yet.
    but this project's tooling cannot dynamically lock, unlock, or forbid
    it in response to a threat. Treat stage 2 as "closed by default," not
    "toggle-controlled on demand."
-3. **Trap corridor.** No trap-designation or mechanism-build tooling
-   exists in this project at all. Not executable today.
-4. **Drawbridge airlock / retracting bridge over a pit.** No
-   bridge/lever tooling exists. Not executable today.
+3. **Trap corridor.** Trap-building tooling now exists: `build` places
+   `weapon_trap` (armed at construction — it also consumes a weapon or
+   trap-component item from stock, so a weapons-producing industry
+   upstream is part of this stage's real cost), `stone_fall_trap`, and
+   `pressure_plate`. Two real gaps survive, so don't over-promise this
+   stage: `stone_fall_trap` builds UNARMED (DF's own flow loads the
+   boulder afterward via a separate Load Stone Trap job at the built
+   trap, which no tool here exposes yet), and `pressure_plate` builds
+   with every trigger-detection category off (creatures/water/magma/
+   carts), so a built plate won't actually fire until a future tool
+   exposes that configuration. A weapon-trap corridor is genuinely
+   executable today; a pressure-plate-triggered anything is not yet.
+   (`track_stop` shares the trap family in `building_types` but is
+   minecart infrastructure, not a trap — and placement-only at that; see
+   the water & power section.)
+4. **Drawbridge airlock / retracting bridge over a pit.** Real and
+   live-verified: `build` type `bridge` (arbitrary footprint + a raise
+   direction), `build` type `lever`, and `link_building` (wiring a built
+   lever — or a pressure plate — to a bridge/floodgate/door/hatch/
+   support/gear_assembly target) plus `pull_lever` were shipped and
+   confirmed working end-to-end in a prior fort's session. This stage
+   is executable today, not just planned toward. `floodgate` is also a
+   real build type but still pending its own live verification — treat
+   it as shipped-but-unproven until a session confirms it, unlike the
+   lever/bridge/door/hatch chain.
 5. **Barbican/moat.** Far future; no current tooling story.
 
-**The intended end-state design** (record it now, build toward it as
-tooling lands, don't wait to plan it until the tooling exists): an
-aquifer-pierced stair (see `aquifer-piercing`) leads into a wide
-underground highway that crosses a PIT, bridged, before reaching the
-fort's TRUE spine — the surface path and the true spine are deliberately
-kept separate. The underground route is inherently resistant to climbers
-and flyers since it has no exposed surface approach. The earthworks
-themselves (the highway, the pit, the bridge emplacement) are pure
-digging — designate_dig / channel — and so CAN be dug ahead today under
-the dig-ahead doctrine above; only the actual seal MECHANISM (the bridge
-and its lever) is blocked on tooling. Dig the earthworks now; the bridge
-waits for the tooling.
+**Shared upstream for stages 3-4**: every lever, plate, trap, and linked
+mechanism consumes mechanism items, so the mechanic's workshop and a
+standing mechanism stock are the real gate on the whole upper ladder —
+verify the stock exists before promising a staging jump. The full
+crafting + linking chain (mechanisms → `build` → `link_building` →
+`pull_lever`) is live-verified from a prior fort.
 
-**Interim seal policy [OVERSEER-CONFIRMED 2026-07-15]:**
-default is an undug solid plug at the choke point — leave the last tile
-or two of the connecting corridor unopened, and use a miner-on-demand as
-the "lever" tooling doesn't provide yet: mine it open when passage is
-needed, wall it shut again (queued `build`) when a threat is sensed.
+**The intended end-state design** (this is now buildable end-to-end, not
+just diggable-ahead): an aquifer-pierced stair (see `aquifer-piercing`)
+leads into a wide underground highway that crosses a PIT, bridged,
+before reaching the fort's TRUE spine — the surface path and the true
+spine are deliberately kept separate. The underground route is
+inherently resistant to climbers and flyers since it has no exposed
+surface approach. The earthworks (the highway, the pit, the bridge
+emplacement) are pure digging — designate_dig / channel — and the seal
+MECHANISM itself (the bridge plus its controlling lever) is real,
+shipped tooling now too: dig the earthworks under the dig-ahead
+doctrine above, then build and link the bridge/lever in the same way
+stage 4 describes.
+
+**Interim seal policy [OVERSEER-CONFIRMED 2026-07-15]:** default is an
+undug solid plug at the choke point — leave the last tile or two of the
+connecting corridor unopened, and use a miner-on-demand as the "lever":
+mine it open when passage is needed, wall it shut again (queued
+`build`) when a threat is sensed. The bridge/lever mechanism chain in
+stage 4 is now a real alternative to this manual plug where a fort
+wants a standing, dwarf-operated seal instead — revisit this default
+with the overseer if that tradeoff becomes worth making.
+
+**Civilian-alert shelter-in-place** (orthogonal to the ladder above,
+usable at any stage): `designate_burrow` + `set_alert` give a real
+emergency-shelter tool independent of the door/hatch/bridge stages —
+sounding the alert against a named burrow rushes every non-military
+citizen there and confines them for its duration, with no
+`assign_burrow` needed first. Clear the alert as soon as the danger
+passes: leaving it active keeps the whole citizenry confined, and they
+can grow unhappy or starve while shut in.
 
 **Topology [OVERSEER-CONFIRMED 2026-07-15]:** the confirmed choice is
 hybrid — loop layouts (multiple connecting corridors) for
@@ -206,6 +247,188 @@ doesn't cascade through the whole living-quarters population.
 the confirmed doctrine is to rough-dig the NEXT level's footprint while idle-miner
 smoothing trails one level behind the excavation front on the CURRENT
 level — excavation always stays one level ahead of polish.
+
+## Growth staging ladders (beyond defense)
+
+The defense ladder's pattern — stages keyed to observable fort state,
+tooling status named honestly — generalizes to the rest of the build
+surface. The `build` tool no longer says WHEN any of its vocabulary is
+worth reaching for; that judgment lives here. Three ladders follow:
+industry, noble/wealth response, and water & power.
+
+Two rules shared by all three:
+
+- **`building_types` is the discovery authority, not this skill.** It
+  lists what is actually placeable today, per-name footprints, and
+  required materials/prerequisites (filter by category — workshop,
+  furnace, furniture, infrastructure...). Never work from a remembered
+  building list, including any list this file might seem to imply.
+- **Verification status (dated 2026-07-18)**: the expanded build surface
+  (new workshop/furnace/furniture/trap/water-power families) and the new
+  queries backing these ladders (`moods`, `wellbeing`, `noble_demands`,
+  `fort_wealth`, `zone_value`, `building_types`) are compile-verified
+  only, not yet live-tested against a running fort. Treat the FIRST use
+  of each family in a live session as its own verification act — place
+  one, `look`/`buildings` it, read the ACK skeptically — before staging
+  a plan on it. Retire this caveat once a session has verified them.
+
+### Industry staging
+
+There is no magic population number for "time to diversify." Gate the
+decision on three observables read together, not any one alone:
+
+1. **Survival predicates green** via `check_goals` — shelter and food
+   goals holding, not merely touched once.
+2. **A drink/food surplus that has survived a season change** via
+   `stocks` — a single-day snapshot lies, because harvest and brewing
+   cycles swing stocks; the surplus that matters is the one still there
+   after a season boundary.
+3. **Visible idle labor** via the `dwarves` verbose census (it renders
+   each dwarf's current job; idle dwarves show as idle) — population
+   alone doesn't mean spare hands, since a big fort can be fully busy
+   hauling, and idle labor WITH a food deficit means the fort should
+   farm, not weave.
+
+Why all three: diversifying spends labor and raw goods that survival was
+using. Any single signal firing alone is how a fort ends up with a silk
+industry and no food.
+
+**Demand-pull beats supply-push** — this project's data-not-rules stance
+applied to industry. The demand signals are now directly queryable:
+
+- `mandates` — a production mandate naming an item class the fort cannot
+  make is a direct, named instruction to open that chain.
+- `moods` — a strange mood reports its claimed workshop (or none) and
+  needed materials, wildcards included; an unclaimable mood or an "any
+  cloth"-style wildcard the fort can't source names the missing industry
+  exactly. The mood timeout starts at 50000 ticks, long relative to
+  placing a workshop, so building the missing shop reactively is a real
+  strategy, not a panic response.
+
+(Caravans are deliberately NOT on this list: a depot is buildable, but
+no trade-interaction tool exists yet, so "goods for the caravan" can't
+close its loop — don't stage industry around trading until it can.)
+
+Supply-push still exists as the secondary signal: `stocks` accumulating
+a raw good with no consumer (hides, fiber, sand, gems) is the site
+telling you which chain it wants to feed. Discover the chain itself with
+`building_types`, `list_reactions`, and `job_types` rather than from
+memory — and build the DOWNSTREAM shop only when its upstream input
+actually exists in `stocks` or is one `queue_job` away. A few shops
+carry bespoke non-generic reagents; `building_types` lists them
+per-name, so check before placing, not after the ACK fails.
+
+Two exceptions to "diversify at leisure":
+
+- **Tanning is coupled to butchery, not to diversification** — raw hides
+  rot. The tanner decision is part of the butchery decision, whenever
+  that happens.
+- **A migration wave landing with skilled crafters** (`dwarf_detail` on
+  new arrivals) is a natural moment to open the industry they already
+  know, even slightly ahead of the three gates above — the labor is not
+  just spare, it's pre-trained.
+
+**Magma variants**: placement does NOT validate magma access —
+`building_types` says so per-name — so a magma shop built without proven
+magma is a dead building with a truthful-looking ACK. Reach for them
+only after `survey_site`/`cross_section` has actually shown magma.
+
+### Noble & wealth response staging
+
+The framing decision, made deliberately: **respond to observed demand;
+do not build value ahead of need.** Three reasons:
+
+1. `noble_demands` reports only positions actually HELD, and nothing in
+   this project deliberately appoints nobles yet — early on the answer
+   is an automatic leadership position at most. Furnishing for a noble
+   who doesn't exist is spending against a hypothesis when the query to
+   check the fact costs one call.
+2. Wealth is a thermostat, not a score. Migration waves scale with fort
+   wealth, uncapped — and the confirmed soft population cap (60-80)
+   means deliberately pumping wealth works AGAINST standing policy.
+   `fort_wealth` exists to WATCH (pacing, and organic spikes like a mood
+   artifact landing), not to maximize.
+3. Data-not-rules: the query tools make demand directly observable, so
+   guessing ahead of them is exactly what they were built to replace.
+
+**The response loop, cheapest lever first**, when `noble_demands` shows
+a held position with room-value or furniture-count minimums, or an
+active demand with a deadline:
+
+1. `smooth` → engrave the room — raises value while consuming zero
+   items, and it's already the canonical finish order (see aesthetics
+   below: smooth → engrave → THEN furniture).
+2. Then furniture, discovered via `building_types` filter=furniture.
+   Note the real capability seams: build's `quality` tier param selects
+   existing stock by quality for the classic furniture set only —
+   several of the newer room-value pieces don't support quality
+   selection yet, and some place only from an item that must ALREADY
+   exist in stock (a known tool-item crafting gap). `building_types`
+   states which, per name; check `stocks` before promising an upgrade.
+3. `zone_value` on the room to verify — it names the `noble_demands`
+   room-value field it compares against, closing the observe-act-verify
+   loop with no judgment left to memory.
+
+`mandates` is a separate mechanism (export bans / production quotas) and
+is answered by the industry ladder, not by furniture.
+
+The same react-to-observation pattern extends past nobles to ordinary
+citizens: `wellbeing`'s roster-wide stress and focus numbers degrading
+is the observable that the services level (already in the level-category
+map) deserves furnishing priority — temples, instruments, a better
+dining hall — before any noble demands a thing.
+
+### Water & power staging
+
+**The well comes first, and earlier than the machinery.** It's a
+single-tile build needing a reachable water tile below and a handful of
+stocked components (`building_types` lists them; `queue_job` each). This
+closes a previously-flagged gap — a prior fort's memory literally noted
+"no well build type exists" — and the reason to want one over a surface
+`water_source` zone is that interior water access survives a surface
+threat and serves the hospital. One real dependency to plan around
+rather than be surprised by: the chain component's crafting job is
+currently wired at the metalsmith's forge ONLY (vanilla's cloth-rope
+alternative isn't wired), so a well today sits downstream of a working
+forge. Compile-verified only — the first well built live is its own
+verification act.
+
+**Cistern/tap procedure is owned by `aquifer-water-infrastructure`** —
+hand off to it for turning a sealed pierce into a supply. (That skill's
+own description predates the well tooling; trust `building_types` over
+its "wells remain missing" line.)
+
+**Heavy machinery — pumps, wheels, windmills, gears, axles, rollers —
+is a distinct, later capability tier**, and its trigger is a concrete,
+surveyed fluid problem, never a calendar stage: irrigation for
+soil-less farming (per `df-farming`), drainage or flood control, or
+managing an aquifer-fed cistern — all identified through
+`survey_site`/`cross_section` water data before any machine is placed.
+Reasons it's genuinely a bigger commitment than a bridge/lever:
+
+- Power hookup is manual spatial planning — adjacency between machine
+  parts is NOT automated by any tool; the model does the geometry.
+- Axles and rollers place one tile at a time here (no multi-tile runs
+  yet), costing more material than vanilla's native spans.
+- The site decides the power source: windmill needs open sky, water
+  wheel needs flowing water — survey first, pick second.
+- A single screw pump can run dwarf-powered — the smallest real machine,
+  and the right first rung before committing to a power train.
+
+**Honest gap, checked against the code**: the milling workshops are not
+placeable yet — their component items are craftable, but no placement
+recipe exists (they're absent from `building_types`) — so there is
+currently NO mill-driven reason to build a power train. Today's real
+power consumers are pumps, and rollers whose minecart context is itself
+placement-only (`track_stop` anchors track but no track linkage or
+configuration tooling exists). Check `building_types` before staging
+toward any power consumer; when milling appears there, this tier gains
+its classic second customer.
+
+**Mechanism tie-in**: `gear_assembly` is a valid `link_building` target,
+so a lever-driven power shutoff belongs to the same live-verified
+mechanism family the defense ladder's stage 4 uses — a fort that has
+built one bridge/lever already knows how to build a power cutoff.
 
 ## Aesthetics that survive function
 
@@ -282,14 +505,11 @@ space; open spans need no special care.
    re-designation after each re-apply — `save_blueprint` doesn't infer
    tile shape.
 8. For the services level: `designate_zone type=meeting_hall`, then
-   `create_location` with `type=tavern|temple|library|guildhall` (all
-   four share the same meeting-hall precursor; `guildhall` additionally
-   needs a `profession`). For a tavern, follow with `assign_lodging` to
-   claim adjoining bedroom zones as guest rooms (see `fort-opening`
-   Gate 6 for the mechanics). **Gap**: no `hospital` zone type exists in
-   this project's `designate_zone` vocabulary at all — the notes'
-   "services level = tavern + hospital" is only half-buildable today;
-   hospital has no tooling path yet.
+   `create_location` with `type=tavern|temple|library|guildhall|hospital`
+   (all five share the same meeting-hall precursor; `guildhall`
+   additionally needs a `profession`). For a tavern, follow with
+   `assign_lodging` to claim adjoining bedroom zones as guest rooms (see
+   `fort-opening` Gate 6 for the mechanics).
 9. **`check_goals`** at every population gate — wave landing, season
    change, or whenever a section above calls for confirmation. It's the
    verification critic against live predicate evidence, not a status

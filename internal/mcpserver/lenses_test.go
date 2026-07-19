@@ -1,8 +1,11 @@
 package mcpserver
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/df-ai/orchestrator/internal/mapview"
 )
 
 // baseTerrainGlyphSet mirrors internal/mapview.Legend's occupied
@@ -12,7 +15,7 @@ import (
 var baseTerrainGlyphSet = map[rune]bool{
 	'?': true, '#': true, '%': true, '=': true, '.': true, ',': true,
 	'T': true, 't': true, '_': true, '<': true, '>': true, 'X': true,
-	'^': true, '~': true, 'L': true, 'F': true, '@': true,
+	'^': true, '~': true, 'L': true, 'F': true, '@': true, 'u': true,
 	'1': true, '2': true, '3': true, '4': true, '5': true, '6': true, '7': true,
 }
 
@@ -65,6 +68,60 @@ func TestDesignationKindGlyph(t *testing.T) {
 	for kind, want := range cases {
 		if got := designationKindGlyph(kind); got != want {
 			t.Errorf("designationKindGlyph(%d) = %q, want %q", kind, string(got), string(want))
+		}
+	}
+}
+
+// TestGatherMineralsLens covers the actual feature: a fake slice with 2+
+// distinct minerals gets letter-painted (keyed by index into MineralNames)
+// and produces a dynamic legend footnote — unlike buildings/zones/
+// designations, minerals has no fixed category vocabulary, so its legend
+// text can't live in LensDef.Legend and must come from the Gather call
+// itself.
+func TestGatherMineralsLens(t *testing.T) {
+	s := &mapview.Slice{
+		Minerals:     [][3]int16{{10, 20, 0}, {11, 20, 1}},
+		MineralNames: []string{"limonite", "native copper"},
+	}
+	ov, err := gatherMineralsLens(context.Background(), nil, s, 100)
+	if err != nil {
+		t.Fatalf("gatherMineralsLens: %v", err)
+	}
+	if ov.Marks[[2]int16{10, 20}] != 'a' || ov.Marks[[2]int16{11, 20}] != 'b' {
+		t.Fatalf("expected a/b letter marks, got %+v", ov.Marks)
+	}
+	if len(ov.Footnotes) != 1 || !strings.Contains(ov.Footnotes[0], "a=limonite") || !strings.Contains(ov.Footnotes[0], "b=native copper") {
+		t.Fatalf("expected a dynamic legend footnote naming both minerals, got %+v", ov.Footnotes)
+	}
+}
+
+// TestGatherMineralsLens_NoMinerals covers a slice with no vein tiles at
+// all (the common case away from an industry quarter) — no marks, no
+// footnote, matching the other lenses' behavior on an empty gather.
+func TestGatherMineralsLens_NoMinerals(t *testing.T) {
+	s := &mapview.Slice{}
+	ov, err := gatherMineralsLens(context.Background(), nil, s, 100)
+	if err != nil {
+		t.Fatalf("gatherMineralsLens: %v", err)
+	}
+	if len(ov.Marks) != 0 || len(ov.Footnotes) != 0 {
+		t.Fatalf("expected no marks/footnotes for a mineral-free slice, got %+v", ov)
+	}
+}
+
+// TestMineralLetterAlphabet_SkipsReservedGlyphs pins the exact reason
+// minerals can't just use a-z in order: 't' (sapling/shrub) and 'u'
+// (pending-building) are already reserved base-terrain/always-on glyphs —
+// TestLensGlyphsDisjointFromBaseSet enforces this for every lens, but this
+// test names the specific letters so a future edit that reintroduces them
+// fails with a direct message instead of a generic disjointness error.
+func TestMineralLetterAlphabet_SkipsReservedGlyphs(t *testing.T) {
+	if len(mineralLetterAlphabet) != 24 {
+		t.Fatalf("expected 24 letters (26 minus t/u), got %d: %v", len(mineralLetterAlphabet), mineralLetterAlphabet)
+	}
+	for _, r := range mineralLetterAlphabet {
+		if r == 't' || r == 'u' {
+			t.Fatalf("mineralLetterAlphabet must not contain reserved glyph %q", string(r))
 		}
 	}
 }

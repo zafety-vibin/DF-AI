@@ -116,7 +116,10 @@ Runs alongside Gates 2-4:
   directly at it. `order` (manager work orders) is a dead end this early —
   it needs both a Manager noble and a walled office (chair+table+door),
   and nothing currently assigns a noble or claims a room, so it will sit
-  `validated=true, active=false` forever on a fresh fort.
+  `validated=true, active=false` forever on a fresh fort. The general
+  split holds beyond the opening too: reach for `queue_job` for an
+  immediate one-off need, `order` once a manager exists and the need is
+  standing/bulk production.
 - Day-one `stocks` check on DRINK/food quantities. If thin, reach for
   `queue_job` with `reaction=BREW_DRINK_FROM_PLANT` at a built Still — this
   is the fort's one real drink chain today (see `df-farming`). The `order`

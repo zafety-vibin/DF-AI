@@ -228,7 +228,7 @@ func (e *Executor) executeUnsuspend(n Node) {
 // workshop fits. Without a manager dwarf and a manager office, DF queues
 // the order without dispatching — predicate logic should warn the LLM.
 func (e *Executor) executeOrder(n Node) {
-	res, err := e.cmdExec.SendWorkOrderCommand(n.Action.OrderType, n.Action.Quantity)
+	res, err := e.cmdExec.SendWorkOrderCommand(n.Action.OrderType, n.Action.Quantity, "", "", protocol.WorkOrderFrequencyOneTime)
 	if err != nil {
 		e.markFailed(n.ID, err.Error())
 		return

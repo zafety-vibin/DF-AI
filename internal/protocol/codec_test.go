@@ -108,6 +108,70 @@ func TestEntityUpdateMessage_NoZonesDecodesEmpty(t *testing.T) {
 	}
 }
 
+// TestEntityUpdateMessage_DeadUnitsRoundTrip mirrors the Zones round-trip
+// test above: the DeadUnits block follows the exact same additive pattern
+// (see dfhack-plugin/entities.cpp's serialize_entity_update and this
+// package's deserializeEntityUpdate).
+func TestEntityUpdateMessage_DeadUnitsRoundTrip(t *testing.T) {
+	msg := &EntityUpdateMessage{
+		Count: 3,
+		Entities: []EntityInfo{
+			{ID: 1, X: 10, Y: 10, Z: 90, Type: EntityTypeDwarf},
+			{ID: 2, X: 11, Y: 11, Z: 90, Type: EntityTypeDwarf, Dead: true},
+			{ID: 3, X: 12, Y: 12, Z: 90, Type: EntityTypeAnimal},
+		},
+	}
+	var buf bytes.Buffer
+	if err := serializeEntityUpdate(&buf, msg); err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	decoded, err := deserializeEntityUpdate(buf.Bytes())
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+	if len(decoded.Entities) != 3 {
+		t.Fatalf("expected 3 entities, got %d", len(decoded.Entities))
+	}
+	if decoded.Entities[0].Dead {
+		t.Fatalf("entity 1 must decode alive: %+v", decoded.Entities[0])
+	}
+	if !decoded.Entities[1].Dead {
+		t.Fatalf("entity 2 must decode dead: %+v", decoded.Entities[1])
+	}
+	if decoded.Entities[2].Dead {
+		t.Fatalf("entity 3 must decode alive: %+v", decoded.Entities[2])
+	}
+}
+
+// TestEntityUpdateMessage_NoDeadUnitsBlockDecodesAllAlive simulates an old
+// peer's payload (no trailing DeadUnits block at all -- built by hand,
+// trimming what a real old sender would have omitted) to confirm the
+// backward-compatible default: every entity decodes Dead=false, never an
+// error.
+func TestEntityUpdateMessage_NoDeadUnitsBlockDecodesAllAlive(t *testing.T) {
+	msg := &EntityUpdateMessage{
+		Count:    1,
+		Entities: []EntityInfo{{ID: 5, X: 1, Y: 1, Z: 1, Type: EntityTypeDwarf}},
+	}
+	var full bytes.Buffer
+	if err := serializeEntityUpdate(&full, msg); err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	// Old-format payload = entities + HasFortInfo(0) + HasZones(1) +
+	// ZoneCount(0), with everything after that (the DeadUnits block)
+	// truncated off, as an old plugin build would never have written it.
+	// [4:Count]=4 bytes, [entity]=13 bytes, [HasFortInfo]=1,
+	// [HasZones]=1, [ZoneCount]=4 -> 23 bytes total.
+	oldFormat := full.Bytes()[:23]
+	decoded, err := deserializeEntityUpdate(oldFormat)
+	if err != nil {
+		t.Fatalf("deserialize truncated (old-format) payload: %v", err)
+	}
+	if len(decoded.Entities) != 1 || decoded.Entities[0].Dead {
+		t.Fatalf("old-format payload must decode the entity alive: %+v", decoded.Entities)
+	}
+}
+
 func TestLocationTypeConstants_MatchThePlanTable(t *testing.T) {
 	cases := map[uint8]uint8{
 		LocationTypeTavern: 0x01, LocationTypeTemple: 0x02,

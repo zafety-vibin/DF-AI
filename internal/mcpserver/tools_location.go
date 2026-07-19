@@ -14,12 +14,14 @@ import (
 var locationWireTypes = map[string]uint8{
 	"tavern": protocol.LocationTypeTavern, "temple": protocol.LocationTypeTemple,
 	"library": protocol.LocationTypeLibrary, "guildhall": protocol.LocationTypeGuildhall,
+	"hospital": protocol.LocationTypeHospital,
 }
 
 // locationTypeDisplayNames maps the plugin's ENUM_KEY_STR(abstract_building_type, ...)
 // names to the friendlier names this tool surfaces.
 var locationTypeDisplayNames = map[string]string{
 	"INN_TAVERN": "Tavern", "TEMPLE": "Temple", "LIBRARY": "Library", "GUILDHALL": "Guildhall",
+	"HOSPITAL": "Hospital",
 }
 
 type lodgingEntry struct {
@@ -75,12 +77,12 @@ func registerLocationTools(srv *mcp.Server, b *Bridge) {
 		X          int    `json:"x" jsonschema:"a tile inside the founding MeetingHall zone"`
 		Y          int    `json:"y"`
 		Z          int    `json:"z"`
-		Type       string `json:"type" jsonschema:"tavern|temple|library|guildhall"`
+		Type       string `json:"type" jsonschema:"tavern|temple|library|guildhall|hospital"`
 		Profession string `json:"profession,omitempty" jsonschema:"required for guildhall only — the profession this guild serves, e.g. CARPENTER, MASON"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "create_location",
-		Description: "Convert an existing MeetingHall zone (see designate_zone) into a real Location — a Tavern (social/entertainment, and can house lodging via assign_lodging), Temple, Library, or Guildhall (requires a profession). The MeetingHall itself must already exist and not already have a location.",
+		Description: "Convert an existing MeetingHall zone (see designate_zone) into a real Location — a Tavern (social/entertainment, and can house lodging via assign_lodging), Temple, Library, Guildhall (requires a profession), or Hospital. The MeetingHall itself must already exist and not already have a location.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in createLocationIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -96,7 +98,7 @@ func registerLocationTools(srv *mcp.Server, b *Bridge) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_locations",
-		Description: "List every Tavern/Temple/Library/Guildhall Location, with the founding zone's extents and (for taverns) the lodging roster.",
+		Description: "List every Tavern/Temple/Library/Guildhall/Hospital Location, with the founding zone's extents and (for taverns) the lodging roster.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 		raw, err := b.Query(ctx, "list_locations", "{}")
 		if err != nil {

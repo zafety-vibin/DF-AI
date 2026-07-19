@@ -1,8 +1,10 @@
 // DFHack Plugin — Lever/Trigger Mechanisms
 //
 // Implements PULL_LEVER and LINK_BUILDING: pulling a built lever, and
-// wiring a lever to a trigger target (bridge/floodgate/door/hatch) so DF's
-// own trigger machinery treats them as linked.
+// wiring a lever (or, since 2026-07-18, a pressure plate) to a trigger
+// target (bridge/floodgate/door/hatch, and, since a later 2026-07-18 pass,
+// Support and GearAssembly) so DF's own trigger machinery treats them as
+// linked.
 //
 // PULL_LEVER — verified against DFHack's own scripts/lever.lua
 // (leverPullJob): a lever pull is NOT a workshop reaction, so it does not
@@ -38,6 +40,8 @@
 #include "df/building_floodgatest.h"
 #include "df/building_doorst.h"
 #include "df/building_hatchst.h"
+#include "df/building_supportst.h"
+#include "df/building_gear_assemblyst.h"
 #include "df/general_ref_building_holderst.h"
 #include "df/general_ref_building_triggerst.h"
 #include "df/general_ref_building_triggertargetst.h"
@@ -125,13 +129,26 @@ static df::item *findFreeMechanism(int32_t excludeID = -1)
     return nullptr;
 }
 
-// applyLinkBuilding wires the lever at (leverX,leverY,leverZ) to the
-// trigger target at (targetX,targetY,targetZ) using DFHack's own
-// direct-struct-wiring recipe (see file comment above for provenance).
-// Consumes two free mechanisms from the fort's stockpiles -- distinct from
-// the one mechanism a freshly-built lever already consumed at construction
-// (that one sits unlinked in the lever's own contained_items until this
-// call installs the two new ones).
+// applyLinkBuilding wires the lever OR pressure plate at
+// (leverX,leverY,leverZ) to the trigger target at (targetX,targetY,targetZ)
+// using DFHack's own direct-struct-wiring recipe (see file comment above for
+// provenance). Consumes two free mechanisms from the fort's stockpiles --
+// distinct from the one mechanism a freshly-built lever/plate already
+// consumed at construction (that one sits unlinked in its own
+// contained_items until this call installs the two new ones).
+//
+// 2026-07-18: broadened from Lever-only to accept trap_type::PressurePlate
+// too. Both are the SAME underlying df::building_trapst struct (df/
+// building_trapst.h) -- trap_type is just a field on it, and
+// linked_mechanisms (the vector this function pushes item2 onto below) is
+// declared once on that shared struct, not a Lever-specific member. Nothing
+// else in this function is lever-specific: it only reads
+// getBuildStage/getMaxBuildStage and writes linked_mechanisms/general_refs,
+// all present on any building_trapst regardless of trap_type. Only
+// PULL_LEVER (applyPullLever above) stays Lever-only, since a pressure
+// plate self-triggers from a stepped-on tile rather than a dwarf manually
+// pulling it -- DF has no "pull a pressure plate" job for that function to
+// queue.
 bool applyLinkBuilding(int16_t leverX, int16_t leverY, int16_t leverZ,
                         int16_t targetX, int16_t targetY, int16_t targetZ,
                         std::string &error)
@@ -144,16 +161,16 @@ bool applyLinkBuilding(int16_t leverX, int16_t leverY, int16_t leverZ,
 
     df::building *leverBld = Buildings::findAtTile(df::coord(leverX, leverY, leverZ));
     if (!leverBld) {
-        error = "no building at lever tile";
+        error = "no building at lever/pressure-plate tile";
         return false;
     }
     df::building_trapst *lever = strict_virtual_cast<df::building_trapst>(leverBld);
-    if (!lever || lever->trap_type != df::trap_type::Lever) {
-        error = "building at lever tile is not a lever";
+    if (!lever || (lever->trap_type != df::trap_type::Lever && lever->trap_type != df::trap_type::PressurePlate)) {
+        error = "building at that tile is not a lever or pressure plate";
         return false;
     }
     if (lever->getBuildStage() < lever->getMaxBuildStage()) {
-        error = "lever still under construction -- link after construction completes";
+        error = "lever/pressure plate still under construction -- link after construction completes";
         return false;
     }
 
@@ -162,18 +179,36 @@ bool applyLinkBuilding(int16_t leverX, int16_t leverY, int16_t leverZ,
         error = "no building at target tile";
         return false;
     }
-    // Supported trigger targets for this pass: bridge, floodgate, door,
-    // hatch -- the four DF-domain-verified cases (see file comment).
-    // door/hatch additionally get operated_by_mechanisms flipped below,
-    // mirroring advfort.lua's fake_linking; bridge/floodgate have no such
-    // flag and need none (their gate machinery keys off linked_mechanisms
-    // alone, same as leverPullInstant's walk).
+    // Supported trigger targets: bridge, floodgate, door, hatch (the
+    // original four DF-domain-verified cases, see file comment) plus
+    // Support and GearAssembly, added in a later 2026-07-18 pass. Both new
+    // types carry their own dedicated mechanism-response bitfield --
+    // df::building_supportst::support_flags.bits.triggered (df/
+    // building_support_flag.h: a single "triggered" bit, DF's own
+    // cave-in/collapse trigger flag) and df::building_gear_assemblyst::
+    // gear_flags.bits.disengaged (df/building_gear_assembly_flag.h: a
+    // single "disengaged" bit, DF's own power-shutoff flag) -- confirming
+    // each genuinely has a triggerable state a linked lever can flip, not
+    // just a building_type that happens to compile against this cast.
+    // Neither struct declares linked_mechanisms itself (that field lives
+    // only on building_trapst, the SOURCE side); as TARGETS they follow
+    // the same shape bridge/floodgate already do: the mechanism installed
+    // into them below (item2, tagged with a BUILDING_TRIGGER general_ref)
+    // is what DF's engine keys off, not a member field read here -- so
+    // neither needs the operated_by_mechanisms-style flag flip door/hatch
+    // get further down (that flag is door/hatch-specific UI state --
+    // "can this door still be opened manually" -- with no Support/
+    // GearAssembly equivalent; triggered/disengaged are OUTPUT state DF's
+    // own engine writes when the trigger fires, not an input this call
+    // configures).
     df::building_bridgest *bridge = strict_virtual_cast<df::building_bridgest>(target);
     df::building_floodgatest *floodgate = strict_virtual_cast<df::building_floodgatest>(target);
     df::building_doorst *door = strict_virtual_cast<df::building_doorst>(target);
     df::building_hatchst *hatch = strict_virtual_cast<df::building_hatchst>(target);
-    if (!bridge && !floodgate && !door && !hatch) {
-        error = "target building type is not a supported trigger target (bridge, floodgate, door, or hatch)";
+    df::building_supportst *support = strict_virtual_cast<df::building_supportst>(target);
+    df::building_gear_assemblyst *gear = strict_virtual_cast<df::building_gear_assemblyst>(target);
+    if (!bridge && !floodgate && !door && !hatch && !support && !gear) {
+        error = "target building type is not a supported trigger target (bridge, floodgate, door, hatch, support, or gear_assembly)";
         return false;
     }
     if (target->getBuildStage() < target->getMaxBuildStage()) {

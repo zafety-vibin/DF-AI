@@ -89,6 +89,7 @@ var minToolArgs = map[string]map[string]any{
 	"unassign_burrow":  {"name": "nil_bridge_smoke_test", "unit_id": 1},
 	"set_alert":        {"name": "nil_bridge_smoke_test", "active": true},
 	// list_burrows has no required fields — {} default is fine, no entry needed.
+	// mandates has no required fields — {} default is fine, no entry needed.
 }
 
 // TestEveryToolNilBridge lists every registered tool and calls each one

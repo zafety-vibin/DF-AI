@@ -231,13 +231,158 @@ var buildTypes = map[string]uint8{
 	"craftsdwarf": protocol.BuildTypeWorkshopCraftsdwarf, "mechanic": protocol.BuildTypeWorkshopMechanic,
 	"butcher": protocol.BuildTypeWorkshopButcher, "kitchen": protocol.BuildTypeWorkshopKitchen,
 	"fishery": protocol.BuildTypeWorkshopFishery, "metalsmith": protocol.BuildTypeWorkshopMetalsmith,
+	"magma_forge": protocol.BuildTypeWorkshopMagmaForge,
+	"jewelers":    protocol.BuildTypeWorkshopJewelers, "bowyers": protocol.BuildTypeWorkshopBowyers,
+	"siege": protocol.BuildTypeWorkshopSiege, "leatherworks": protocol.BuildTypeWorkshopLeatherworks,
+	"tanners": protocol.BuildTypeWorkshopTanners, "clothiers": protocol.BuildTypeWorkshopClothiers,
+	"loom": protocol.BuildTypeWorkshopLoom, "kennels": protocol.BuildTypeWorkshopKennels,
+	"ashery": protocol.BuildTypeWorkshopAshery, "dyers": protocol.BuildTypeWorkshopDyers,
 	"bed": protocol.BuildTypeBed, "table": protocol.BuildTypeTable,
 	"chair": protocol.BuildTypeChair, "cabinet": protocol.BuildTypeCabinet,
-	"coffer": protocol.BuildTypeCoffer,
+	"coffer": protocol.BuildTypeCoffer, "coffin": protocol.BuildTypeCoffin,
 	"door": protocol.BuildTypeDoor, "hatch": protocol.BuildTypeHatch,
 	"lever": protocol.BuildTypeLever, "floodgate": protocol.BuildTypeFloodgate,
+	"pressure_plate": protocol.BuildTypePressurePlate, "stone_fall_trap": protocol.BuildTypeStoneFallTrap,
+	"weapon_trap": protocol.BuildTypeWeaponTrap, "track_stop": protocol.BuildTypeTrackStop,
 	"smelter": protocol.BuildTypeFurnaceSmelter, "wood_furnace": protocol.BuildTypeFurnaceWood,
+	"kiln": protocol.BuildTypeFurnaceKiln, "glass_furnace": protocol.BuildTypeFurnaceGlass,
+	"magma_smelter": protocol.BuildTypeFurnaceMagmaSmelter, "magma_glass_furnace": protocol.BuildTypeFurnaceMagmaGlass,
+	"magma_kiln": protocol.BuildTypeFurnaceMagmaKiln,
 	"tradedepot": protocol.BuildTypeTradeDepot,
+	"well":       protocol.BuildTypeWell, "support": protocol.BuildTypeSupport,
+	"archery_target": protocol.BuildTypeArcheryTarget, "traction_bench": protocol.BuildTypeTractionBench,
+	"nest_box": protocol.BuildTypeNestBox, "hive": protocol.BuildTypeHive,
+	"statue": protocol.BuildTypeStatue, "slab": protocol.BuildTypeSlab,
+	"window_glass": protocol.BuildTypeWindowGlass, "window_gem": protocol.BuildTypeWindowGem,
+	"bookcase": protocol.BuildTypeBookcase, "display_furniture": protocol.BuildTypeDisplayFurniture,
+	"offering_place": protocol.BuildTypeOfferingPlace, "instrument": protocol.BuildTypeInstrument,
+	"screw_pump": protocol.BuildTypeScrewPump, "gear_assembly": protocol.BuildTypeGearAssembly,
+	"axle_horizontal": protocol.BuildTypeAxleHorizontal, "axle_vertical": protocol.BuildTypeAxleVertical,
+	"water_wheel": protocol.BuildTypeWaterWheel, "windmill": protocol.BuildTypeWindmill,
+	"rollers": protocol.BuildTypeRollers,
+}
+
+// waterPowerOrientations maps the build tool's model-facing orientation
+// name to the wire BuildOrientation* byte (protocol.go). Two vocabularies
+// share one wire range on purpose (BuildOrientHorizontal==BuildOrientNorth,
+// BuildOrientVertical==BuildOrientEast — see that consts' doc comment):
+// horizontal/vertical for axle_horizontal/water_wheel's axis, north/east/
+// south/west for screw_pump's intake side and rollers' push direction.
+// Ignored (harmlessly — DF has no direction concept for either) by
+// gear_assembly/axle_vertical/windmill.
+var waterPowerOrientations = map[string]uint8{
+	"horizontal": protocol.BuildOrientHorizontal,
+	"vertical":   protocol.BuildOrientVertical,
+	"north":      protocol.BuildOrientNorth,
+	"east":       protocol.BuildOrientEast,
+	"south":      protocol.BuildOrientSouth,
+	"west":       protocol.BuildOrientWest,
+}
+
+// buildingTypeEntry describes one name resolvable by the build tool's type
+// param — the building_types tool's catalog. Unlike job_types/list_reactions
+// (which query the plugin for a live DF enum dump), footprint and
+// prerequisite facts aren't exposed by any DFHack enum scan, so this table
+// is hand-curated directly in source, kept in sync with buildTypes above.
+// Every SUBSEQUENT task that teaches the plugin a new build type (a new
+// entry in dfhack-plugin/buildings.cpp resolveCuratedBuildTypeByte, or a
+// wholly new placer) should add its own entry here — this is the single
+// place a model can discover what's ACTUALLY buildable today, curated or
+// name-resolved.
+type buildingTypeEntry struct {
+	Name      string // round-trips into build's type param verbatim
+	Category  string // workshop|furnace|furniture|construction|mechanism|trap|depot|infrastructure
+	Footprint string // WxH — DF's own getCorrectSize-derived footprint
+	Requires  string // required materials/prerequisites, one line
+}
+
+// buildingTypeCatalog is the building_types discovery tool's backing data —
+// see buildingTypeEntry's doc comment above for why this is a static Go
+// table rather than a plugin query.
+var buildingTypeCatalog = []buildingTypeEntry{
+	{"wall", "construction", "1x1", "1x building material (any|wood|stone|blocks)"},
+	{"floor", "construction", "1x1", "1x building material (any|wood|stone|blocks)"},
+	{"upstair", "construction", "1x1", "1x building material (any|wood|stone|blocks)"},
+	{"downstair", "construction", "1x1", "1x building material (any|wood|stone|blocks)"},
+	{"updownstair", "construction", "1x1", "1x building material (any|wood|stone|blocks)"},
+	{"ramp", "construction", "1x1", "1x building material (any|wood|stone|blocks)"},
+	{"carpenter", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"mason", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"still", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"farmer", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"craftsdwarf", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"mechanic", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"butcher", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"kitchen", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"fishery", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"metalsmith", "workshop", "3x3", "1x ANVIL item + 1x fire-safe building material"},
+	{"magma_forge", "workshop", "3x3", "1x ANVIL item + 1x magma-safe building material; magma-fueled twin of metalsmith — needs real magma access to actually WORK once built, but that is not validated at placement time (DFHack has no magma-adjacency check; see build tool notes)"},
+	{"jewelers", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"bowyers", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"siege", "workshop", "3x3", "3x building material (any|wood|stone|blocks); preps siege ammunition — NOT the SiegeEngine catapult/ballista building (out of scope)"},
+	{"leatherworks", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"tanners", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"clothiers", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"loom", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"kennels", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"ashery", "workshop", "3x3", "1x blocks + 1x empty barrel + 1x lye/milk-free bucket, all in stock — no generic building-material reagent, material param does not apply"},
+	{"dyers", "workshop", "3x3", "1x empty barrel + 1x lye/milk-free bucket, both in stock — no generic building-material reagent, material param does not apply"},
+	// df::workshop_type::Tool and ::Custom are deliberately NOT curated here
+	// (and so carry no buildTypes entry either, unlike every other workshop
+	// above -- see TestBuildingTypeCatalogMatchesBuildTypes) -- neither has
+	// a recipe in DFHack's own buildings.lua table (Custom is raws-defined
+	// per-mod via df::building_def; Tool simply has no known reagent set
+	// and is excluded from DFHack's own build-menu UI the same opt-in-gated
+	// way Custom is, gui/buildings.lua BuildingDialog:initWorkshopMode).
+	// Both remain resolvable by their exact DFHack name ("Tool"/"Custom",
+	// case-sensitive) via build's name-passthrough, and the ACK truthfully
+	// reports "no placement recipe yet" rather than a guess -- see
+	// dfhack-plugin/protocol.h's BUILD_TYPE_WS_JEWELERS doc comment for the
+	// full source-grounded reasoning.
+	{"smelter", "furnace", "3x3", "1x fire-safe building material (boulder)"},
+	{"wood_furnace", "furnace", "3x3", "1x fire-safe building material (boulder)"},
+	{"kiln", "furnace", "3x3", "1x fire-safe building material (boulder)"},
+	{"glass_furnace", "furnace", "3x3", "1x fire-safe building material (boulder)"},
+	{"magma_smelter", "furnace", "3x3", "1x magma-safe building material (boulder); magma-fueled — needs real magma access to actually WORK once built, but that is not validated at placement time (DFHack has no magma-adjacency check; only ordinary tile/occupancy checks apply)"},
+	{"magma_glass_furnace", "furnace", "3x3", "1x magma-safe building material (boulder); same magma-access caveat as magma_smelter"},
+	{"magma_kiln", "furnace", "3x3", "1x magma-safe building material (boulder); same magma-access caveat as magma_smelter"},
+	{"tradedepot", "depot", "5x5 (forced by DF)", "3x building material (any|wood|stone|blocks)"},
+	{"bed", "furniture", "1x1", "1x bed item in stock (order/queue_job it first); optional quality tier"},
+	{"table", "furniture", "1x1", "1x table item in stock (order/queue_job it first); optional quality tier"},
+	{"chair", "furniture", "1x1", "1x chair item in stock (order/queue_job it first); optional quality tier"},
+	{"cabinet", "furniture", "1x1", "1x cabinet item in stock (order/queue_job it first); optional quality tier"},
+	{"coffer", "furniture", "1x1", "1x empty coffer (Box) item in stock (order/queue_job it first); optional quality tier"},
+	{"coffin", "furniture", "1x1", "1x coffin item in stock (order/queue_job it first); optional quality tier"},
+	{"door", "mechanism", "1x1", "1x door item in stock (order/queue_job it first)"},
+	{"hatch", "mechanism", "1x1", "1x hatch cover item in stock (order/queue_job it first)"},
+	{"lever", "trap", "1x1", "1x mechanism item in stock; link_building a target before pull_lever has any effect"},
+	{"floodgate", "mechanism", "1x1", "1x floodgate item in stock (order/queue_job it first)"},
+	{"pressure_plate", "trap", "1x1", "1x mechanism item in stock; can itself be link_building'd as the SOURCE to a target (bridge/floodgate/door/hatch/support/gear_assembly), same as lever; trigger conditions (which creatures/water/magma/carts activate it) are left at DF's raw defaults with every detection category off, so it will not actually fire until a future tool exposes that configuration"},
+	{"stone_fall_trap", "trap", "1x1", "1x mechanism item in stock; builds UNARMED — DF's own vanilla flow loads a boulder afterward via a separate Load Stone Trap job at the built trap, not yet exposed by any tool here"},
+	{"weapon_trap", "trap", "1x1", "1x mechanism item + 1x weapon or trap-component item, both in stock; armed at construction time (unlike stone_fall_trap)"},
+	{"track_stop", "trap", "1x1", "1x building material (any|wood|stone|blocks); anchors minecart track infrastructure — basic placement only, no track-piece linkage/friction/dump-menu configuration"},
+	{"bridge", "mechanism", "width x height (caller-chosen, max 31x31)", "building material scaled to footprint (DF computes the amount); takes width/height/direction instead of material/quality"},
+	{"well", "infrastructure", "1x1", "1x blocks + 1x bucket + 1x chain + 1x mechanism, all in stock (order/queue_job each first); needs a reachable water tile below to draw from once built"},
+	{"support", "infrastructure", "1x1", "1x building material (any|wood|stone|blocks); cave-in/collapse-trigger fixture — can be a link_building trigger TARGET (bridge/floodgate/door/hatch/support/gear_assembly)"},
+	{"archery_target", "infrastructure", "1x1", "1x building material (any|wood|stone|blocks); marksman-dwarf training target, not justice-related"},
+	{"traction_bench", "furniture", "1x1", "1x traction bench item in stock; craft it first with queue_job (ConstructTractionBench at a mechanic's workshop consumes 1x table + 1x mechanism + 1x chain, all in stock) — hospital furniture for injured dwarves"},
+	{"nest_box", "furniture", "1x1", "1x tool item capable of nest-box function in stock; egg-laying animal nesting — crafting that specific tool item hits a pre-existing, out-of-scope gap (queue_job cannot select a TOOL item's subtype), so it must already exist on the map"},
+	{"hive", "furniture", "1x1", "1x tool item capable of hive function in stock; beekeeping — same pre-existing tool-subtype crafting gap as nest_box"},
+	{"statue", "furniture", "1x1", "1x statue item in stock (order/queue_job ConstructStatue at a carpenter/mason first); no quality-tier selection support yet"},
+	{"slab", "furniture", "1x1", "1x slab item in stock (order/queue_job ConstructSlab at a carpenter/mason first); no quality-tier selection support yet"},
+	{"window_glass", "furniture", "1x1", "1x window item in stock; no quality-tier selection support yet"},
+	{"window_gem", "furniture", "1x1", "3x small gem items in stock; no quality-tier selection support yet"},
+	{"bookcase", "furniture", "1x1", "1x tool item capable of bookcase function in stock; no quality-tier selection support yet"},
+	{"display_furniture", "furniture", "1x1", "1x tool item capable of display-case function in stock; no quality-tier selection support yet"},
+	{"offering_place", "furniture", "1x1", "1x tool item capable of offering-place function in stock; no quality-tier selection support yet"},
+	{"instrument", "furniture", "1x1", "1x stationary instrument item in stock; no quality-tier selection support yet"},
+	{"screw_pump", "infrastructure", "1x2 or 2x1 (orientation-dependent)", "1x blocks + 1x screw (trap component) + 1x pipe section, all in stock; orientation=north|east|south|west selects intake side; adjacency to a power source or manual pumping is not automated — see building_types tool notes"},
+	{"gear_assembly", "infrastructure", "1x1", "1x mechanism item in stock; orientation not applicable; must be placed touching another machine part to transmit power — adjacency is not automated; can be a link_building trigger TARGET (bridge/floodgate/door/hatch/support/gear_assembly) for a mechanism-controlled power shutoff"},
+	{"axle_horizontal", "infrastructure", "1x1 (ALWAYS — no length parameter yet, see notes)", "1x wood in stock; orientation=horizontal|vertical selects the line's axis; vanilla DF supports a longer single multi-tile axle, but this tool builds one tile at a time — chain adjacent placements to span further (costs more wood than a native multi-tile axle, but works via the same adjacency linking); must also connect to another machine part by adjacency — not automated"},
+	{"axle_vertical", "infrastructure", "1x1", "1x wood in stock; orientation not applicable; connects machine parts across z-levels by adjacency — not automated"},
+	{"water_wheel", "infrastructure", "3x3, one dimension flattened to 1 (orientation-dependent)", "3x wood in stock; orientation=horizontal|vertical selects the line's axis; needs adjacent flowing water to generate power"},
+	{"windmill", "infrastructure", "3x3", "4x wood in stock; no orientation; needs open sky above to catch wind"},
+	{"rollers", "infrastructure", "1x1 (ALWAYS — no length parameter yet, see notes)", "1x mechanism + 1x chain, both in stock; orientation=north|east|south|west selects push direction; vanilla DF supports a longer single multi-tile rollers run, but this tool builds one tile at a time — chain adjacent placements to span further; needs power (an adjacent connected axle/gear) to run — not automated"},
 }
 
 // bridgeDirections maps the build tool's model-facing bridge direction
@@ -260,6 +405,17 @@ var orderTypes = map[string]uint8{
 	"cabinet": protocol.OrderTypeMakeCabinet, "coffer": protocol.OrderTypeMakeCoffer,
 	"drink": protocol.OrderTypeBrewDrink, "meal": protocol.OrderTypePrepareMeal,
 	"blocks": protocol.OrderTypeMakeBlocks, "crafts": protocol.OrderTypeMakeCrafts,
+}
+
+// workOrderFrequencies maps the order tool's model-facing frequency name to
+// the wire WorkOrderFrequency* byte (protocol.go's df::workquota_
+// frequency_type mirror).
+var workOrderFrequencies = map[string]uint8{
+	"one_time":   protocol.WorkOrderFrequencyOneTime,
+	"daily":      protocol.WorkOrderFrequencyDaily,
+	"monthly":    protocol.WorkOrderFrequencyMonthly,
+	"seasonally": protocol.WorkOrderFrequencySeasonally,
+	"yearly":     protocol.WorkOrderFrequencyYearly,
 }
 
 // laborNames maps a model-facing labor name to the wire LaborID
@@ -297,6 +453,20 @@ var materialClasses = map[string]uint8{
 	"wood":   protocol.MaterialClassWood,
 	"stone":  protocol.MaterialClassStone,
 	"blocks": protocol.MaterialClassBlocks,
+}
+
+// qualityTiers maps the build tool's model-facing quality name to the wire
+// QualityTier* byte (protocol.go's df::item_quality mirror). Furniture
+// only — see the build tool's quality param doc.
+var qualityTiers = map[string]uint8{
+	"any":            protocol.QualityTierAny,
+	"ordinary":       protocol.QualityTierOrdinary,
+	"well_crafted":   protocol.QualityTierWellCrafted,
+	"finely_crafted": protocol.QualityTierFinelyCrafted,
+	"superior":       protocol.QualityTierSuperior,
+	"exceptional":    protocol.QualityTierExceptional,
+	"masterful":      protocol.QualityTierMasterful,
+	"artifact":       protocol.QualityTierArtifact,
 }
 
 var stockpileGroups = map[string]uint32{
@@ -402,18 +572,20 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	})
 
 	type buildIn struct {
-		Type      string `json:"type" jsonschema:"workshop (carpenter|mason|still|farmer|craftsdwarf|mechanic|butcher|kitchen|fishery|metalsmith), furnace (smelter|wood_furnace), tradedepot, furniture (bed|table|chair|cabinet|coffer), door|hatch|lever|floodgate, bridge, or construction (wall|floor|upstair|downstair|updownstair|ramp)"`
-		X         int    `json:"x" jsonschema:"CENTER of the footprint: workshops/furnaces are 3x3, tradedepot is 5x5, bridge is width x height (surrounding tiles must be clear floor)"`
-		Y         int    `json:"y"`
-		Z         int    `json:"z"`
-		Material  string `json:"material,omitempty" jsonschema:"any|wood|stone|blocks — constrains the item CLASS claimed for the build (default any); ignored for bridge"`
-		Width     int    `json:"width,omitempty" jsonschema:"bridge only (required): footprint width, x-span"`
-		Height    int    `json:"height,omitempty" jsonschema:"bridge only (required): footprint height, y-span"`
-		Direction string `json:"direction,omitempty" jsonschema:"bridge only (required): retract|raise_n|raise_s|raise_e|raise_w — which way the bridge lifts when raised (retract slides away instead)"`
+		Type        string `json:"type" jsonschema:"curated: wall|floor|upstair|downstair|updownstair|ramp|carpenter|mason|still|farmer|craftsdwarf|mechanic|butcher|kitchen|fishery|metalsmith|smelter|wood_furnace|tradedepot|bed|table|chair|cabinet|coffer|coffin|door|hatch|lever|floodgate|bridge|well|support — or any DFHack building_type/workshop_type/furnace_type/trap_type enum name (e.g. Statue, ScrewPump) for anything else; look one up with the building_types tool, which also lists footprint/material/prerequisite specifics for every name here."`
+		X           int    `json:"x" jsonschema:"for the curated vocabulary above: CENTER of the footprint (workshops/furnaces 3x3, tradedepot 5x5, bridge width x height; surrounding tiles must be clear floor). For any other name: the footprint's NW CORNER instead — its size isn't known client-side."`
+		Y           int    `json:"y"`
+		Z           int    `json:"z"`
+		Material    string `json:"material,omitempty" jsonschema:"any|wood|stone|blocks — constrains the item CLASS claimed for the build (default any); ignored for bridge and furniture"`
+		Quality     string `json:"quality,omitempty" jsonschema:"any|ordinary|well_crafted|finely_crafted|superior|exceptional|masterful|artifact — furniture only: place an EXISTING item of at least this quality instead of any match (default any)"`
+		Orientation string `json:"orientation,omitempty" jsonschema:"horizontal|vertical|north|east|south|west — water/power infrastructure only (screw_pump/rollers use the compass names, axle_horizontal/water_wheel use horizontal|vertical); ignored otherwise"`
+		Width       int    `json:"width,omitempty" jsonschema:"bridge only (required): footprint width, x-span"`
+		Height      int    `json:"height,omitempty" jsonschema:"bridge only (required): footprint height, y-span"`
+		Direction   string `json:"direction,omitempty" jsonschema:"bridge only (required): retract|raise_n|raise_s|raise_e|raise_w — which way the bridge lifts when raised (retract slides away instead)"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "build",
-		Description: "Place a building. Workshops/furnaces are 3x3, tradedepot is 5x5, bridge is width x height (x,y = center; surrounding tiles must be clear floor). Furniture/lever/floodgate need the item in a stockpile first (order or queue_job it — lever needs 1 mechanism, floodgate needs 1 floodgate item). Constructions need blocks/boulders. metalsmith needs an ANVIL item (craft or buy one) plus a fire-safe building material; smelter/wood_furnace need a fire-safe boulder; tradedepot needs 3x any building material; bridge needs building material scaled to its footprint (DF computes the amount) and takes width/height/direction instead of material. Optional material (any|wood|stone|blocks) constrains which item CLASS gets used — wood=logs, stone=boulders, blocks=blocks — but DF's job system still picks the specific item within that class. A lever must be link_building'd to a target before pull_lever has any effect.",
+		Description: "Place a building at (x,y,z). See building_types for per-name footprint, required materials, and prerequisites — check it before build if you don't already know a name's specifics. The curated vocabulary (see type) needs no lookup; any other DFHack building_type/workshop_type/furnace_type/trap_type name is also accepted, though a resolvable name is not a guarantee this plugin can place it yet — the ACK is truthful either way. bridge takes width/height/direction instead of material/quality.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in buildIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -439,23 +611,54 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 			what := fmt.Sprintf("build bridge %dx%d at center (%d,%d,%d) direction=%s", in.Width, in.Height, in.X, in.Y, in.Z, strings.ToLower(in.Direction))
 			return withDash(b, ctx, ackText(res, err, what)), nil, nil
 		}
-		bt, ok := buildTypes[strings.ToLower(in.Type)]
-		if !ok {
-			return withDash(b, ctx, fmt.Sprintf("unknown build type %q", in.Type)), nil, nil
-		}
 		mat := protocol.MaterialClassAny
 		if in.Material != "" {
-			mat, ok = materialClasses[strings.ToLower(in.Material)]
+			m, ok := materialClasses[strings.ToLower(in.Material)]
 			if !ok {
 				return withDash(b, ctx, fmt.Sprintf("unknown material %q (any|wood|stone|blocks)", in.Material)), nil, nil
 			}
+			mat = m
 		}
-		wx, wy := buildWireCoords(bt, in.X, in.Y)
-		res, err := b.Exec.SendBuildCommandWithMaterial(wx, wy, int16(in.Z), bt, mat)
+		qual := protocol.QualityTierAny
+		if in.Quality != "" {
+			q, ok := qualityTiers[strings.ToLower(in.Quality)]
+			if !ok {
+				return withDash(b, ctx, fmt.Sprintf("unknown quality %q (any|ordinary|well_crafted|finely_crafted|superior|exceptional|masterful|artifact)", in.Quality)), nil, nil
+			}
+			qual = q
+		}
+		orient := protocol.BuildOrientAny
+		if in.Orientation != "" {
+			o, ok := waterPowerOrientations[strings.ToLower(in.Orientation)]
+			if !ok {
+				return withDash(b, ctx, fmt.Sprintf("unknown orientation %q (horizontal|vertical|north|east|south|west)", in.Orientation)), nil, nil
+			}
+			orient = o
+		}
 		what := fmt.Sprintf("build %s at (%d,%d,%d)", in.Type, in.X, in.Y, in.Z)
 		if mat != protocol.MaterialClassAny {
 			what += " [" + strings.ToLower(in.Material) + "]"
 		}
+		if qual != protocol.QualityTierAny {
+			what += " [quality>=" + strings.ToLower(in.Quality) + "]"
+		}
+		if orient != protocol.BuildOrientAny {
+			what += " [orientation=" + strings.ToLower(in.Orientation) + "]"
+		}
+		if bt, ok := buildTypes[strings.ToLower(in.Type)]; ok {
+			wx, wy := buildWireCoords(bt, in.X, in.Y)
+			res, err := b.Exec.SendBuildCommandFull(wx, wy, int16(in.Z), bt, mat, qual, orient)
+			return withDash(b, ctx, ackText(res, err, what)), nil, nil
+		}
+		// Not in the curated vocabulary: fall through to the plugin's
+		// generalized name-based resolution (protocol.BuildTypeByName — see
+		// dfhack-plugin/buildings.cpp resolveBuildTypeByName) using the
+		// caller's string VERBATIM (not lowercased): DFHack building_type/
+		// workshop_type/furnace_type/trap_type keys are case-sensitive
+		// CamelCase, e.g. "Well". No footprint is known client-side for
+		// these, so (x,y) travels as-is (NW corner), not center-adjusted —
+		// see the type param's doc comment above.
+		res, err := b.Exec.SendBuildCommandByNameFull(int16(in.X), int16(in.Y), int16(in.Z), in.Type, mat, qual, orient)
 		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 
@@ -483,35 +686,64 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	})
 
 	type orderIn struct {
-		Item  string `json:"item" jsonschema:"bed|table|chair|door|barrel|bucket|cabinet|coffer|drink|meal|blocks|crafts"`
-		Count int    `json:"count" jsonschema:"how many to queue (start small: 1-3)"`
+		Item      string `json:"item" jsonschema:"known short vocabulary: bed|table|chair|door|barrel|bucket|cabinet|coffer|drink|meal|blocks|crafts — OR any DFHack job_type enum name (e.g. ProcessPlants, MakeCheese, MilkCreature, ShearCreature, SpinThread) for anything not in that list; look one up with the job_types tool."`
+		Count     int    `json:"count" jsonschema:"how many to queue (start small: 1-3)"`
+		Material  string `json:"material,omitempty" jsonschema:"wood|bone|shell|leather|silk|plant|cloth|yarn material-category keyword, OR any DFHack material token (e.g. INORGANIC, INORGANIC:LIMONITE) — needed for job types with real material ambiguity (e.g. MakeFigurine); leave unset otherwise — see job_types"`
+		Frequency string `json:"frequency,omitempty" jsonschema:"one_time|daily|monthly|seasonally|yearly — recurring cadence; default one_time"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "order",
-		Description: "Queue a manager work order (needs a manager noble + office to dispatch; the matching workshop must exist). E.g. order bed x2 after building a carpenter workshop.",
+		Description: "Queue a manager work order (needs a manager noble + office to dispatch; the matching workshop must exist). E.g. order bed x2 after building a carpenter workshop. Some job types need material to resolve at all (e.g. figurines) — see job_types.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in orderIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
 		}
-		ot, ok := orderTypes[strings.ToLower(in.Item)]
-		if !ok {
-			return withDash(b, ctx, fmt.Sprintf("unknown order item %q", in.Item)), nil, nil
+		var ot uint8
+		var wireName string
+		// The short vocabulary covers the common cases with no wire
+		// round-trip name lookup; anything else falls through to the
+		// plugin's generalized name-based resolution (protocol.OrderTypeByName
+		// — see work_orders.cpp resolveJobTypeByName) using the caller's
+		// string VERBATIM (not lowercased): DFHack job_type keys are
+		// case-sensitive CamelCase, e.g. "ProcessPlants".
+		known, ok := orderTypes[strings.ToLower(in.Item)]
+		if ok {
+			ot = known
+		} else {
+			ot = protocol.OrderTypeByName
+			wireName = in.Item
 		}
-		res, err := b.Exec.SendWorkOrderCommand(ot, uint16(in.Count))
-		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("order %dx %s", in.Count, in.Item))), nil, nil
+		freq := protocol.WorkOrderFrequencyOneTime
+		if in.Frequency != "" {
+			f, ok := workOrderFrequencies[strings.ToLower(in.Frequency)]
+			if !ok {
+				return withDash(b, ctx, fmt.Sprintf("unknown frequency %q (one_time|daily|monthly|seasonally|yearly)", in.Frequency)), nil, nil
+			}
+			freq = f
+		}
+		res, err := b.Exec.SendWorkOrderCommand(ot, uint16(in.Count), wireName, in.Material, freq)
+		what := fmt.Sprintf("order %dx %s", in.Count, in.Item)
+		if in.Material != "" {
+			what += " [" + in.Material + "]"
+		}
+		if freq != protocol.WorkOrderFrequencyOneTime {
+			what += " [" + strings.ToLower(in.Frequency) + "]"
+		}
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 
 	type queueJobIn struct {
 		X        int    `json:"x" jsonschema:"target workshop's tile (any tile of its footprint)"`
 		Y        int    `json:"y"`
 		Z        int    `json:"z"`
-		Item     string `json:"item,omitempty" jsonschema:"known short vocabulary: bed|table|chair|door|barrel|bucket|cabinet|coffer|blocks (drink/meal/crafts are NOT supported here — drink has no direct job_type mapping; meal/crafts resolve fine but the plugin rejects them, no verified material filter yet — use the order tool for all three instead) — OR any DFHack job_type enum name (e.g. ConstructHatchCover) for anything not in that list; look one up with the job_types tool. Mutually exclusive with reaction — set exactly one."`
+		Item     string `json:"item,omitempty" jsonschema:"known short vocabulary: bed|table|chair|door|barrel|bucket|cabinet|coffer|blocks (drink/meal/crafts are NOT supported here — drink has no direct job_type mapping; meal/crafts resolve fine but the plugin rejects them, no verified material filter yet — use the order tool for all three instead) — OR any DFHack job_type enum name (e.g. ConstructHatchCover, SmeltOre) for anything not in that list; look one up with the job_types tool. Mutually exclusive with reaction — set exactly one."`
 		Reaction string `json:"reaction,omitempty" jsonschema:"reaction code e.g. BREW_DRINK_FROM_PLANT — discover via list_reactions; requires plugin rebuild to take effect. Mutually exclusive with item — set exactly one."`
+		Material string `json:"material,omitempty" jsonschema:"an exact DFHack material token (e.g. INORGANIC:LIMONITE) — required when item=SmeltOre (pins the ore raw); unused otherwise"`
 		Count    int    `json:"count" jsonschema:"how many jobs to queue, one at a time (default 1)"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "queue_job",
-		Description: "Queue a job directly at an existing workshop — no manager noble or office needed (unlike order, which needs both). Use this for an immediate one-off need; use order for standing/bulk production once a manager exists. Pass exactly one of item (job-type vocabulary) or reaction (raw reaction code, e.g. for brewing — see list_reactions).",
+		Description: "Queue a job directly at an existing workshop — no manager noble or office needed (unlike order, which needs both). Pass exactly one of item (job-type vocabulary) or reaction (raw reaction code, e.g. for brewing — see list_reactions).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in queueJobIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -552,7 +784,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		queued := 0
 		var lastErr string
 		for i := 0; i < count; i++ {
-			res, err := b.Exec.SendQueueJob(int16(in.X), int16(in.Y), int16(in.Z), ot, wireName)
+			res, err := b.Exec.SendQueueJob(int16(in.X), int16(in.Y), int16(in.Z), ot, wireName, in.Material)
 			if err == nil && res != nil && res.Success && res.ErrorMsg == "" {
 				queued++
 				continue
@@ -581,7 +813,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "set_labor",
-		Description: "Enable or disable one labor on a dwarf. DF's own labor system then assigns matching jobs to whichever dwarf has that labor on — this doesn't queue work directly. Check dwarf_detail first to see a dwarf's current labors before changing them. A labor a dwarf's caste can't perform is a harmless no-op: DF just never generates matching work for that dwarf.",
+		Description: "Enable or disable one labor on a dwarf. DF's own labor system then assigns matching jobs to whichever dwarf has that labor on — this doesn't queue work directly. Check dwarf_detail first to see a dwarf's current labors before changing them. A labor a dwarf's caste can't perform is a harmless no-op: DF just never generates matching work for that dwarf. Writes only the derived labors cache — work_details/assign_work_detail is the durable path a later work-detail recompute won't clobber.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in setLaborIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -593,6 +825,134 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		res, err := b.Exec.SendSetLabor(int32(in.ID), lid, in.Enable)
 		what := fmt.Sprintf("set_labor %s=%v for dwarf id=%d", in.Labor, in.Enable, in.ID)
 		return withDash(b, ctx, ackText(res, err, what)), nil, nil
+	})
+
+	type setWorkshopProfileIn struct {
+		X             int  `json:"x"`
+		Y             int  `json:"y"`
+		Z             int  `json:"z"`
+		MinSkillLevel int  `json:"min_skill_level,omitempty" jsonschema:"df skill_rating tier 0(dabbling)-20(legendary+5); default 0 = no minimum"`
+		MaxSkillLevel int  `json:"max_skill_level,omitempty" jsonschema:"df skill_rating tier 1-20; omit or 0 for uncapped (default)"`
+		WorkerUnitID  *int `json:"worker_unit_id,omitempty" jsonschema:"append this dwarf id to the shop's permitted-workers whitelist (once non-empty, ONLY listed workers may use it, regardless of skill range); omit for none"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "set_workshop_profile",
+		Description: "Gate an existing BUILT workshop/furnace/mechanism-trap to a skill range and/or a specific worker — DF's real mechanism for probabilistically improving job output quality (a legendary carpenter's shop produces better furniture on average). Pairs with build's quality param, which instead selects among items that already exist. Repeatable: calling again overwrites min/max_skill_level and appends another worker_unit_id to the whitelist.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in setWorkshopProfileIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		if in.MinSkillLevel < 0 || in.MinSkillLevel > 20 {
+			return withDash(b, ctx, "min_skill_level must be 0-20"), nil, nil
+		}
+		if in.MaxSkillLevel < 0 || in.MaxSkillLevel > 20 {
+			return withDash(b, ctx, "max_skill_level must be 0-20 (or omitted for uncapped)"), nil, nil
+		}
+		maxWire := int32(-1) // uncapped
+		if in.MaxSkillLevel > 0 {
+			maxWire = int32(in.MaxSkillLevel)
+		}
+		workerWire := int32(-1) // don't touch permitted_workers
+		workerUnitID := 0
+		if in.WorkerUnitID != nil {
+			workerWire = int32(*in.WorkerUnitID)
+			workerUnitID = *in.WorkerUnitID
+		}
+		res, err := b.Exec.SendSetWorkshopProfile(int16(in.X), int16(in.Y), int16(in.Z), int32(in.MinSkillLevel), maxWire, workerWire)
+		what := fmt.Sprintf("set_workshop_profile at (%d,%d,%d) min=%d max=%d worker=%d", in.X, in.Y, in.Z, in.MinSkillLevel, in.MaxSkillLevel, workerUnitID)
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
+	})
+
+	// workDetailModes maps a model-facing mode name to the wire
+	// WorkDetailMode* byte (df::work_detail_mode). NobodyDoesThis's actual
+	// in-game effect beyond "not auto-assigned via this detail" is
+	// unconfirmed by anything in the DFHack 53.15-r2 checkout -- see
+	// dfhack-plugin/work_details.cpp's doc comment.
+	workDetailModes := map[string]uint8{
+		"default":       protocol.WorkDetailModeDefault,
+		"everybody":     protocol.WorkDetailModeEverybodyDoesThis,
+		"nobody":        protocol.WorkDetailModeNobodyDoesThis,
+		"only_selected": protocol.WorkDetailModeOnlySelectedDoesThis,
+	}
+
+	type assignWorkDetailIn struct {
+		DetailIndex *int   `json:"detail_index,omitempty" jsonschema:"0-based index from the work_details tool; use this or detail_name, not both"`
+		DetailName  string `json:"detail_name,omitempty" jsonschema:"work detail name (case-insensitive) from the work_details tool; use this or detail_index, not both"`
+		UnitID      int    `json:"unit_id" jsonschema:"the dwarf's id from the dwarves tool"`
+		Add         bool   `json:"add" jsonschema:"true adds the dwarf to this work detail's membership, false removes"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "assign_work_detail",
+		Description: "Add or remove one dwarf from a work detail's membership (df::work_detail.assigned_units) -- DF's own work-details/labor-group mechanism, the authoritative path behind a dwarf's derived labors (set_labor writes only the derived cache). Check the work_details tool first for valid indices/names and each detail's current mode.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in assignWorkDetailIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		idx, err := resolveWorkDetailIndex(ctx, b, in.DetailIndex, in.DetailName)
+		if err != nil {
+			return withDash(b, ctx, "FAILED: assign_work_detail — "+err.Error()), nil, nil
+		}
+		res, sendErr := b.Exec.SendAssignWorkDetail(uint16(idx), int32(in.UnitID), in.Add)
+		what := fmt.Sprintf("assign_work_detail index=%d unit=%d add=%v", idx, in.UnitID, in.Add)
+		return withDash(b, ctx, ackText(res, sendErr, what)), nil, nil
+	})
+
+	type setWorkDetailModeIn struct {
+		DetailIndex *int   `json:"detail_index,omitempty" jsonschema:"0-based index from the work_details tool; use this or detail_name, not both"`
+		DetailName  string `json:"detail_name,omitempty" jsonschema:"work detail name (case-insensitive) from the work_details tool; use this or detail_index, not both"`
+		Mode        string `json:"mode" jsonschema:"default|everybody|nobody|only_selected"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "set_work_detail_mode",
+		Description: "Change a work detail's mode (df::work_detail_mode). A mode change recomputes derived labors for EVERY current citizen, not just this detail's own membership -- check the work_details tool for each detail's current mode first.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in setWorkDetailModeIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		mode, ok := workDetailModes[strings.ToLower(in.Mode)]
+		if !ok {
+			return withDash(b, ctx, fmt.Sprintf("unknown work detail mode %q", in.Mode)), nil, nil
+		}
+		idx, err := resolveWorkDetailIndex(ctx, b, in.DetailIndex, in.DetailName)
+		if err != nil {
+			return withDash(b, ctx, "FAILED: set_work_detail_mode — "+err.Error()), nil, nil
+		}
+		res, sendErr := b.Exec.SendSetWorkDetailMode(uint16(idx), mode)
+		what := fmt.Sprintf("set_work_detail_mode index=%d mode=%s", idx, in.Mode)
+		return withDash(b, ctx, ackText(res, sendErr, what)), nil, nil
+	})
+
+	type createWorkDetailIn struct {
+		Name   string   `json:"name" jsonschema:"display name for the new work detail"`
+		Mode   string   `json:"mode,omitempty" jsonschema:"default|everybody|nobody|only_selected; omitted = default"`
+		Labors []string `json:"labors,omitempty" jsonschema:"labor names to pre-enable, same vocabulary as set_labor's labor param; omit for none"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "create_work_detail",
+		Description: "Create a new custom work detail (name + mode + pre-enabled labor list), filling the first free CUSTOM_1..CUSTOM_8 icon slot. FAILED if all 8 custom slots are already in use. Check the work_details tool afterward for the new entry's index.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in createWorkDetailIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		mode := protocol.WorkDetailModeDefault
+		if in.Mode != "" {
+			m, ok := workDetailModes[strings.ToLower(in.Mode)]
+			if !ok {
+				return withDash(b, ctx, fmt.Sprintf("unknown work detail mode %q", in.Mode)), nil, nil
+			}
+			mode = m
+		}
+		laborIDs := make([]uint8, 0, len(in.Labors))
+		for _, l := range in.Labors {
+			lid, ok := laborNames[strings.ToLower(l)]
+			if !ok {
+				return withDash(b, ctx, fmt.Sprintf("unknown labor %q", l)), nil, nil
+			}
+			laborIDs = append(laborIDs, lid)
+		}
+		res, sendErr := b.Exec.SendCreateWorkDetail(in.Name, mode, laborIDs)
+		what := fmt.Sprintf("create_work_detail %q mode=%s labors=%v", in.Name, in.Mode, in.Labors)
+		return withDash(b, ctx, ackText(res, sendErr, what)), nil, nil
 	})
 
 	type xyzIn struct {
@@ -624,7 +984,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "pull_lever",
-		Description: "Queue DF's real PullLever job against the built lever at a tile. The lever must already be built and, for the pull to do anything, link_building'd to a target (bridge/floodgate/door/hatch). Dwarves do the actual pulling over game time — step() to let it happen.",
+		Description: "Queue DF's real PullLever job against the built lever at a tile. The lever must already be built and, for the pull to do anything, link_building'd to a target (bridge/floodgate/door/hatch/support/gear_assembly). Dwarves do the actual pulling over game time — step() to let it happen.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in xyzIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -643,7 +1003,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "link_building",
-		Description: "Wire a built lever to a trigger target (bridge, floodgate, door, or hatch) so pull_lever operates it. Consumes two free mechanism items (craft with queue_job item=ConstructMechanisms at a mechanic workshop) — fails truthfully if fewer than two are available, if either building is still under construction, or if the target type isn't supported. Both buildings must already be built.",
+		Description: "Wire a built lever OR pressure plate to a trigger target (bridge, floodgate, door, hatch, support, or gear_assembly) so pulling the lever (or tripping the plate) operates it. Consumes two free mechanism items (craft with queue_job item=ConstructMechanisms at a mechanic workshop) — fails truthfully if fewer than two are available, if either building is still under construction, or if the target type isn't supported. Both buildings must already be built.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in linkBuildingIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -756,5 +1116,29 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 			return withDash(b, ctx, fmt.Sprintf("save_blueprint %q failed: %v", in.Name, err)), nil, nil
 		}
 		return withDash(b, ctx, fmt.Sprintf("captured blueprint %q: %d tiles written to %s — re-apply with apply_blueprint{name:%q, origin_x, origin_y, origin_z}", in.Name, count, path, in.Name)), nil, nil
+	})
+
+	type bringGoodsIn struct {
+		X             int    `json:"x" jsonschema:"trade depot tile (any tile of its footprint)"`
+		Y             int    `json:"y"`
+		Z             int    `json:"z"`
+		ItemType      string `json:"item_type,omitempty" jsonschema:"optional substring filter against the DFHack item_type enum name (e.g. CRAFTS, WEAPON) — omit to match any type"`
+		Material      string `json:"material,omitempty" jsonschema:"optional case-insensitive substring filter against the item's material name (e.g. silver) — omit to match any material"`
+		MaxCount      int    `json:"max_count" jsonschema:"required cap on how many items to mark — this is a bulk filter-driven action with real consequences, so there is no unlimited sentinel; pass a large number to approximate one"`
+		MaxTotalValue int    `json:"max_total_value,omitempty" jsonschema:"optional cap on the running total estimated value of marked items; omit or <=0 for no cap"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "bring_goods_to_depot",
+		Description: "Mark up to max_count free fort items (filtered by item_type/material substrings, not by item ID) for hauling to the built trade depot at (x,y,z) — DF's own hauling AI then carries them, same as any stockpile-hauling job. Does not reach into containers/creature inventories, and does not execute the actual trade exchange with the caravan — that commit has no safe non-viewscreen API and stays a human-in-the-client action. See caravan_status/depot_goods for read-side state.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in bringGoodsIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		if in.MaxCount < 1 {
+			return withDash(b, ctx, "bring_goods_to_depot requires max_count >= 1"), nil, nil
+		}
+		res, err := b.Exec.SendBringGoodsToDepot(int16(in.X), int16(in.Y), int16(in.Z), in.ItemType, in.Material, int32(in.MaxCount), int64(in.MaxTotalValue))
+		what := fmt.Sprintf("bring goods to depot (%d,%d,%d)", in.X, in.Y, in.Z)
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 }

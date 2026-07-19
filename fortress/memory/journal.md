@@ -2,6 +2,514 @@
 
 (newest entries on top)
 
+## 2026-07-18 — Fort #5, session 2 (Autumn y100, day 178 → day 232, ongoing)
+
+LIVE-VERIFICATION SESSION for all three 2026-07-17/18 fix waves, then
+straight back into play. Overseer co-played in the client throughout
+(manual trade, manual work-detail fixes, one manual rescue). Fort grew
+9 → 17 living citizens (+8 wave, day ~206). DÖBAR IS BURIED.
+
+**Verification: every headline fix confirmed live.** `[DEAD]` tag caught
+döbar first try; `'u'` pending-building glyph painted the 4 queued wall
+segments in plain `look` (and built ones correctly flipped to `#`);
+mid-dig `'d'` persisted through claim-and-dig; `mandates`/`moods`/
+`noble_demands`/`fort_wealth`/`wellbeing`/stocks-quality all work
+(punishment populates at ISSUE time — the open question is answered);
+`ConstructCoffin` accepted at Masons; `build` reshape fully proven:
+curated+material byte (craftsdwarf [stone], tradedepot [wood], walls
+[blocks]), quality-tier placement ("placed existing COFFIN quality
+WellCrafted material jet" — names the item it picked), and UNCURATED
+name-passthrough (`Statue` resolved and placed). `set_workshop_profile`
+min-skill gate applied to the carpenter (dabbler-migrant protection).
+ONE regression: `zone_value` fails "no zone at coordinates" on every
+real zone tested — the only wave-2 tool that failed live.
+
+**Döbar's burial (the session's heart):** mason ConstructCoffin x2 →
+WellCrafted jet coffin → dug a cross-shaped MAUSOLEUM west of the guard
+room at z=126 (5x5 chamber, 3-wide alcove wings N/S, morion gems struck
+in its walls) → tomb zone over the north alcove → coffin placed by
+quality → `assign_zone` accepted the DEAD unit → bridge raised to
+uncover the pit ramps (the lowered bridge is a LID — that's the real
+reason she couldn't leave) → "found dead, dehydrated" → carried up and
+entombed (overseer confirmed in client; our unit record still shows her
+at the pit coords — burial state is invisible to tooling, logged).
+Claystone statue placed in the chamber via the passthrough. Queen
+grieved (cat 5/6 held).
+
+**Bridge design flaw, now understood as a SYSTEM:** the pit under the
+raise-bridge collects items → haulers descend whenever the deck is open
+→ every close risks entombing someone. It trapped 2 more dwarves this
+session (overseer freed them by excavating a pit exit + flooring it
+over) and "comically reliably" traps the lever-puller. RULES BANKED:
+census the pit (z=125) AND deck before any close; the puller must stay
+on the lever side; overseer's bypass was walled back up with 7 block
+walls (49-55,42,126) after use. Lever stays EAST-only by design (east =
+inner fort; a west lever would hand bridge control to besiegers — my
+proposal to add one was wrong and was withdrawn).
+
+**Work-details discovery (project-significant):** fort owned TWO picks
+all along; `set_labor` writes `unit.status.labors` which v50 treats as
+a DERIVED CACHE of the work-details layer. Overseer manually assigned
+miner #2 + 2 woodcutters in the client → wood went 2 → 96 logs (the
+"no axe" theory was wrong — woodcutting was detail-gated exactly like
+mining). Full root-cause research report (Sonnet agent, source-cited):
+authority is `plotinfo->labor_info.work_details`; fix = edit
+`assigned_units` + call `Units::setAutomaticProfessions`; 4-tool
+surface proposed. See decisions.md 2026-07-18 + cross-session memory.
+
+**Economy/survival arc:** drink hit 5-for-9 with ZERO plants and no
+farm — built the fort's FIRST farm plot (2x5, z=133 soil, plump
+helmets all seasons; producing by day ~217), brewing re-established.
+Autumn caravan came with NO tools to buy; overseer traded manually
+(bought plump helmets, sold spare chairs/cabinet); wagon deconstructed
+→ 5x5 tradedepot [wood] on the surface. Food crisis at 17 mouths →
+113-shrub gather sweep + FISHERY + KITCHEN built on the surface;
+manager work orders (olon appointed by overseer + office we built at
+(46-49,34-38,133): throne, table, zone, assign) VERIFIED: PrepareMeal
+and ConstructBlocks orders dispatched and completed. `order` accepts
+ANY job_type (manager fills reagents) — it made a FIGURINE, routing
+around queue_job's crafts-class rejection. (Figurine did NOT credit the
+queen's make-mandate though — reader verified correct vs client; DF
+crediting subtlety, open question.) Queen's mandate churn all session:
+figurine 3/3 expired unfulfilled (no justice system = no beating),
+coffin-make fulfilled by the burial coffins, anvil make/export + fig
+make/export bans active — ANVIL MAKE (~25k ticks) is the live clock.
+
+**Housing:** Row-3 pods furnished + assigned (olon/zulban/methkat, rock
+doors, pass-through doors at (37,29)/(37,39) placed — overseer confirmed
+those gaps were intentional symmetry). EAST WING under way at z=125
+(siege-resilient housing per overseer direction): 2x2 stairs off the
+checkpoint corridor — first shaft placement FAILED into the mechanic
+workshop's invisible footprint ("Inappropriate dig square" root cause:
+buildings block digs and terrain view doesn't show them; same
+explanation as the old (40,40,133) cabinet mystery) — relocated to
+(61-62,43-44); 3-wide hall (56-73,43-45) + 8 3x3 pods, ~5 dug so far.
+STRUCK LIMONITE (real iron ore, (63,38,125)) and saltpeter in the pod
+walls — first actual ore of the fort. 6 beds queued, 8 rock doors
+queued, blocks work order producing.
+
+**Session decision (day 232):** overseer left continue-vs-engineering
+to me. Chose to CONTINUE PLAYING the iron arc (wood_furnace + smelter +
+metalsmith, dig limonite, charcoal → smelt → forge the queen's anvil)
+— it's the most alive thread and it live-verifies the one untested
+wave-2 surface (furnace jobs). Engineering wave (work-details + trade
+tooling headliners; full gap list in goals.md Tool state) starts at the
+next natural break.
+
+**Iron arc outcome (day 232-256):** industry quarter fully built at
+z=125 (wood_furnace/smelter/metalsmith ringed in limonite+lignite
+veins), 7 ore + coal banked, charcoal running — and the arc ended
+TOOLING-BLOCKED one job short: SmeltOre unreachable (unwired in
+queue_job; order path failed silently — the session's biggest finding:
+manager-order "completed" alerts can be PHANTOM, see goals.md order
+trust boundary). Make-anvil mandate expired mid-attempt, no observed
+consequence. Fort entered winter fed (18 real meals), 17 citizens,
+east housing wing 6/8 pods + doors/beds queued, stockpile-hall east
+expansion digging. DF saved+closed by overseer at ~day 256.
+
+**WAVE 4 shipped same night (2026-07-19): see goals.md Tool state for
+the full list** — work-details labor tools, the orders material-pinning
+root-cause fix + SmeltOre direct wiring (the iron arc unblock), trade
+safe-subset (caravan_status/depot_goods/bring_goods_to_depot; the
+trade COMMIT itself honestly remains human-only), zone_value fix,
+lens=minerals, and the whole perception paper-cut list. 20 agents,
+survived 2 more mid-run disconnects (resume + prompt-amended stitch of
+two dead agents' partial work — both had left MORE correct work in the
+tree than their reviews could see). All gates green. DLL (564KB)
+DEPLOYED to Steam hack/plugins with DF closed. Next session opens on
+live-verify: assign atér to Mining via work_details tooling, then
+finally smelt that iron.
+
+## 2026-07-17 — Fort #5, session 1 (Spring y100, day 14 → Summer day 147, ongoing)
+
+FRESH EMBARK, human co-playing live in the DF client alongside MCP tool calls
+(first session with real-time human course-correction, not just post-hoc
+review). Site: 96x96, surface z=134, soil aquifer z=131-130, DEEP STONE
+aquifer z=123-121 (only 5 clean levels between them, z=124-128) — tighter
+double-aquifer sandwich than any prior fort. Second miner (atér, masonry)
+labor-enabled pre-emptively per fort-opening's Gate 1, before first dig.
+
+**Aquifer: BOTH layers pierced and sealed same-session**, standard
+protocol (shaft to one-above, pierce+re-designate through silent cancels,
+quarry-before-ring, orthogonal ring, wall-in-shallow-water) — zero
+deviations from the skill. First REAL bedrooms this project has opened
+with (walls+door+cabinet, corridor-branch, not 1x1 zones) built cleanly
+on the first attempt: 3 pods off a west corridor, doors placed as soon as
+carpenter output allowed. User confirmed live: "great job on creating
+real bedrooms... this is proper fort design basics."
+
+**Brewing worked on the second try**: first BREW_DRINK_FROM_PLANT batch
+died silently (dedup swallowed the "needs empty food storage item" cancel
+after the first alert) — starting barrels were apparently already full of
+embark cargo. Fix: `queue_job item=barrel` for fresh ones, re-queue the
+reaction. Recurred once more mid-session (ran through the fresh barrels)
+same fix. Pattern now well-established across 3+ forts.
+
+**NEW GROUND: first defensible checkpoint architecture, built at user's
+direct request** mid-session ("below the aquifer layer we should create
+a checkpoint... possibly with a drawbridge to hole up within"). Shaft
+continued 2 levels past the aquifer seal into the dry stone band (z=126);
+guard room carved directly around the landing (first thing anyone
+descending the stairs reaches); corridor east to a moat — **user
+explicitly asked to widen it from a cautious 1x3 slot to a real 4x3
+moat** mid-designation, redesignated cleanly since only 1 of 3 tiles had
+dug. Bridge built (`build type=bridge width=4 height=3`) — **first
+attempt was misaligned by exactly one tile** (center x=52 mapped to
+footprint x50-53, not the actual x51-54 gap, leaving one gap tile
+uncovered); caught via `look`, fixed with `remove_building` +
+rebuild at center x=53 (instant, no deconstruction wait since still
+unbuilt). Mechanic workshop + lever built on the protected (east) side
+per design intent (operate from inside, not from the exposed side).
+`link_building` needed 2 free mechanisms, not 1 (the lever build itself
+consumes one) — queued a 3rd, link succeeded. `pull_lever` raise/lower
+both completed cleanly (empty job queue = success, per the established
+no-visual-feedback pattern).
+
+**LIVE INCIDENT: raising the bridge locked every dwarf out of the lever
+that controls it.** All 7 (at the time) dwarves lived on the guard-room
+side; the ONLY path to the lever was across the bridge itself. Once
+raised, the `PullLever` "lower" job sat queued forever — unreachable, no
+error, dwarves just went idle. User diagnosed it correctly in real time
+("raising the bridge may have cut off access... the lever is on the
+other side"). **Root lesson: a single-bridge chokepoint with no
+independent access to its own lever is a self-lock, not a chokepoint** —
+recovery required digging an emergency bypass tunnel (hit an
+"Inappropriate dig square" cancel on the first thin-corridor attempt;
+widening to a full room block resolved it, cause not fully diagnosed).
+Once the bypass reached the lever, the queued job finally executed.
+**Then deliberately walled the bypass shut** (14-tile wall across the
+guard room's south side) to restore the chokepoint's actual purpose —
+user's idea, also gave 3 idle non-miner dwarves something to do. Lesson
+banked in learnings.md: any lever controlling the only crossing needs
+either a second permanent access path that never crosses the bridge, or
+acceptance that raising it stops being reversible from the outside.
+
+**Large underground stockpile** (12x14, `stockpile category=all`) placed
+in a big hall dug beyond the checkpoint, safely in the dry band between
+both aquifers (z=126) — user's explicit ask ("large stockpile room...
+below the aquifer layer"). Single-miner-equivalent pace (see below) made
+this the session's slowest dig by far (~200 tiles).
+
+**Second-miner-in-name-only, root-caused this session**: atér has had
+MINE labor enabled since before the first designation, but dwarf census
+after the fact shows her idle throughout the big-hall dig while logem
+(sole `PickupEquipment` recipient at embark) did visibly all the mining
+(MINING Lvl5→Lvl9 over the session). Root cause: DF requires a physical
+pick, not just the labor flag — embark almost certainly shipped exactly
+one. `stocks category=pick` confirmed **zero free picks anywhere**.
+Checked the smelt→forge→pick path at user's request: `SmeltOre` and
+`MakeWeapon` job_types both exist and are real, `build type=metalsmith`
+is available (anvil already in stock) — but **no ore has been struck
+yet** (only coal/jet/jade/tiger iron, all fuel or decorative), AND
+`queue_job`'s `item` param has no way to specify a weapon SUBTYPE (pick
+vs. sword vs axe) — a real tooling gap, not just a resource wait. Flagged
+for engineering; second-miner-via-forged-pick stays unverified.
+
+**Migrant wave, day 143**: 7→10. Two strong pickups (olon Leatherwork
+Lvl13, zulban Engrave Stone Lvl10), one social skill (methkat Judging
+Intent Lvl4). None arrived with mining skill.
+
+**Rare event: one of our OWN starting 7 became civ monarch** (Monom,
+PERSUASION/NEGOTIATION/CONVERSATION skill profile — plausibly not
+coincidental). Confirmed via alert + dwarf_detail; she still lives in an
+ordinary 4x3 pod for now, a real noble suite is future work. Also got an
+expedition-leader assignment (oddom) shortly after — both are the
+civ/fort's own automatic early-noble succession, not anything we
+triggered.
+
+**Tooling gap flagged by user — TWO related but distinct bugs, BOTH now
+fixed** (Bug B via the workflow, Bug A by hand afterward at the user's
+explicit follow-up ask — "that's important for your understanding of
+what's going away vs is staying"). Bug B (FIXED, compile-verified NOT
+live-verified, workflow wf_6ea04eea-68b): a pending BUILDING construction
+(e.g. `build type=wall` before the job completes) was completely
+invisible in a plain `look` call without `lens=buildings` — the direct
+cause of this session's repeated wall-breach confusion. Fix: DF's
+`tile_occupancy.bits.building == Planned` now paints an always-on `'u'`
+glyph, same treatment as `'d'` for dig designations.
+
+Bug A (FIXED by hand, root-caused via source, compile-verified NOT
+live-verified): `look`/`map_slice` only read the raw `des.bits.dig` tile
+designation bit — but DF CLEARS that bit the instant a unit CLAIMS the
+dig job, well before the tile is actually dug. A tile a miner is actively
+walking to or working therefore rendered as plain undesignated rock,
+genuinely indistinguishable from "nobody has ever touched this" — which
+is exactly the "already visible wall, not showing 'd'" case, not a
+render-priority bug at all (render.go's paint order was already correct;
+'d' unconditionally wins over any base terrain glyph once a tile is IN
+`s.Designated` — the C++ side just wasn't putting mid-dig tiles in that
+set to begin with). The fix already existed elsewhere in this exact
+codebase and was never adopted here: `tile_extractor.cpp`'s
+`collect_dig_job_targets()` (used by the entity/topology wire path,
+comment there literally documents this same DF behavior) builds the set
+of tiles with an in-flight dig job; `queryMapSlice` in `queries.cpp` now
+ORs that set into its designated-tile check too, mirroring
+`compute_tile_flags`'s identical `FLAG_DESIGNATED` treatment. Zero Go/
+protocol changes needed — same JSON field, just correctly populated now.
+Rebuilt clean (`queries.cpp` zero warnings, fresh `.plug.dll`, confirmed
+mtime), `go build`/`go test` independently re-confirmed unaffected (264
+tests, no protocol touched).
+
+**DEATH: döbar (Planter) starved to death in the checkpoint moat pit,
+day ~153.** The exact standing risk flagged above (lever's only access
+path crosses the bridge it controls) went from hypothetical to real —
+she was apparently in the pit at z=125 (one level below the moat) when
+the bridge was raised/lowered during the earlier lockout-and-recovery,
+got stranded despite visible ramps out (`look` showed '^' ramp tiles on
+all sides), and simply never had a job/reason to path out before she
+starved. `dwarves`/`dwarf_detail` gave NO indication of death — same
+position, "idle", no distress flag, position unchanged across multiple
+polls — the "missing for a week" alert was the only signal; user caught
+the actual death by watching the live client, tooling never surfaced it.
+Real gap: dwarf_detail should flag dead/missing status, not silently
+report a stale-but-plausible-looking idle record.
+
+**Follow-up: tried to properly entomb her, testing tomb/coffin tooling
+live (user's suggestion — "good testing scenario").** `designate_zone
+type=tomb` works cleanly. `ConstructCoffin` is a real DFHack job_type but
+REJECTED at both Carpenter's and Mason's ("job type not supported at
+this workshop type") — a fresh instance of the exact same bug class as
+the ConstructFloodgate gap fixed earlier this project (missing from
+`jobTypeAllowedAtWorkshop`'s whitelist). Full chain blocked: can zone a
+tomb, can't manufacture anything to put in it. Logged in goals.md for
+the next engineering pass. Proper burial deferred until the fix lands.
+
+**Session close (day 178, PAUSED, DF closed by overseer):** finished the
+3rd bedroom pod row (öton/doren/oddom, dig complete, furniture built) —
+6→9 real bedroom pods total, has_bedroom_zones_7 MET. Dining hall zoned
+and furnished (2 tables, chairs queued) in the corridor between pod rows
+1+2 — has_dining_hall MET. Fixed two live self-inflicted architecture
+bugs mid-session, both caught by the overseer watching the actual DF
+client (our own tools couldn't see either): (1) the dining-hall-to-Row1
+connector landed one tile off, punching straight into atér's bedroom
+instead of a neutral corridor — left as a door-gated pass-through rather
+than a full reroute, overseer's call; (2) the Row3-to-Row2 connector dig
+was designated one tile too wide (y=29 instead of y=28), shearing off
+Row2's ENTIRE north wall in one pass — same failure shape as the
+guard-room breach earlier this session, same fix (rebuild the wall,
+this time leaving zero unintended openings after 3 rounds of "wait,
+there's still a gap here" corrections). Root cause of the repeated
+back-and-forth, per the overseer: `look` shows a pending
+Construction-type building (e.g. a queued `build type=wall` not yet
+complete) as an indistinguishable plain wall glyph unless
+`lens=buildings` is explicitly requested — there's no way to tell "solid
+rock, never touched" apart from "floor, wall queued but not finished"
+from a plain `look` call, which is exactly backwards from what's
+decision-relevant. Queen's construction mandate also went unfulfilled
+past its deadline (screenshot showed "...tion mandate near deadline" in
+the DFHack log strip) — we have no tooling to see what it actually
+required, so no way to act on it deliberately.
+
+**OVERSEER OFFERED A CHOICE at this point: keep playing (e.g. a manager's
+office) or pivot to fixing what this session surfaced.** Chose the
+latter — the glyph-priority bug was actively degrading play (three
+separate rounds of the same "wait, that's still open" correction), and
+we'd already source-confirmed two other real gaps (mandate inspection
+missing entirely, dwarf death/missing status invisible to
+dwarves/dwarf_detail). Fixed `ConstructCoffin` in the whitelist directly
+(trivial, same shape as the already-shipped `ConstructFloodgate` fix,
+no research needed). Dispatched a 3-lane research→implement→verify
+workflow for the other three (glyph-priority is Go-only, safe to
+implement+test live even with DF closed; mandate inspection and
+dwarf-death-status both need real DFHack struct research from the
+sibling source checkout before implementing — instructed to stop short
+of a risky implementation and hand back a scoped plan if the DF data
+model turns out more tangled than expected, rather than force something
+that might silently misreport). **Also by-hand fixed a second, genuinely
+distinct glyph bug** the user caught live (`Bug A`): a mid-dig wall
+tile's `des.bits.dig` designation bit goes cold the instant a unit
+CLAIMS the job (well before the tile is dug), so `map_slice` never put
+such tiles in the always-on designated set at all — not a render-
+priority bug (render.go already lets 'd' win unconditionally), a data-
+population bug. Fix reused `collect_dig_job_targets()`, which already
+existed in this codebase for the entity/topology wire path and had just
+never been adopted by `map_slice`.
+
+**SECOND MAJOR RESEARCH+IMPLEMENTATION WAVE, same session, day 178
+onward**: user asked for deep research into what DFHack system to
+integrate next for mid/late-game management (explicitly excluding
+noble-professional appointment, which stays deferred). Four parallel
+Fable research agents (moods/personality/stress, quality/wealth,
+justice/nobility-overview, and a proactive gap-audit of the plugin's own
+hand-maintained whitelists) all landed with deep, source-grounded
+reports — full detail in Claude Code cross-session memory
+(`project_fort5_session1_checkpoint_and_fixes.md`). Two independent
+agents converged on the same live bug from different angles: `build`'s
+`material` parameter (wood/stone/blocks) has been a **silent no-op**
+since it was added — Go encodes the byte and the ACK text even claims
+`[stone]` succeeded, but the C++ side never reads past byte 11. The gap-
+audit agent additionally found the `ConstructCoffin`/`ConstructFloodgate`
+whitelist gap was a PATTERN, not a one-off: 12 more legitimate furniture
+job types were missing the same way, plus a structural bug blocking
+**every furnace job/reaction project-wide** (charcoal, smelting) since
+`applyQueueJob`/`applyQueueReactionJob` only ever accepted workshop
+buildings, never furnaces.
+
+Dispatched a 14-agent implementation workflow (audit fixes + wealth/
+quality system + moods/psychology system; justice and noble appointment
+explicitly held back per user instruction until testable) — see the
+Claude Code memory file for the complete shipped-feature list. Headline
+results: the material-byte bug is fixed for real; furnace jobs/reactions
+now reachable (charcoal/ash confirmed reachable via the simple filter
+path — `SmeltOre`/`MeltMetalObject` deliberately NOT force-fit, they need
+per-job material pinning the current filter shape can't express, flagged
+honestly rather than faked); `build` gained a `quality` parameter that
+can target one specific existing item by quality tier (the "masterwork
+bed in the queen's room" capability); a `set_workshop_profile` action;
+new `moods`, `noble_demands`, `fort_wealth`, `zone_value`, and
+`wellbeing` queries; `stocks`/`mandates`/`dwarf_detail` all gained new
+dimensions (quality breakdown, resolved item-subtype names, a full
+`psyche` section). Both consolidated build checkpoints and a final
+review pass all passed clean (0 compiler warnings) — two agents hit
+transient "stream idle timeout" disconnects (once from the user's own
+laptop closing) and were cleanly resumed from cached workflow state
+rather than restarted from scratch. Two minor, non-blocking findings
+from final review: `renderMoods`/`renderNobleDemands` have no unit tests
+(every sibling new-tool render function in this wave got one — a real
+gap in an otherwise-consistent pattern); `set_workshop_profile`'s
+`worker_unit_id` uses a bare `int` with an `if > 0` presence check
+instead of this codebase's established `*int` pattern (`tools_defense.go`)
+for "optional single unit id," meaning unit id 0 specifically could
+never be targeted (vanishingly unlikely to matter, real fort unit ids
+essentially never land on exactly 0, but inconsistent with precedent).
+**Everything from this whole wave is compile-verified only — DF stayed
+closed the entire time.** Next session's first real task, alongside
+döbar's burial: live-verify every one of these in order, same discipline
+as prior sessions' fix-waves.
+
+A FOLLOW-UP Fable agent researched the tool-schema scaling problem the
+user flagged (tool descriptions risk exploding as DF coverage grows,
+loaded into every session's context regardless of relevance) — briefed
+on this wave's new tool surface as settled fact. Landed with real
+measured numbers (58 tools, ~38KB/~10k tokens today; `build` is the
+single worst offender) and a concrete recommendation: the `queue_job`/
+`job_types` pattern already in this codebase (curated short vocabulary +
+full-generality name-passthrough + a separate on-demand discovery tool)
+is the right template, and `build`'s `type` parameter should be reshaped
+into that same three-part shape before the audit's ~30 still-deferred
+building/trap/furnace/workshop types land on it and make the problem
+materially worse. Also recommended a new CLAUDE.md house rule (tool
+schemas carry shape, never guidance — mirroring the existing skills
+rule), and found `fort-planning`'s defense-staging skill is now stale
+(claims no bridge/lever/mechanism tooling exists — shipped and verified
+this very session).
+
+**THIRD MAJOR WAVE, same session (2026-07-18): the build-tool reshape +
+near-total building/workshop/furnace/trap coverage.** User's framing:
+"opening the oyster so we can see the pearl completely" — go broad, not
+minimal. 17-agent workflow (survived TWO mid-run disconnects — a
+transient stream timeout and a wifi drop that lost the local session's
+tracking entirely — both cleanly resumed via `resumeFromRunId` with zero
+rework lost, cached agents replayed instantly). Shipped:
+
+- **`build`'s type-selection architecture reshaped** to the exact
+  `queue_job`/`job_types` three-part pattern: the ~29 existing curated
+  names keep their old wire bytes unchanged; a new name-passthrough
+  (`BUILD_TYPE_BY_NAME`, mirrors `ORDER_TYPE_BY_NAME`) resolves ANY name
+  plugin-side via `find_enum_item` tried against `building_type` →
+  `workshop_type` → `furnace_type` → `trap_type` in turn
+  (`resolveBuildTypeByName`), then a second function
+  (`resolveCuratedBuildTypeByte`) checks whether a real placement recipe
+  exists for that resolved type and falls through to the SAME verified
+  placer functions the curated path already uses — no parallel
+  implementation. A new `building_types` discovery tool (58 entries: 30
+  original wave-2 baseline extended to includes all of this wave's
+  additions) replaced `build`'s ~1400-char prerequisite-prose
+  description with per-value facts, on demand, matching `job_types`
+  exactly. `build`'s own description is now a 4-sentence pointer.
+- **~30+ new building types actually placeable now**: Well (+ MakeChain,
+  the deliberate justice-adjacent EXCEPTION — chain is genuine
+  construction material for Well/TractionBench/Rollers, not jail-
+  specific, reasoned through explicitly not just assumed), Support, the
+  full room-value furniture family (Statue/Slab/WindowGlass/WindowGem/
+  Bookcase/DisplayFurniture/OfferingPlace/Instrument), water/power
+  infrastructure (ScrewPump/GearAssembly/AxleHorizontal/AxleVertical/
+  WaterWheel/Windmill/Rollers), ArcheryTarget/TractionBench/NestBox/Hive,
+  4 trap subtypes (PressurePlate/StoneFallTrap/WeaponTrap/TrackStop —
+  CageTrap deliberately excluded, its ammo is the excluded MakeCage
+  item, would repeat the exact "craftable but unarmable" bug this
+  project already fixed once with coffins), new furnace types (Kiln/
+  GlassFurnace/magma variants/MagmaForge), and 10 new workshop types
+  (Jewelers/Bowyers/Siege/Leatherworks/Tanners/Clothiers/Loom/Kennels/
+  Ashery/Dyers) — closing "the entire cloth/leather industry is absent"
+  gap from wave 2's audit. Every known limitation is DOCUMENTED, not
+  hidden: magma buildings can't verify magma-adjacency at placement
+  time (DFHack has no check); stone_fall_trap builds unarmed (no "Load
+  Stone Trap" job exposed yet); pressure_plate builds with trigger
+  detection off; axle/rollers are single-tile only (no length param on
+  the wire); several furniture types need a pre-existing tool item this
+  project can't craft with the right subtype yet (a separate, pre-
+  existing gap); Tool/Custom workshops stay uncurated (no universal
+  DFHack recipe exists, matches DF's own build-menu gating).
+- **Job wiring**: MakeChain, ConstructTractionBench (bespoke 3-item
+  TABLE+TRAPPARTS+CHAIN filter), plus baseline queue_job reachability for
+  the new workshops (ForgeAnvil, CutGems, EncrustWithGems, PrepareRawFish,
+  ExtractFromRawFish, WeaveCloth, CollectWebs, DyeThread, DyeCloth,
+  MakeBackpack, MakeQuiver, MakeCharcoal, MakeAsh).
+- **Hygiene**: the new CLAUDE.md house rule shipped for real ("Tool
+  schemas carry shape, never guidance" — sibling to the skills rule),
+  fort-planning/fort-opening skills refreshed to reflect real
+  capabilities (procedural-status only, no new dimensions), a REAL CI
+  test (`TestToolSchemaBudget`, runs a live in-memory MCP session, not a
+  throwaway probe) now enforces the budget going forward — measured 65
+  tools / 43,666 bytes total against a 60KB ceiling, `build` itself down
+  to 2,523 bytes, `look` given a named exception (real cost-table
+  complexity, not enum bloat). Two small loose ends from the PRIOR
+  wave's review also closed: `renderMoods`/`renderNobleDemands` unit
+  tests added, `set_workshop_profile`'s `worker_unit_id` fixed to the
+  established `*int` pattern.
+- Final review: full PASS, C++ rebuilt with /W3 /WX (warnings as
+  errors) for a genuinely clean-not-just-passing signal, all 71
+  BUILD_TYPE_* constants verified byte-identical between protocol.h and
+  message.go, scope boundary grepped clean (zero Cage/Chain/MakeCage/
+  CageTrap implementations, only exclusion-documenting comments).
+  Honest non-blocking observation: the legacy `build` type enum itself
+  still lists ~32 names (reformatted, not shrunk this wave — deliberate,
+  matches what was asked) — trimming it toward the ~15 guideline is a
+  clean follow-up, not a defect.
+**Everything in this third wave is ALSO compile-verified only — DF
+stayed closed the entire session.** Next session's live-verification
+queue is now three waves deep; do it in order (glyph/mandate/dead-status
+fixes first, since they're foundational to observing everything else
+correctly).
+
+Session ends at day 178, paused, 0 hostiles, drink/food stable, 9 living
+dwarves (döbar dead, unburied — coffin fix now shipped but not yet
+deployed to a running DF; entombment is next session's task once DLL is
+redeployed). NEXT: deploy the fix-wave DLL (needs DF closed, which it
+currently is — good opportunity), verify ConstructCoffin live and
+properly bury döbar, check the tooling-fixes workflow's output and
+integrate whatever it produced, scout a different elevation for actual
+metal ore (deep-stone band here proved ore-free), manager's office
+(mentioned but not started), second miner still blocked on pick supply.
+
+**WORKFLOW RESULT (post-session, DF closed): all 3 dispatched gaps came
+back IMPLEMENTED, not just designed** — the research agents judged all
+three shapes clean enough to implement directly rather than stopping at a
+plan (they were explicitly told they could, and to stop short if the DF
+data model turned out too tangled — none did). All confirmed against the
+real DFHack 53.15-r2 source in the sibling checkout, not guessed:
+- Mandate inspection: new `mandates` MCP tool, zero wire-protocol changes
+  needed (the plugin's query dispatch was already generic string+JSON).
+- Dwarf death status: `dwarves`/`dwarf_detail` now carry `[DEAD]`/`dead`
+  via `Units::isDead()`; required one new additive wire block
+  (`DeadUnits`, same backward-compatible pattern as the existing `Zones`
+  block) — found and fixed a real latent test-encoder bug along the way
+  (asymmetric `HasZones` byte that would've desynced anything appended
+  after Zones, never hit in production since Zones was always last until
+  now). Logged as its own `docs/decisions.md` entry.
+- Glyph-priority (Bug B specifically, see above — NOT Bug A): pending
+  buildings now paint an always-on `'u'` glyph in plain `look`, sourced
+  from `tile_occupancy.bits.building == Planned`.
+`go build ./...` + `go test ./...` independently re-confirmed clean
+afterward (264 tests, 34 packages, 0 failures) — verified myself, not
+just trusted the workflow's own report. C++ side is compile-verified only
+(DF was closed all workflow); every plugin-side change (coffin, mandates,
+dead-status, pending-building glyph) still needs an actual live pass next
+session before being trusted operationally. Full detail:
+`docs/decisions.md`'s new entry (dead-status) and this session's
+`goals.md` Tool State section (all four).
+
 ## 2026-07-17 — Fort #4, session 3: tool verification (Summer y100, day 121→140)
 
 Narrow-scope session: live-verify the 4 fixes from the 2026-07-16 wave

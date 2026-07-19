@@ -128,6 +128,12 @@ static uint8_t classify_severity(int16_t type)
         case AT::CITIZEN_LOST_TO_STRESS:         // was INSANITY
         case AT::BERSERK_CITIZEN:                // was BERSERK
         case AT::BODY_TRANSFORMATION:            // was BECOME_VAMPIRE/BECOME_WEREBEAST
+        // Active hostile-event starts — same tier as the ambush/beast
+        // arrivals above (an undead/night-creature assault the fort must
+        // drop everything to respond to, not a background nuisance).
+        case AT::GHOST_ATTACK:
+        case AT::UNDEAD_ATTACK:
+        case AT::NIGHT_ATTACK_STARTS:
             return 2;
 
         // Warn: cancellations, suspensions, stress. Routine attention
@@ -145,6 +151,32 @@ static uint8_t classify_severity(int16_t type)
         // actionable for the agent (pathing broke — dig them out).
         case AT::CREATURE_STUCK:
         case AT::CITIZEN_STUCK:
+        // Deaths: not an active threat by the time the report lands, but a
+        // currently-invisible fort-roster change the agent must notice
+        // (labor/squad/room assignments can now be stale). Below the
+        // in-progress-attack tier above, still well above routine info.
+        case AT::CITIZEN_DEATH:
+        case AT::PET_DEATH:
+        // Strange mood starts a hidden per-dwarf death timer — the fort
+        // has a window to supply/route the mood dwarf before it ends badly.
+        // Not "drop everything this tick" like an active attack, but the
+        // agent must track it, so it and its two lifecycle follow-ups
+        // (workshop claimed, artifact underway) all surface at warn so the
+        // whole mood thread stays visible rather than going quiet after the
+        // opening announcement.
+        case AT::STRANGE_MOOD:
+        case AT::MOOD_BUILDING_CLAIMED:
+        case AT::ARTIFACT_BEGUN:
+        // Mandate lifecycle: a currently-invisible obligation appears/
+        // disappears that the agent's production planning needs to know
+        // about (a controlled good's export can suddenly get punished).
+        case AT::NEW_MANDATE:
+        case AT::NEW_WORK_MANDATE:
+        case AT::MANDATE_ENDS:
+        // Diplomatic/economic consequence, not a survival threat, but a
+        // state change worth the agent's attention (unmet demands soured
+        // relations with the liaison's civilization).
+        case AT::DIPLOMAT_LEFT_UNHAPPY:
             return 1;
 
         // Info: arrivals, completions, weather, narration.

@@ -40,8 +40,16 @@ const uint8_t ENTITY_TYPE_ENEMY = 0x02;
 const uint8_t ENTITY_TYPE_ANIMAL = 0x03;
 const uint8_t ENTITY_TYPE_OTHER = 0x04;
 
-// Extract all active entities from DF
-std::vector<EntityInfo> extract_entities()
+// Extract all active entities from DF. If dead_ids is non-null, it is
+// appended with the id of every extracted unit that is dead per DFHack's
+// own Units::isDead() definition (flags2.bits.killed || flags3.bits.ghostly
+// -- confirmed against this checkout's library/modules/Units.cpp, DFHack
+// 53.15-r2). Death is independent of the type classification below: a dead
+// dwarf is still reported as ENTITY_TYPE_DWARF (she still IS a dwarf, just
+// dead) so dwarves/dwarf_detail can say so truthfully instead of reporting
+// a corpse as a living idle unit at a frozen position (the bug that
+// motivated this).
+std::vector<EntityInfo> extract_entities(std::vector<uint32_t> *dead_ids)
 {
     std::vector<EntityInfo> entities;
     auto &console = Core::getInstance().getConsole();
@@ -130,6 +138,10 @@ std::vector<EntityInfo> extract_entities()
         }
 
         entities.push_back(entity);
+
+        if (dead_ids && Units::isDead(unit)) {
+            dead_ids->push_back(entity.id);
+        }
     }
 
     console.print("Entity summary: %d total, %d citizens, %d fort-controlled, %d hostile, %d animals, %d other\n",
@@ -141,8 +153,15 @@ std::vector<EntityInfo> extract_entities()
 // Serialize entities to binary format
 // Message structure:
 // [4: Length] [1: Version] [1: Type=0x08] [4: Count] [N: Entities]
-// [1: HasFortInfo] [17: FortInfo if present]
-std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &entities)
+// [1: HasFortInfo] [17: FortInfo if present] [1: HasZones] [...zones]
+// [1: HasDeadUnits] [4: DeadCount] [4xDeadCount: UnitID]
+//
+// dead_ids lists the ids (a subset of entities' ids) that are dead per
+// Units::isDead() -- see extract_entities' doc comment. Passing an empty
+// vector is fine; the block is always emitted (HasDeadUnits=1, DeadCount=0)
+// for uniformity with the Zones block below.
+std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &entities,
+                                              const std::vector<uint32_t> &dead_ids)
 {
     std::vector<uint8_t> buffer;
 
@@ -292,6 +311,29 @@ std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &enti
                 buffer.push_back((uid >> 8) & 0xFF);
                 buffer.push_back(uid & 0xFF);
             }
+        }
+    }
+
+    // DeadUnits block -- additive, appended after Zones. Lists unit IDs
+    // (from the entity array above) that are dead. An old Go decoder that
+    // doesn't know about this block simply never reads these trailing
+    // bytes -- message framing is length-prefixed, so this is backward
+    // compatible, the same pattern the Zones block above already
+    // established. Field order/widths MUST match deserializeEntityUpdate
+    // in internal/protocol/codec.go.
+    // [1: HasDeadUnits] [4: DeadCount] [4xDeadCount: UnitID]
+    {
+        buffer.push_back(1); // HasDeadUnits
+        uint32_t deadCount = (uint32_t)dead_ids.size();
+        buffer.push_back((deadCount >> 24) & 0xFF);
+        buffer.push_back((deadCount >> 16) & 0xFF);
+        buffer.push_back((deadCount >> 8) & 0xFF);
+        buffer.push_back(deadCount & 0xFF);
+        for (uint32_t id : dead_ids) {
+            buffer.push_back((id >> 24) & 0xFF);
+            buffer.push_back((id >> 16) & 0xFF);
+            buffer.push_back((id >> 8) & 0xFF);
+            buffer.push_back(id & 0xFF);
         }
     }
 
