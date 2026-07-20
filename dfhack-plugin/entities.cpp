@@ -155,6 +155,7 @@ std::vector<EntityInfo> extract_entities(std::vector<uint32_t> *dead_ids)
 // [4: Length] [1: Version] [1: Type=0x08] [4: Count] [N: Entities]
 // [1: HasFortInfo] [17: FortInfo if present] [1: HasZones] [...zones]
 // [1: HasDeadUnits] [4: DeadCount] [4xDeadCount: UnitID]
+// [1: HasWorldIdentity] [2: SaveDirLen] [N: SaveDir] [4: ID1] [4: ID2]
 //
 // dead_ids lists the ids (a subset of entities' ids) that are dead per
 // Units::isDead() -- see extract_entities' doc comment. Passing an empty
@@ -334,6 +335,46 @@ std::vector<uint8_t> serialize_entity_update(const std::vector<EntityInfo> &enti
             buffer.push_back((id >> 16) & 0xFF);
             buffer.push_back((id >> 8) & 0xFF);
             buffer.push_back(id & 0xFF);
+        }
+    }
+
+    // WorldIdentity block -- additive, appended after DeadUnits. Fingerprints
+    // the currently loaded save (df::global::world->cur_savegame) so a
+    // long-lived Go peer that stays connected across a save-swap (fort
+    // abandoned/completed, a different save loaded into the same running
+    // DF process without restarting df-mcp) can detect the switch and stop
+    // serving the PREVIOUS world's entity roster as if it were current -- a
+    // live incident (see internal/worldmodel's Populator.OnEntityUpdate).
+    // save_dir alone is not a safe fingerprint (two save folders across
+    // reinstalls could coincidentally share a name); id1/id2
+    // (shared_world_headerst, df.datafile.xml -- "based on tick at start of
+    // game" / "based on tick at creation time") are a numeric pair that
+    // cannot collide the same way. Field order/widths MUST match
+    // deserializeEntityUpdate in internal/protocol/codec.go.
+    // [1: HasWorldIdentity] [2: SaveDirLen] [N: SaveDir] [4: ID1] [4: ID2]
+    {
+        CoreSuspender suspend;
+        bool haveWorld = df::global::world != nullptr;
+        if (haveWorld) {
+            const std::string &saveDir = df::global::world->cur_savegame.save_dir;
+            uint32_t id1 = df::global::world->cur_savegame.world_header.id1;
+            uint32_t id2 = df::global::world->cur_savegame.world_header.id2;
+
+            buffer.push_back(1); // HasWorldIdentity
+            uint16_t dirLen = (uint16_t)std::min<size_t>(saveDir.size(), 65535);
+            buffer.push_back((dirLen >> 8) & 0xFF);
+            buffer.push_back(dirLen & 0xFF);
+            buffer.insert(buffer.end(), saveDir.begin(), saveDir.begin() + dirLen);
+            buffer.push_back((id1 >> 24) & 0xFF);
+            buffer.push_back((id1 >> 16) & 0xFF);
+            buffer.push_back((id1 >> 8) & 0xFF);
+            buffer.push_back(id1 & 0xFF);
+            buffer.push_back((id2 >> 24) & 0xFF);
+            buffer.push_back((id2 >> 16) & 0xFF);
+            buffer.push_back((id2 >> 8) & 0xFF);
+            buffer.push_back(id2 & 0xFF);
+        } else {
+            buffer.push_back(0); // HasWorldIdentity=0 -- world unavailable
         }
     }
 

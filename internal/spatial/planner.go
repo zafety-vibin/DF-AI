@@ -288,14 +288,14 @@ func (svp *SpatialValidatorPlanner) Save() error {
 
 	// Marshal to JSON
 	layout := map[string]interface{}{
-		"fort_name":      svp.fortName,
-		"embark_z":       svp.embarkZ,
-		"housing_z":      svp.housingZ,
-		"workshop_z":     svp.workshopZ,
-		"farm_z":         svp.farmZ,
-		"hazard_z":       svp.hazardZ,
-		"analyzed_at":    svp.analyzedAt.Format(time.RFC3339),
-		"version":        svp.layoutVersion,
+		"fort_name":   svp.fortName,
+		"embark_z":    svp.embarkZ,
+		"housing_z":   svp.housingZ,
+		"workshop_z":  svp.workshopZ,
+		"farm_z":      svp.farmZ,
+		"hazard_z":    svp.hazardZ,
+		"analyzed_at": svp.analyzedAt.Format(time.RFC3339),
+		"version":     svp.layoutVersion,
 	}
 
 	data, err := json.MarshalIndent(layout, "", "  ")
@@ -511,10 +511,10 @@ func (svp *SpatialValidatorPlanner) findAvailableRegions(
 	// Create one large region representing "somewhere on this layer can be built"
 	// This gives arbiter freedom to place blueprints anywhere
 	region := &SpatialRegion{
-		ID:     fmt.Sprintf("%s_region_1", svp.getPurposePrefix(z)),
-		BBox:   [6]int{10, 10, z, width - 10, height - 10, z}, // Leave 10-tile margin
-		Status: "available",
-		Area:   (width - 20) * (height - 20), // Available area
+		ID:       fmt.Sprintf("%s_region_1", svp.getPurposePrefix(z)),
+		BBox:     [6]int{10, 10, z, width - 10, height - 10, z}, // Leave 10-tile margin
+		Status:   "available",
+		Area:     (width - 20) * (height - 20), // Available area
 		Features: []string{"open_space"},
 	}
 

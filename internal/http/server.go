@@ -15,21 +15,21 @@ import (
 
 // Server manages the HTTP monitoring API
 type Server struct {
-	httpServer                  *http.Server
-	logger                      *logging.Logger
-	dfhackClient                *dfhack.Client
-	configMgr                   *config.ConfigManager
-	getHazardMetricsFunc        func() *HazardMetrics
-	getModificationMetricsFunc  func() *ModificationMetrics
-	getContextMetricsFunc       func() *ContextMetrics
-	getLLMMetricsFunc           func() *LLMMetrics
-	getCommandMetricsFunc       func() *CommandMetrics
-	getAIHistoryFunc            func() interface{} // Returns AI turn history
-	saveModificationsFunc       func() error       // Manual save trigger
-	startTime                   time.Time
-	configReloads               uint64
-	httpRequests                uint64
-	mu                          sync.Mutex
+	httpServer                 *http.Server
+	logger                     *logging.Logger
+	dfhackClient               *dfhack.Client
+	configMgr                  *config.ConfigManager
+	getHazardMetricsFunc       func() *HazardMetrics
+	getModificationMetricsFunc func() *ModificationMetrics
+	getContextMetricsFunc      func() *ContextMetrics
+	getLLMMetricsFunc          func() *LLMMetrics
+	getCommandMetricsFunc      func() *CommandMetrics
+	getAIHistoryFunc           func() interface{} // Returns AI turn history
+	saveModificationsFunc      func() error       // Manual save trigger
+	startTime                  time.Time
+	configReloads              uint64
+	httpRequests               uint64
+	mu                         sync.Mutex
 }
 
 // NewServer creates a new HTTP monitoring server

@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -69,15 +70,16 @@ func renderFullOrDownsampled(s *mapview.Slice, header string) string {
 	return header + " — downsampled (exceeds full-fidelity budget)\n" + mapview.RenderDownsampledSlice(s, block)
 }
 
-// fortFootprintBBox computes the render bbox for scope=fort: the bounding
-// box of the player-attributed modifications recorded at z, expanded by
-// margin tiles on each side and clamped to the map bounds. Entries whose
+// sessionModBBox returns the RAW (unpadded, unclamped) bounding box of
+// player-attributed modifications recorded at z via the Go-side session
+// journal (modifications.ModificationOverlay) — the delta stream this
+// connection has actually observed via TILE_UPDATE messages. Entries whose
 // classification is ModificationUnknown never define the footprint — only
-// classified player work (dug/channeled/built) does. ok=false means no such
-// modifications were recorded at that z — callers must return a truthful
-// "nothing here yet" message rather than silently falling back to some
-// other crop.
-func fortFootprintBBox(mods *modifications.ModificationOverlay, mapW, mapH uint16, z int16, margin int16) (x0, y0, x1, y1 int16, ok bool) {
+// classified player work (dug/channeled/built) does. ok=false means this
+// session has recorded nothing at z (which is not the same as "nothing was
+// ever dug here" — see fortFootprintBBox's doc comment for why this alone
+// is not the whole picture).
+func sessionModBBox(mods *modifications.ModificationOverlay, mapW, mapH uint16, z int16) (x0, y0, x1, y1 int16, ok bool) {
 	region := modifications.Region{
 		XMin: 0, XMax: int16(mapW) - 1,
 		YMin: 0, YMax: int16(mapH) - 1,
@@ -108,6 +110,79 @@ func fortFootprintBBox(mods *modifications.ModificationOverlay, mapW, mapH uint1
 	if !found {
 		return 0, 0, 0, 0, false
 	}
+	return xMin, yMin, xMax, yMax, true
+}
+
+// parseFortFootprintResponse decodes the plugin's fort_footprint query
+// response. Split out from fortFootprintMapState so the JSON shape is
+// unit-testable directly against canned bytes, with no live plugin
+// connection required — the same shape renderStocks/renderZoneValue's
+// tests already use for plugin-response parsing.
+func parseFortFootprintResponse(raw []byte) (x0, y0, x1, y1 int16, mayIncludeNaturalCave, found bool, err error) {
+	var resp struct {
+		Found                 bool  `json:"found"`
+		X1                    int16 `json:"x1"`
+		Y1                    int16 `json:"y1"`
+		X2                    int16 `json:"x2"`
+		Y2                    int16 `json:"y2"`
+		MayIncludeNaturalCave bool  `json:"may_include_natural_cave"`
+	}
+	if jsonErr := json.Unmarshal(raw, &resp); jsonErr != nil {
+		return 0, 0, 0, 0, false, false, fmt.Errorf("fort_footprint: unparseable response: %w", jsonErr)
+	}
+	if !resp.Found {
+		return 0, 0, 0, 0, false, false, nil
+	}
+	return resp.X1, resp.Y1, resp.X2, resp.Y2, resp.MayIncludeNaturalCave, true, nil
+}
+
+// fortFootprintMapState calls the plugin's fort_footprint query (Q4): a
+// whole-map, whole-history scan for tiletype-level signals that can only
+// come from player action — constructions, smoothing, carved stairs/
+// fortifications, carved minecart tracks (queries.cpp's
+// handleFortFootprint doc comment lists exactly which and why RAMP is
+// excluded). Unlike sessionModBBox above, this sees modifications from
+// BEFORE the current connection — closing the pre-connection blind spot a
+// pure session-delta source has. ok=false means the plugin found no such
+// markers at z (a truthful "nothing here", distinct from a query/decode
+// failure, which is returned as a non-nil err instead — callers should
+// treat an error as "this source is temporarily unavailable", not as
+// proof nothing was ever built here).
+func fortFootprintMapState(ctx context.Context, b *Bridge, z int16) (x0, y0, x1, y1 int16, mayIncludeNaturalCave, ok bool, err error) {
+	raw, err := b.Query(ctx, "fort_footprint", fmt.Sprintf(`{"z":%d}`, z))
+	if err != nil {
+		return 0, 0, 0, 0, false, false, err
+	}
+	return parseFortFootprintResponse(raw)
+}
+
+// unionFootprintBBox merges two optional (found-flagged) bounding boxes and
+// applies margin+clamp — the pure arithmetic core of fortFootprintBBox,
+// factored out so it's unit-testable without a live plugin connection.
+// ok=false when neither source found anything.
+func unionFootprintBBox(sessionOK bool, sx0, sy0, sx1, sy1 int16, mapOK bool, mx0, my0, mx1, my1 int16, mapW, mapH uint16, margin int16) (x0, y0, x1, y1 int16, ok bool) {
+	if !sessionOK && !mapOK {
+		return 0, 0, 0, 0, false
+	}
+	xMin, yMin := int16(32767), int16(32767)
+	xMax, yMax := int16(-32768), int16(-32768)
+	if sessionOK {
+		xMin, yMin, xMax, yMax = sx0, sy0, sx1, sy1
+	}
+	if mapOK {
+		if !sessionOK || mx0 < xMin {
+			xMin = mx0
+		}
+		if !sessionOK || my0 < yMin {
+			yMin = my0
+		}
+		if !sessionOK || mx1 > xMax {
+			xMax = mx1
+		}
+		if !sessionOK || my1 > yMax {
+			yMax = my1
+		}
+	}
 	xMin -= margin
 	yMin -= margin
 	xMax += margin
@@ -125,6 +200,40 @@ func fortFootprintBBox(mods *modifications.ModificationOverlay, mapW, mapH uint1
 		yMax = int16(mapH) - 1
 	}
 	return xMin, yMin, xMax, yMax, true
+}
+
+// fortFootprintBBox computes the render bbox for scope=fort: the UNION of
+// (a) the plugin's whole-map, whole-history unambiguous-marker scan
+// (fortFootprintMapState, Q4) and (b) this session's own observed dig/
+// build deltas (sessionModBBox). Neither source alone is sufficient: (a)
+// is blind to plain dug-out floor with no construction/smoothing/stairs
+// (byte-for-byte identical to natural cave floor once the transient dig
+// bit clears — there is no persistent per-tile "a dwarf dug this" marker
+// for that case, confirmed by direct source audit), so it would badly
+// undercount an ordinary bedroom/corridor; (b) is blind to anything from
+// before this connection. A pure replacement of the session journal by the
+// map-state scan — tempting, since the map-state source is the more
+// durable/authoritative one — would therefore regress the common case,
+// so this combines both rather than picking one (see unionFootprintBBox
+// for the merge arithmetic). ok=false means NEITHER source found anything
+// at z. mayIncludeNaturalCave surfaces verbatim whenever the plugin's own
+// scan flagged it (see handleFortFootprint's doc comment for exactly what
+// that claims) — the session-delta side never sets it, since everything
+// in it is already confirmed real player work. A map-state query failure
+// degrades gracefully to session-delta-only (still correct for anything
+// this connection actually watched happen) rather than failing the whole
+// view — the plugin call is a supplementary signal, not the sole source.
+func fortFootprintBBox(ctx context.Context, b *Bridge, mods *modifications.ModificationOverlay, mapW, mapH uint16, z int16, margin int16) (x0, y0, x1, y1 int16, mayIncludeNaturalCave, ok bool) {
+	sx0, sy0, sx1, sy1, sok := sessionModBBox(mods, mapW, mapH, z)
+	mx0, my0, mx1, my1, cave, mok, mErr := fortFootprintMapState(ctx, b, z)
+	if mErr != nil {
+		mok = false
+	}
+	x0, y0, x1, y1, ok = unionFootprintBBox(sok, sx0, sy0, sx1, sy1, mok, mx0, my0, mx1, my1, mapW, mapH, margin)
+	if mok {
+		mayIncludeNaturalCave = cave
+	}
+	return
 }
 
 // fortFootprintMargin is the padding added around the modified-tile bbox
@@ -208,7 +317,7 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 			if in.Z < 0 || in.Z >= int(d) {
 				return withDash(b, ctx, fmt.Sprintf("z=%d out of range: map has %d levels (valid z is 0..%d)", in.Z, d, int(d)-1)), nil, nil
 			}
-			x0, y0, x1, y1, ok := fortFootprintBBox(mods, w, h, int16(in.Z), fortFootprintMargin)
+			x0, y0, x1, y1, mayIncludeNaturalCave, ok := fortFootprintBBox(ctx, b, mods, w, h, int16(in.Z), fortFootprintMargin)
 			if !ok {
 				return withDash(b, ctx, fmt.Sprintf("no modifications recorded on z=%d — nothing dug/built at this level yet; try scope=overview or a z you've worked", in.Z)), nil, nil
 			}
@@ -217,6 +326,17 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 				return withDash(b, ctx, "fort view failed: "+err.Error()), nil, nil
 			}
 			header := fmt.Sprintf("fort view (modified footprint + %d-tile margin) at z=%d: bbox (%d,%d)-(%d,%d)", fortFootprintMargin, in.Z, x0, y0, x1, y1)
+			if mayIncludeNaturalCave {
+				// Honest disclosure, not a schema caveat: a bounding
+				// rectangle can enclose untouched natural terrain between
+				// separate marked areas (a stairwell and a smoothed room far
+				// apart on the same z), and plain dug-out floor with no
+				// construction/smoothing/stairs is invisible to the
+				// map-state scan by construction — see fortFootprintBBox's
+				// doc comment. Treat this box as an upper bound, not an
+				// exact footprint.
+				header += " — NOTE: this box may include natural cave/terrain you never touched (its edges rest on unmarked stone/soil/vein material); treat it as an upper-bound approximation, not an exact footprint"
+			}
 			return withDash(b, ctx, renderFullOrDownsampled(s, header)), nil, nil
 		default:
 			return withDash(b, ctx, fmt.Sprintf("unknown scope %q — use local, overview, elevation, or fort", in.Scope)), nil, nil

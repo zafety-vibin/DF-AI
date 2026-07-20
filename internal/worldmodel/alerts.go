@@ -36,10 +36,10 @@ func (a Alert) HasPosition() bool {
 //
 // Concurrency: safe for one writer (Populator) and many readers (Snapshot).
 type AlertStore struct {
-	mu        sync.RWMutex
-	capacity  int
-	entries   []Alert            // newest at the end
-	byID      map[uint32]int     // ID → index in entries (for dedup + dismiss)
+	mu       sync.RWMutex
+	capacity int
+	entries  []Alert        // newest at the end
+	byID     map[uint32]int // ID → index in entries (for dedup + dismiss)
 }
 
 // NewAlertStore returns an empty store with the given capacity. Capacity
@@ -120,6 +120,21 @@ func (s *AlertStore) Dismiss(id uint32) bool {
 	}
 	s.entries[idx].Dismissed = true
 	return true
+}
+
+// Reset discards every stored alert. Used when the underlying world
+// identity changes mid-connection (see WorldSnapshot/Populator.
+// OnEntityUpdate): unlike Entities/Zones (wholesale-replaced by every
+// ENTITY_UPDATE regardless), Alerts is a ROLLING accumulator that would
+// otherwise keep serving the PREVIOUS world's cancellations/ambushes
+// forever after a save-swap -- the same stale-residue bug the entity-cache
+// flush closes, applied to the one piece of Observed state that isn't
+// naturally overwritten every message.
+func (s *AlertStore) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries = s.entries[:0]
+	s.byID = make(map[uint32]int, s.capacity)
 }
 
 // DismissAll marks every currently-stored alert as dismissed. Returns the

@@ -81,6 +81,31 @@
       DLL, build+place a real coffin, properly bury döbar (still in the
       checkpoint moat pit).
 
+## OVERSEER DIRECTION (2026-07-19, post-wave-4): SIEGE PREP + QUEEN'S FLOOR
+- Siege doctrine: first sieges = HOLE UP (burrow + civilian alert +
+  bridge up), never surface; they leave in time. Not expected until
+  wealth rises or an artifact mood fires. NEXT WAVE = nobles + military
+  tooling (explicitly reopened by overseer).
+- Stockpile shuffle: SOFTENED (overseer realized the big z=126 all-pile
+  already sits east of the moat, inside the lockdown zone). No grand
+  migration needed — keep growing specialized z=125 piles organically
+  (bars_blocks/food/stone already placed) and let the expansion add
+  capacity.
+- Equal priority: (a) general expansion east+down past the checkpoint
+  (playable area; NOT super deep), (b) QUEEN'S SUITE on her own
+  elevation — z=124 chosen (deepest dry-band level, east side, own
+  noble floor; stub future noble rooms there). Her standards are HIGH
+  (4 rooms >=10k value each): this is the quality experiment —
+  smoothing, engraving (zulban Lvl10), masterwork furniture via gated
+  workshops, possibly gem windows/encrusting (Jewelers + CutGems/
+  EncrustWithGems are wired but unbuilt/untested). Expect tooling gaps
+  (engraving designation? encrust targeting?) — hit naturally.
+- More miners wanted but CAPPED AT 2 PICKS: pick-subtype forging still
+  impossible (MakeWeapon has no subtype param) — top next-wave item
+  alongside nobles/military and cancel/edit-work-order tooling
+  (overseer cleared the stale orders by hand this time).
+- Automation: use RECURRING work orders (wave-4 frequency param) so
+  drink/meals/fuel/blocks run without per-workshop tool calls.
 ## Checkpoint architecture (2026-07-17, NEW — built this session)
 Layout, surface to protected fort: 2x2 spine shaft (45-46,44-45) surface
 z=134 → aquifer-sealed z=131-130 → guard room z=126 (42-48,41-47, first
@@ -348,14 +373,56 @@ the protected/east side → connector → large stockpile hall (64-75,37-50,
   - 2 known non-blocking nits: build enum still lists Coffin/Well/
     Support (bloat holdover); handleDepotGoods missing z validation
     (currently unreachable).
-  - NEXT SESSION FIRST ACTS, in order: launch DF + ai-connect →
-    (1) work_details query + assign atér to the Mining detail VIA TOOL
-    (the whole point), (2) queue_job SmeltOre with pinned limonite →
-    iron bars → ForgeAnvil at the metalsmith (industry quarter is
-    staged, 7 ore + coal + charcoal wait), (3) lens=minerals on the
-    z=125 vein field, (4) re-test order path (figurine w/ material,
-    recurring blocks), (5) bridge state + dead-unit rendering checks.
-- FLAW BANKED (architecture, not tooling): the checkpoint raise-bridge
+  - WAVE 4 LIVE-VERIFIED (same night, 2026-07-19, game days 256-274):
+    work_details read (full 11-detail list incl. the overseer's manual
+    Miners/Woodcutters memberships — first tooling visibility ever);
+    create_work_detail ("Metalworkers" only_selected, CUSTOM_1) +
+    assign_work_detail (doren) — NOTE: creating an only_selected detail
+    does NOT strip cached labors from non-members (méthkat kept
+    smelting; DF recompute semantics, as research flagged); SmeltOre w/
+    pinned INORGANIC:LIMONITE worked FIRST TRY (announcement text now
+    says "limonite ore" — 4 iron bars); set_workshop_profile worker
+    whitelist routed ForgeAnvil to doren → WELLCRAFTED IRON ANVIL
+    day ~270, full ore→charcoal→smelt→forge chain via own tooling; the
+    material-pinned order path made a REAL rock figurine (mandate
+    FULFILLED — the phantom-order theory 100% confirmed: material
+    ambiguity was the whole story); zone_value lookup FIXED (but
+    valuation counted 0 components in a 2-table dining hall —
+    follow-up); lens=minerals verified (named the whole vein field:
+    jet/lignite/blue jade/limonite/indigo tourmaline — north field is
+    limonite-RICH) with one nit (vein letter 'd' collides with dig-
+    designation 'd', should join t/u on the reserved list); bridge
+    "built [lowered]" state live; dwarf_detail burial detection
+    verified on döbar herself ("buried: yes, coffin @(37,40,126)" +
+    death tick). ALL make-mandates fulfilled (coffins, figurine,
+    anvil); only export bans remain (figurine/coffin — never sell).
+    STILL UNTESTED: caravan_status/depot_goods/bring_goods_to_depot
+    (spring caravan), dig footprint-overlap warning (no natural case
+    yet), recurring order frequency param.
+  - NEW SMALL GAPS from live verify: no cancel-order tool AND no
+    order-edit (overseer cleared stale orders by hand; also wants
+    recurring-order tweaking when industry taxes a needed resource);
+    designate_dig's connector hint still points at map corner
+    post-reconnect (suspect: computed against sparse world model before
+    resync fills in — not fixed by wave 4's attempt); zone_value
+    component enumeration; minerals-lens 'd' collision; stocks should
+    render STACK-UNIT totals for food/drink (8 wine stacks = ~80
+    servings — client vs tool discrepancy confused both of us, day
+    289); pick/weapon SUBTYPE forging param (overseer hand-queued 2
+    iron picks); SMOOTH DESTROYS CARVED STAIRCASES with no warning
+    (live incident day 299: queen's-floor 2x2 shaft half-lost to my
+    own smooth rects — smooth needs the same overlap warning
+    designate_dig got, for stairs/carved features); cancel_designation
+    is BLIND to smooth/engrave designations (only clears dig bits —
+    overseer had to cancel the remaining smooth marks in-client);
+    look scope=fort ROOT CAUSE confirmed on the fort tour: the Go
+    footprint derives from session-observed tile deltas, so digs from
+    before the connection (old saves/prior sessions) are invisible —
+    fix = derive footprint from MAP STATE (carved/constructed/smoothed
+    tiletypes via plugin-side scan/floodfill), not the session journal;
+    ALSO world-switch staleness: entity cache served the PREVIOUS
+    world's roster verbatim after a save-swap until a step forced
+    resync — the sentinel should detect world identity change.
   is a LID over its own pit — items lure haulers in whenever open;
   closing entombs them (killed döbar, trapped 2 more). Pit census
   (z=125) + deck census are MANDATORY before every close. Puller must

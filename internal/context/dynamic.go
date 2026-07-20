@@ -16,38 +16,38 @@ import (
 type ContextQueryType string
 
 const (
-	QueryTypeSpatial    ContextQueryType = "spatial"     // Topology, terrain
-	QueryTypeEntities   ContextQueryType = "entities"    // Dwarves, animals, enemies
-	QueryTypeHazards    ContextQueryType = "hazards"     // Water, lava, aquifers
-	QueryTypeHistory    ContextQueryType = "history"     // Past modifications
-	QueryTypeStatistics ContextQueryType = "statistics"  // Fort-level metrics
-	QueryTypePhase      ContextQueryType = "phase"       // Current development phase
-	QueryTypeLayout     ContextQueryType = "layout"      // Rooms and areas
+	QueryTypeSpatial    ContextQueryType = "spatial"    // Topology, terrain
+	QueryTypeEntities   ContextQueryType = "entities"   // Dwarves, animals, enemies
+	QueryTypeHazards    ContextQueryType = "hazards"    // Water, lava, aquifers
+	QueryTypeHistory    ContextQueryType = "history"    // Past modifications
+	QueryTypeStatistics ContextQueryType = "statistics" // Fort-level metrics
+	QueryTypePhase      ContextQueryType = "phase"      // Current development phase
+	QueryTypeLayout     ContextQueryType = "layout"     // Rooms and areas
 )
 
 // ContextQuery specifies what information to include
 type ContextQuery struct {
 	Type        ContextQueryType
 	Focus       *modifications.Coordinate // Optional center point
-	Radius      int16                    // Tile radius around focus
-	ZLevels     []int16                  // Specific Z-levels
-	DetailLevel string                   // "summary", "detailed", "full"
+	Radius      int16                     // Tile radius around focus
+	ZLevels     []int16                   // Specific Z-levels
+	DetailLevel string                    // "summary", "detailed", "full"
 }
 
 // DynamicContext holds flexibly-assembled fort information
 type DynamicContext struct {
 	// Always included
-	Meta      *MetaInfo      `json:"meta"`
-	BaseInfo  *BaseInfo      `json:"base_info"`
+	Meta     *MetaInfo `json:"meta"`
+	BaseInfo *BaseInfo `json:"base_info"`
 
 	// Query-driven sections
-	Spatial    *SpatialInfo    `json:"spatial,omitempty"`
-	Entities   *EntityInfo     `json:"entities,omitempty"`
-	Hazards    *HazardInfo     `json:"hazards,omitempty"`
-	History    *HistoryInfo    `json:"history,omitempty"`
-	Statistics *StatisticsInfo `json:"statistics,omitempty"`
+	Spatial    *SpatialInfo         `json:"spatial,omitempty"`
+	Entities   *EntityInfo          `json:"entities,omitempty"`
+	Hazards    *HazardInfo          `json:"hazards,omitempty"`
+	History    *HistoryInfo         `json:"history,omitempty"`
+	Statistics *StatisticsInfo      `json:"statistics,omitempty"`
 	Phase      *phases.PhaseContext `json:"phase,omitempty"`
-	Layout     *LayoutInfo     `json:"layout,omitempty"`
+	Layout     *LayoutInfo          `json:"layout,omitempty"`
 
 	// Size tracking
 	SizeBytes   uint32 `json:"size_bytes"`
@@ -69,8 +69,8 @@ type BaseInfo struct {
 
 // SpatialInfo contains terrain and topology data
 type SpatialInfo struct {
-	TopologySlice *TopologySliceData `json:"topology_slice,omitempty"`
-	OpenPercent   float64            `json:"open_percent,omitempty"`
+	TopologySlice *TopologySliceData    `json:"topology_slice,omitempty"`
+	OpenPercent   float64               `json:"open_percent,omitempty"`
 	ActiveRegion  *modifications.Region `json:"active_region,omitempty"`
 }
 
@@ -89,9 +89,9 @@ type HazardInfo struct {
 
 // HistoryInfo contains fort development history
 type HistoryInfo struct {
-	Modifications   int                      `json:"total_modifications"`
-	Chambers        []ChamberFeature         `json:"chambers"`
-	RecentActions   []string                 `json:"recent_actions,omitempty"`
+	Modifications int              `json:"total_modifications"`
+	Chambers      []ChamberFeature `json:"chambers"`
+	RecentActions []string         `json:"recent_actions,omitempty"`
 }
 
 // StatisticsInfo contains fort-level stats
@@ -104,20 +104,20 @@ type StatisticsInfo struct {
 
 // LayoutInfo contains room and area information
 type LayoutInfo struct {
-	Rooms       []*spatial.Room `json:"rooms"`
-	Areas       []*spatial.Area `json:"areas,omitempty"`
-	Summary     string          `json:"summary"`
+	Rooms   []*spatial.Room `json:"rooms"`
+	Areas   []*spatial.Area `json:"areas,omitempty"`
+	Summary string          `json:"summary"`
 }
 
 // DynamicContextAssembler builds context from queries
 type DynamicContextAssembler struct {
-	topology     *topology.TopologyOverlay
+	topology      *topology.TopologyOverlay
 	modifications *modifications.ModificationOverlay
-	hazards      *hazards.HazardManager
-	phaseManager *phases.PhaseManager
-	fortLayout   *spatial.FortLayout
+	hazards       *hazards.HazardManager
+	phaseManager  *phases.PhaseManager
+	fortLayout    *spatial.FortLayout
 
-	maxSizeBytes uint32
+	maxSizeBytes  uint32
 	alwaysInclude []string
 }
 
@@ -153,7 +153,7 @@ func (dca *DynamicContextAssembler) AssembleContext(
 			AssembledAt: time.Now(),
 			QueriesUsed: []ContextQueryType{},
 		},
-		BaseInfo: dca.getBaseInfo(entities),
+		BaseInfo:    dca.getBaseInfo(entities),
 		BudgetBytes: dca.maxSizeBytes,
 	}
 
@@ -212,7 +212,7 @@ func (dca *DynamicContextAssembler) getBaseInfo(entities EntityInfoSlice) *BaseI
 	}
 
 	baseInfo := &BaseInfo{
-		DwarfCount: dwarfCount,
+		DwarfCount:     dwarfCount,
 		CriticalAlerts: []string{},
 	}
 

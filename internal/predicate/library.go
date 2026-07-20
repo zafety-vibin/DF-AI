@@ -30,11 +30,11 @@ func (p HasMinDwarves) Check(wm *worldmodel.WorldModel) Result {
 	snap := wm.Snapshot()
 	count := len(snap.Entities.Dwarves)
 	r := Result{
-		Name:      p.Name(),
-		Horizon:   p.H,
-		Satisfied: count >= p.Min,
+		Name:       p.Name(),
+		Horizon:    p.H,
+		Satisfied:  count >= p.Min,
 		Confidence: confidenceFromFreshness(snap.Entities.UpdatedAt),
-		CheckedAt: now,
+		CheckedAt:  now,
 	}
 	r.Evidence = []string{
 		fmt.Sprintf("observed dwarf count: %d", count),
@@ -105,9 +105,11 @@ type HasModifiedAnything struct {
 	H Horizon
 }
 
-func (p HasModifiedAnything) Name() string        { return "has_modified_anything" }
-func (p HasModifiedAnything) Description() string { return "the fort has at least one modified (dug or built) tile" }
-func (p HasModifiedAnything) Horizon() Horizon    { return p.H }
+func (p HasModifiedAnything) Name() string { return "has_modified_anything" }
+func (p HasModifiedAnything) Description() string {
+	return "the fort has at least one modified (dug or built) tile"
+}
+func (p HasModifiedAnything) Horizon() Horizon { return p.H }
 
 func (p HasModifiedAnything) Check(wm *worldmodel.WorldModel) Result {
 	now := time.Now()
@@ -132,9 +134,11 @@ type NoActiveHostiles struct {
 	H Horizon
 }
 
-func (p NoActiveHostiles) Name() string        { return "no_active_hostiles" }
-func (p NoActiveHostiles) Description() string { return "no hostile units are currently inside the map" }
-func (p NoActiveHostiles) Horizon() Horizon    { return p.H }
+func (p NoActiveHostiles) Name() string { return "no_active_hostiles" }
+func (p NoActiveHostiles) Description() string {
+	return "no hostile units are currently inside the map"
+}
+func (p NoActiveHostiles) Horizon() Horizon { return p.H }
 
 func (p NoActiveHostiles) Check(wm *worldmodel.WorldModel) Result {
 	now := time.Now()

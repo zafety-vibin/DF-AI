@@ -88,7 +88,7 @@ type regionView struct {
 	OpenTiles              int             `json:"open_tiles"`
 	ClosedTiles            int             `json:"closed_tiles"`
 	UnknownTiles           int             `json:"unknown_tiles"`
-	OpenPercentage         float64         `json:"open_percentage"` // open / (open + closed); excludes unknown
+	OpenPercentage         float64         `json:"open_percentage"`  // open / (open + closed); excludes unknown
 	KnownPercentage        float64         `json:"known_percentage"` // (open + closed) / total in region
 	HazardCount            int             `json:"hazard_count"`
 	HazardSamples          []hazardSample  `json:"hazard_samples,omitempty"`

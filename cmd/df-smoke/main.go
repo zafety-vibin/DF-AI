@@ -91,7 +91,7 @@ func main() {
 	case "build":
 		res, err = exec.SendBuildCommand(int16(*x1), int16(*y1), int16(*z1), uint8(*buildtyp))
 	case "order":
-		res, err = exec.SendWorkOrderCommand(uint8(*ordertyp), uint16(*qty), "", "", protocol.WorkOrderFrequencyOneTime)
+		res, err = exec.SendWorkOrderCommand(uint8(*ordertyp), uint16(*qty), "", "", "", protocol.WorkOrderFrequencyOneTime)
 	case "query":
 		var raw []byte
 		raw, err = client.SendQuery(ctx, *qname, *qargs, 10*time.Second)
@@ -168,7 +168,7 @@ func runREPL(ctx context.Context, client *dfhack.Client, exec *commands.CommandE
 			}
 			ot, _ := strconv.ParseUint(strings.TrimPrefix(f[1], "0x"), 16, 8)
 			q, _ := strconv.Atoi(f[2])
-			res, err = exec.SendWorkOrderCommand(uint8(ot), uint16(q), "", "", protocol.WorkOrderFrequencyOneTime)
+			res, err = exec.SendWorkOrderCommand(uint8(ot), uint16(q), "", "", "", protocol.WorkOrderFrequencyOneTime)
 		case "query":
 			if len(f) < 2 {
 				fmt.Println("usage: query <name> [argsJSON]")

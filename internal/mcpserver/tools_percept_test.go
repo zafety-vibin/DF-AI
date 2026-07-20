@@ -226,12 +226,12 @@ func TestLook_UnknownLensReturnsRegisteredNames(t *testing.T) {
 // cap without a plugin-side change.
 func TestClampLookRadius(t *testing.T) {
 	cases := []struct{ in, want int }{
-		{0, 12},   // unset -> default
-		{-5, 12},  // negative -> default
-		{1, 1},    // pass-through below the cap
-		{23, 23},  // exactly at the cap
-		{24, 23},  // one over -> clamped
-		{40, 23},  // scout note's example
+		{0, 12},  // unset -> default
+		{-5, 12}, // negative -> default
+		{1, 1},   // pass-through below the cap
+		{23, 23}, // exactly at the cap
+		{24, 23}, // one over -> clamped
+		{40, 23}, // scout note's example
 		{1000, 23},
 	}
 	for _, c := range cases {
@@ -342,7 +342,10 @@ func TestLookScopeFort_NoModificationsAtZ(t *testing.T) {
 // a bogus bbox.
 func TestFortFootprintBBox_EmptyIsNotOK(t *testing.T) {
 	mods := modifications.NewModificationOverlay(modifications.Bounds{Width: 50, Height: 50, Depth: 5})
-	if _, _, _, _, ok := fortFootprintBBox(mods, 50, 50, 3, 8); ok {
+	// b=nil: the map-state query source fails closed (Bridge.Query treats a
+	// nil/disconnected bridge as "not connected"), so this exercises the
+	// session-delta side alone — exactly this test's intent.
+	if _, _, _, _, _, ok := fortFootprintBBox(context.Background(), nil, mods, 50, 50, 3, 8); ok {
 		t.Fatal("expected ok=false with no modifications recorded")
 	}
 }
@@ -363,7 +366,7 @@ func TestFortFootprintBBox_MarginAndClamp(t *testing.T) {
 		modifications.ModificationInfo{Type: modifications.ModificationDug, DetectedAt: time.Now()}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	x0, y0, x1, y1, ok := fortFootprintBBox(mods, 50, 50, 3, 8)
+	x0, y0, x1, y1, _, ok := fortFootprintBBox(context.Background(), nil, mods, 50, 50, 3, 8)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -380,7 +383,7 @@ func TestFortFootprintBBox_ClampsHighSideToMapBounds(t *testing.T) {
 		modifications.ModificationInfo{Type: modifications.ModificationDug, DetectedAt: time.Now()}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	x0, y0, x1, y1, ok := fortFootprintBBox(mods, 20, 20, 1, 8)
+	x0, y0, x1, y1, _, ok := fortFootprintBBox(context.Background(), nil, mods, 20, 20, 1, 8)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -411,7 +414,7 @@ func TestFortFootprintBBox_AmbientChurnDoesNotGrowFootprint(t *testing.T) {
 		{X: 80, Y: 80, Z: 3, TileType: 394, Flags: protocol.FlagDiscovered | protocol.FlagFloor}, // grass churn
 		{X: 81, Y: 80, Z: 3, TileType: 350, Flags: protocol.FlagDiscovered | protocol.FlagFloor}, // pool dries
 	})
-	x0, y0, x1, y1, ok := fortFootprintBBox(mods, 96, 96, 3, 8)
+	x0, y0, x1, y1, _, ok := fortFootprintBBox(context.Background(), nil, mods, 96, 96, 3, 8)
 	if !ok {
 		t.Fatal("expected ok=true — the dug tile must define a footprint")
 	}
@@ -431,19 +434,76 @@ func TestFortFootprintBBox_UnknownTypeEntriesIgnored(t *testing.T) {
 		modifications.ModificationInfo{Type: modifications.ModificationUnknown, DetectedAt: time.Now()}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, _, _, _, ok := fortFootprintBBox(mods, 50, 50, 3, 8); ok {
+	if _, _, _, _, _, ok := fortFootprintBBox(context.Background(), nil, mods, 50, 50, 3, 8); ok {
 		t.Fatal("expected ok=false with only Unknown-type entries recorded")
 	}
 	if err := mods.Add(modifications.Coordinate{X: 10, Y: 10, Z: 3},
 		modifications.ModificationInfo{Type: modifications.ModificationDug, DetectedAt: time.Now()}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	x0, y0, x1, y1, ok := fortFootprintBBox(mods, 50, 50, 3, 8)
+	x0, y0, x1, y1, _, ok := fortFootprintBBox(context.Background(), nil, mods, 50, 50, 3, 8)
 	if !ok {
 		t.Fatal("expected ok=true once a Dug entry exists")
 	}
 	if x0 != 2 || y0 != 2 || x1 != 18 || y1 != 18 {
 		t.Fatalf("bbox = (%d,%d)-(%d,%d), want (2,2)-(18,18) from the Dug entry only", x0, y0, x1, y1)
+	}
+}
+
+// TestUnionFootprintBBox covers the Q4 merge arithmetic directly (no
+// Bridge/plugin connection needed): neither source found, one source
+// found, the other found, and both found with the map-state side widening
+// the box on every edge — the exact scenario a pre-connection renovation
+// (smoothed/constructed before this session) produces.
+func TestUnionFootprintBBox(t *testing.T) {
+	if _, _, _, _, ok := unionFootprintBBox(false, 0, 0, 0, 0, false, 0, 0, 0, 0, 50, 50, 8); ok {
+		t.Fatal("expected ok=false when neither source found anything")
+	}
+
+	// Session-only: identical to the pre-Q4 bbox arithmetic.
+	x0, y0, x1, y1, ok := unionFootprintBBox(true, 2, 2, 10, 10, false, 0, 0, 0, 0, 50, 50, 8)
+	if !ok || x0 != 0 || y0 != 0 || x1 != 18 || y1 != 18 {
+		t.Fatalf("session-only union wrong: (%d,%d)-(%d,%d) ok=%v, want (0,0)-(18,18) ok=true", x0, y0, x1, y1, ok)
+	}
+
+	// Map-state-only: a renovation from before this connection, with no
+	// session-observed deltas at all (e.g. right after a fresh ai-connect).
+	x0, y0, x1, y1, ok = unionFootprintBBox(false, 0, 0, 0, 0, true, 5, 5, 15, 15, 50, 50, 8)
+	if !ok || x0 != 0 || y0 != 0 || x1 != 23 || y1 != 23 {
+		t.Fatalf("map-state-only union wrong: (%d,%d)-(%d,%d) ok=%v, want (0,0)-(23,23) ok=true", x0, y0, x1, y1, ok)
+	}
+
+	// Both found, disjoint: a stairwell this session dug at (2,2)-(10,10)
+	// plus a smoothed room from a PRIOR session at (30,30)-(35,35) — the
+	// union must span both, not pick just one.
+	x0, y0, x1, y1, ok = unionFootprintBBox(true, 2, 2, 10, 10, true, 30, 30, 35, 35, 50, 50, 8)
+	if !ok || x0 != 0 || y0 != 0 || x1 != 43 || y1 != 43 {
+		t.Fatalf("disjoint-union wrong: (%d,%d)-(%d,%d) ok=%v, want (0,0)-(43,43) ok=true", x0, y0, x1, y1, ok)
+	}
+}
+
+// TestParseFortFootprintResponse covers the plugin's fort_footprint JSON
+// shape directly against canned bytes — found, not-found, the
+// may_include_natural_cave disclosure, and an unparseable payload.
+func TestParseFortFootprintResponse(t *testing.T) {
+	x0, y0, x1, y1, cave, found, err := parseFortFootprintResponse([]byte(`{"found":true,"z":3,"x1":10,"y1":12,"x2":20,"y2":22,"may_include_natural_cave":true}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found || x0 != 10 || y0 != 12 || x1 != 20 || y1 != 22 || !cave {
+		t.Fatalf("parsed wrong: x0=%d y0=%d x1=%d y1=%d cave=%v found=%v", x0, y0, x1, y1, cave, found)
+	}
+
+	_, _, _, _, cave, found, err = parseFortFootprintResponse([]byte(`{"found":false,"z":3}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found || cave {
+		t.Fatalf("expected found=false, cave=false for a not-found response, got found=%v cave=%v", found, cave)
+	}
+
+	if _, _, _, _, _, _, err := parseFortFootprintResponse([]byte(`not json`)); err == nil {
+		t.Fatal("expected an error for an unparseable payload")
 	}
 }
 

@@ -24,15 +24,15 @@ import (
 // remains semantically "is open" so existing readers (legacy compression
 // layer) continue to work.
 type TopologyOverlay struct {
-	data           []byte       // Bit-packed: 1 = open (walkable), 0 = not open.
-	known          []byte       // Bit-packed: 1 = state is known, 0 = unknown.
-	mu             sync.RWMutex // Protects data + known during reads/writes.
-	width          uint16       // Map width (X dimension)
-	height         uint16       // Map height (Y dimension)
-	depth          uint16       // Map depth (Z dimension, number of levels)
-	totalTiles     uint32       // Total tile count (width × height × depth)
-	openTileCount  uint32       // Count of tiles in StateOpen.
-	closedTileCount uint32      // Count of tiles in StateClosed.
+	data            []byte       // Bit-packed: 1 = open (walkable), 0 = not open.
+	known           []byte       // Bit-packed: 1 = state is known, 0 = unknown.
+	mu              sync.RWMutex // Protects data + known during reads/writes.
+	width           uint16       // Map width (X dimension)
+	height          uint16       // Map height (Y dimension)
+	depth           uint16       // Map depth (Z dimension, number of levels)
+	totalTiles      uint32       // Total tile count (width × height × depth)
+	openTileCount   uint32       // Count of tiles in StateOpen.
+	closedTileCount uint32       // Count of tiles in StateClosed.
 	// Unknown count is implied: totalTiles - openTileCount - closedTileCount.
 	buildTime   time.Time // When overlay was last built
 	memoryBytes uint64    // Actual memory usage (data + known)

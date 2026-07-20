@@ -58,6 +58,23 @@ static bool isStairShape(df::tiletype_shape shape)
            shape == df::tiletype_shape::STAIR_UPDOWN;
 }
 
+// True for any carved shape that smoothing would silently overwrite: stairs
+// (all three kinds), ramps, and fortifications. Smoothing/engraving replaces
+// a tile's tiletype outright (SmoothWall/SmoothFloor/DetailWall/DetailFloor
+// jobs carve a plain smoothed wall/floor tiletype), so a carved shape caught
+// in a smooth rectangle loses its shape once the job completes -- a live
+// incident cost a 2x2 stair shaft half its vertical connection this way.
+// This does not distinguish natural RAMP/FORTIFICATION (both occur outside
+// player action too, e.g. cavern terrain) from player-carved ones -- the
+// warning is unconditional either way since the destructive outcome for the
+// model is identical regardless of origin.
+static bool isCarvedFeatureShape(df::tiletype_shape shape)
+{
+    return isStairShape(shape) ||
+           shape == df::tiletype_shape::RAMP ||
+           shape == df::tiletype_shape::FORTIFICATION;
+}
+
 // Does the tile directly ABOVE (x, y, zTop) already provide a downward
 // stair connection — carved into the terrain or queued as a dig
 // designation? If so, the top of a new stair range must be UpDownStair,
@@ -668,6 +685,8 @@ bool applySmoothDesignation(const std::vector<uint8_t> &payload, std::string &er
     MapExtras::MapCache cache;
     int designated = 0;
     int blocked = 0;
+    int carvedShapes = 0;  // stairs/ramps/fortifications this designation
+                            // will overwrite -- see isCarvedFeatureShape.
 
     for (int16_t x = x1; x <= x2; x++) {
         for (int16_t y = y1; y <= y2; y++) {
@@ -677,6 +696,10 @@ bool applySmoothDesignation(const std::vector<uint8_t> &payload, std::string &er
             if (des.bits.hidden) {
                 blocked++;
                 continue;
+            }
+
+            if (isCarvedFeatureShape(tileShape(cache.tiletypeAt(pos)))) {
+                carvedShapes++;
             }
 
             // smooth field is 2 bits: 0=none, 1=smooth, 2=engrave.
@@ -700,6 +723,19 @@ bool applySmoothDesignation(const std::vector<uint8_t> &payload, std::string &er
         char buf[128];
         snprintf(buf, sizeof(buf), "%d of %d tiles hidden", blocked, designated + blocked);
         error = buf;
+    }
+
+    // Informational only -- matches checkBuildingFootprintOverlap's style
+    // (never blocks). Smoothing destroys a carved shape's tiletype the
+    // moment the job completes; the model needs to see this before it
+    // reissues, not after a shaft loses its stairs.
+    if (carvedShapes > 0) {
+        char buf[160];
+        snprintf(buf, sizeof(buf),
+                 "note: %d tile(s) in region are carved stairs/ramps/fortifications -- "
+                 "smoothing will overwrite their shape",
+                 carvedShapes);
+        error = error.empty() ? buf : error + "; " + buf;
     }
     return true;
 }
@@ -739,7 +775,12 @@ bool applyCancelDesignation(const std::vector<uint8_t> &payload, std::string &er
     // Initialize MapCache for thread-safe map access
     MapExtras::MapCache cache;
 
-    int cancelled = 0;
+    int cancelledDig = 0;
+    int cancelledSmooth = 0;  // covers both smooth (1) and engrave (2) --
+                               // see applySmoothDesignation's doc comment on
+                               // the bit's meaning. Previously untouched
+                               // here, forcing a human to cancel stray
+                               // smooth/engrave marks in-client by hand.
 
     // Clear designations in region (support multi-level cancellation)
     for (int16_t z = z1; z <= z2; z++) {
@@ -747,12 +788,31 @@ bool applyCancelDesignation(const std::vector<uint8_t> &payload, std::string &er
             for (int16_t y = y1; y <= y2; y++) {
                 df::coord pos(x, y, z);
                 df::tile_designation des = cache.designationAt(pos);
+                bool changed = false;
 
                 // Clear dig designation if present
                 if (des.bits.dig != df::tile_dig_designation::No) {
                     des.bits.dig = df::tile_dig_designation::No;
+                    cancelledDig++;
+                    changed = true;
+                }
+
+                // Clear smooth/engrave designation if present. This is a
+                // transient queue-marker bit (df::tile_designation::smooth,
+                // 0=none/1=smooth/2=engrave) -- clearing it is safe and
+                // symmetric with the dig-bit clear above: on an
+                // already-completed smooth/engrave tile the game has
+                // already reset the bit to 0 (no-op here), and on a
+                // still-pending one this correctly cancels the queued job
+                // before a dwarf claims it.
+                if (des.bits.smooth != 0) {
+                    des.bits.smooth = 0;
+                    cancelledSmooth++;
+                    changed = true;
+                }
+
+                if (changed) {
                     cache.setDesignationAt(pos, des);
-                    cancelled++;
                 }
 
                 // TODO: Clear build designations as well when implemented
@@ -766,9 +826,19 @@ bool applyCancelDesignation(const std::vector<uint8_t> &payload, std::string &er
         return false;
     }
 
-    if (cancelled == 0) {
+    if (cancelledDig == 0 && cancelledSmooth == 0) {
         error = "No designations to cancel in region";
         return false;
+    }
+
+    // Truthful ACK: report both categories when the region held a mix so
+    // the model knows a smooth/engrave mark was cleared alongside (or
+    // instead of) a dig mark, not just a bare tile count.
+    if (cancelledSmooth > 0) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%d dig, %d smooth/engrave designation(s) cancelled",
+                 cancelledDig, cancelledSmooth);
+        error = buf;
     }
 
     return true;

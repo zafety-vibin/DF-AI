@@ -23,7 +23,7 @@ type DigBlueprint struct {
 
 // DigEntry represents a single dig designation
 type DigEntry struct {
-	X       int16  // Relative to blueprint origin
+	X       int16 // Relative to blueprint origin
 	Y       int16
 	Z       int16
 	DigType string // "default", "stairs", "channel", "ramp", "upstair", "downstair"

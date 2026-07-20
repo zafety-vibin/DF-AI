@@ -172,6 +172,50 @@ func TestEntityUpdateMessage_NoDeadUnitsBlockDecodesAllAlive(t *testing.T) {
 	}
 }
 
+// TestEntityUpdateMessage_WorldIdentityRoundTrip mirrors the Zones/DeadUnits
+// round-trip tests above: the WorldIdentity block is the newest additive
+// trailing block (see dfhack-plugin/entities.cpp's serialize_entity_update
+// and this package's deserializeEntityUpdate).
+func TestEntityUpdateMessage_WorldIdentityRoundTrip(t *testing.T) {
+	msg := &EntityUpdateMessage{
+		Count:    0,
+		Entities: nil,
+		World:    &WorldIdentity{SaveDir: "region2", ID1: 123456, ID2: 789012},
+	}
+	var buf bytes.Buffer
+	if err := serializeEntityUpdate(&buf, msg); err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	decoded, err := deserializeEntityUpdate(buf.Bytes())
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+	if decoded.World == nil {
+		t.Fatalf("expected a decoded World identity, got nil")
+	}
+	if *decoded.World != *msg.World {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", *decoded.World, *msg.World)
+	}
+}
+
+// TestEntityUpdateMessage_NoWorldIdentityDecodesNil simulates an old peer's
+// payload (no trailing WorldIdentity block at all) to confirm the
+// backward-compatible default: World stays nil, never an error.
+func TestEntityUpdateMessage_NoWorldIdentityDecodesNil(t *testing.T) {
+	msg := &EntityUpdateMessage{Count: 0, Entities: nil}
+	var buf bytes.Buffer
+	if err := serializeEntityUpdate(&buf, msg); err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	decoded, err := deserializeEntityUpdate(buf.Bytes())
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+	if decoded.World != nil {
+		t.Fatalf("expected nil World when the message never set one, got %+v", decoded.World)
+	}
+}
+
 func TestLocationTypeConstants_MatchThePlanTable(t *testing.T) {
 	cases := map[uint8]uint8{
 		LocationTypeTavern: 0x01, LocationTypeTemple: 0x02,

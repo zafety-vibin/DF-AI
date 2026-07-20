@@ -28,7 +28,7 @@ type Assembler struct {
 	embarkPointSet bool
 
 	// Spatial analysis (room detection)
-	roomAnalyzer *spatial.RoomAnalyzer
+	roomAnalyzer        *spatial.RoomAnalyzer
 	enableRoomDetection bool
 
 	// Blueprint templates (optional)
@@ -38,14 +38,14 @@ type Assembler struct {
 // NewAssembler creates a new context assembler with default budgets
 func NewAssembler() *Assembler {
 	return &Assembler{
-		level0Budget: 500,        // 500 bytes for text overview
-		level1Budget: 10 * 1024,  // 10 KB for active area
-		level2Budget: 50 * 1024,  // 50 KB for deep planning
-		level3Budget: 200 * 1024, // 200 KB for full context
-		zMargin:      3,          // +/- 3 Z-levels
-		hazardLimit:  1000,       // Max 1000 hazard positions
-		roomAnalyzer: spatial.NewRoomAnalyzer(9, 400), // Default: 3x3 min, 20x20 max
-		enableRoomDetection: false, // Disabled by default
+		level0Budget:        500,                             // 500 bytes for text overview
+		level1Budget:        10 * 1024,                       // 10 KB for active area
+		level2Budget:        50 * 1024,                       // 50 KB for deep planning
+		level3Budget:        200 * 1024,                      // 200 KB for full context
+		zMargin:             3,                               // +/- 3 Z-levels
+		hazardLimit:         1000,                            // Max 1000 hazard positions
+		roomAnalyzer:        spatial.NewRoomAnalyzer(9, 400), // Default: 3x3 min, 20x20 max
+		enableRoomDetection: false,                           // Disabled by default
 	}
 }
 

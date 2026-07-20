@@ -21,14 +21,14 @@ type StaircaseAnchor struct {
 
 // BlueprintAnalysis is the output of scanning a blueprint
 type BlueprintAnalysis struct {
-	Filename       string             `json:"filename"`
-	Width          int                `json:"width"`
-	Height         int                `json:"height"`
-	TotalTiles     int                `json:"total_tiles"`
-	DigTiles       int                `json:"dig_tiles"`
-	StairCount     int                `json:"stair_count"`
+	Filename       string            `json:"filename"`
+	Width          int               `json:"width"`
+	Height         int               `json:"height"`
+	TotalTiles     int               `json:"total_tiles"`
+	DigTiles       int               `json:"dig_tiles"`
+	StairCount     int               `json:"stair_count"`
 	StairLocations []StaircaseAnchor `json:"stair_locations"`
-	RoomCount      int                `json:"room_count_estimate"` // Estimated from connected regions
+	RoomCount      int               `json:"room_count_estimate"` // Estimated from connected regions
 }
 
 func main() {

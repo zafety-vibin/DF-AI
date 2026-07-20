@@ -48,14 +48,14 @@ type Call struct {
 // Result is one Handler's response. Mirrors the Call's name + args so the
 // renderer can show what was asked alongside the answer.
 type Result struct {
-	Name        string
-	Args        []string
-	Success     bool
-	Error       string
-	Note        string      // short human-readable summary; surfaces in renderer header
-	Data        any         // structured payload; serialized as JSON in the prompt
-	DurationMs  int64
-	StartedAt   time.Time
+	Name       string
+	Args       []string
+	Success    bool
+	Error      string
+	Note       string // short human-readable summary; surfaces in renderer header
+	Data       any    // structured payload; serialized as JSON in the prompt
+	DurationMs int64
+	StartedAt  time.Time
 }
 
 // Handler is one tool. Implementations are registered with the Registry

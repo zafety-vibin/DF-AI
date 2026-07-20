@@ -34,9 +34,9 @@ const (
 // Task represents a planned action with dependencies
 type Task struct {
 	ID           string
-	Type         string       // "dig", "build", "multi_step"
+	Type         string // "dig", "build", "multi_step"
 	Priority     TaskPriority
-	Dependencies []string     // Task IDs that must complete first
+	Dependencies []string // Task IDs that must complete first
 	Timeout      time.Duration
 	RetryCount   int
 	MaxRetries   int

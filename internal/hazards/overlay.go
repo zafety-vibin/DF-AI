@@ -42,12 +42,12 @@ type Region struct {
 
 // HazardOverlay is a sparse storage overlay for a single hazard type
 type HazardOverlay struct {
-	mu          sync.RWMutex
-	hazards     map[Coordinate]HazardInfo
-	hazardType  string    // For logging (e.g., "aquifer", "water", "lava")
-	totalCount  uint32    // Cached count
-	lastUpdate  time.Time // Last update timestamp
-	mapBounds   Bounds    // Map dimensions for validation
+	mu         sync.RWMutex
+	hazards    map[Coordinate]HazardInfo
+	hazardType string    // For logging (e.g., "aquifer", "water", "lava")
+	totalCount uint32    // Cached count
+	lastUpdate time.Time // Last update timestamp
+	mapBounds  Bounds    // Map dimensions for validation
 }
 
 // NewHazardOverlay creates a new sparse hazard overlay

@@ -9,7 +9,7 @@ import (
 type FortPhase int
 
 const (
-	PhaseEmbark   FortPhase = iota // Days 0-7: Initial survival
+	PhaseEmbark    FortPhase = iota // Days 0-7: Initial survival
 	PhaseEstablish                  // Days 8-30: Basic infrastructure
 	PhaseExpand                     // Days 31-100: Growth and production
 	PhaseFortify                    // Days 100+: Defense and optimization

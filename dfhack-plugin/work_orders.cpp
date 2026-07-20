@@ -24,12 +24,17 @@
 #include "modules/Buildings.h"
 #include "modules/Maps.h"
 #include "modules/Materials.h"
+#include "modules/Items.h"
 
 #include "df/job_type.h"
 #include "df/job.h"
 #include "df/job_item.h"
 #include "df/job_item_vector_id.h"
+#include "df/job_list_link.h"
 #include "df/manager_order.h"
+#include "df/manager_order_condition_item.h"
+#include "df/manager_order_condition_order.h"
+#include "df/job_reqst.h"
 #include "df/job_material_category.h"
 #include "df/workquota_frequency_type.h"
 #include "df/world.h"
@@ -174,6 +179,60 @@ static bool setOrderMaterial(df::manager_order *order, const std::string &materi
     return true;
 }
 
+// resolveItemSubtype pins a job_type's produced-item IDENTITY: the
+// (item_type, item_subtype) pair that tells DF exactly which raws itemdef
+// to forge, rather than leaving the choice ambiguous -- the fix for this
+// project's own "forge a PICK specifically" gap (docs/decisions.md, item-
+// SUBTYPE pinning wave following the 2026-07-19 material-pinning one).
+//
+// item_type is deliberately NOT a caller parameter -- it is derived from
+// jobType itself via ENUM_ATTR(job_type, item, ...), the enum-attr
+// df.job.xml already carries for exactly this purpose (df::item_type::
+// WEAPON for MakeWeapon, ::ARMOR for MakeArmor, ::TOOL for MakeTool, etc. --
+// confirmed against this project's DFHack 53.15-r2 checkout's df.job.xml).
+// A caller therefore names only a BARE raws itemdef `id` token (e.g.
+// "ITEM_WEAPON_PICK", the exact string world->raws.itemdefs.weapons[i]->id
+// carries), never a type-prefixed one.
+//
+// Resolution itself reuses Items.h's own ItemTypeInfo::find("TYPE:TOKEN")
+// (a public, exported DFHack API — "Token should look like ... 'TOOL:
+// ITEM_TOOL_HIVE'" per its own doc comment) instead of re-deriving the
+// per-item_type itemdef-vector switch by hand: this is the exact mechanism
+// DFHack's own `orders` plugin uses for the identical job
+// (plugins/orders.cpp's get_itemdef<T>(const std::string&), itself a
+// linear scan for id==token over T::get_vector()) — ItemTypeInfo::find's
+// own switch (Items.cpp's ITEMDEF_VECTORS macro) already covers every
+// item_type DFHack defines an itemdef vector for, not just the three this
+// pass wires into queue_job's workshop whitelist (MakeWeapon/MakeArmor/
+// MakeTool), so `order`'s fully-generic subtype path (see applyWorkOrder
+// below) automatically works for any OTHER item-typed job_type too, with
+// no new C++ needed when queue_job's whitelist eventually grows to match.
+//
+// Returns false (with a truthful error) if jobType has no associated
+// item_type at all (ENUM_ATTR returns NONE — e.g. ConstructBed, whose BED
+// item_type has no itemdef vector, nothing to pin), or if no itemdef in
+// that vector's `id` matches subtypeToken.
+static bool resolveItemSubtype(df::job_type jobType, const std::string &subtypeToken,
+                                df::item_type &outItemType, int16_t &outSubtype, std::string &error)
+{
+    df::item_type wantedType = ENUM_ATTR(job_type, item, jobType);
+    if (wantedType == df::item_type::NONE) {
+        error = "job type " + ENUM_KEY_STR(job_type, jobType) +
+                " has no associated item type -- subtype pinning does not apply to it";
+        return false;
+    }
+    ItemTypeInfo info;
+    if (!info.find(ENUM_KEY_STR(item_type, wantedType) + ":" + subtypeToken) || info.subtype < 0) {
+        error = "unrecognized subtype '" + subtypeToken + "' for " + ENUM_KEY_STR(job_type, jobType) +
+                " (expected a raws itemdef token like ITEM_WEAPON_PICK -- use the job_types "
+                "query/tool's subtype_of param to look up valid names)";
+        return false;
+    }
+    outItemType = wantedType;
+    outSubtype = info.subtype;
+    return true;
+}
+
 // jobTypeName is the ORDER_TYPE_BY_NAME payload's trailing name
 // (protocol.h) — empty and ignored unless orderType == ORDER_TYPE_BY_NAME,
 // in which case it takes priority over orderType and is resolved via
@@ -195,8 +254,21 @@ static bool setOrderMaterial(df::manager_order *order, const std::string &materi
 // above (job_material_category keyword or exact DFHack material token,
 // "" is a legal no-op); frequencyByte is a WORK_ORDER_FREQUENCY_* constant
 // selecting order->frequency's recurring cadence.
+//
+// subtype is the item-SUBTYPE pinning wave's own addition (docs/
+// decisions.md, following the material-pinning entry above): a raw,
+// unresolved caller token (mirrors material's pass-through convention),
+// resolved via resolveItemSubtype above onto order->item_type/
+// item_subtype. "" is a legal no-op (order->item_type stays NONE,
+// item_subtype stays -1 — "let manager pick", the pre-existing behavior).
+// Unlike queue_job's own subtype path below, this is NOT gated to a
+// hand-maintained job-type whitelist: any job_type ORDER_TYPE_BY_NAME/
+// resolveJobTypeByName resolves that also has a non-NONE ENUM_ATTR(item)
+// can be pinned here, since applyWorkOrder needs no workshop-compatibility
+// table at all (see the doc comment above resolveJobTypeByName).
 bool applyWorkOrder(uint8_t orderType, uint16_t quantity, const std::string &jobTypeName,
-                     const std::string &material, uint8_t frequencyByte, std::string &error)
+                     const std::string &material, uint8_t frequencyByte,
+                     const std::string &subtype, std::string &error)
 {
     // ORDER_TYPE_BREW_DRINK is the one hand-maintained order type with no
     // direct df::job_type mapping at all (protocolToJobType above returns
@@ -296,6 +368,17 @@ bool applyWorkOrder(uint8_t orderType, uint16_t quantity, const std::string &job
     if (!setOrderMaterial(order, material, error)) {
         delete order;
         return false;
+    }
+
+    if (!subtype.empty()) {
+        df::item_type resolvedItemType;
+        int16_t resolvedSubtype;
+        if (!resolveItemSubtype((df::job_type)jobType, subtype, resolvedItemType, resolvedSubtype, error)) {
+            delete order;
+            return false;
+        }
+        order->item_type = resolvedItemType;
+        order->item_subtype = resolvedSubtype;
     }
 
     switch (frequencyByte) {
@@ -508,6 +591,44 @@ static bool jobTypeAllowedAtWorkshop(df::job_type jobType, df::workshop_type wsT
             // every other case here uses) -- see applyQueueJob's special
             // case for it, right before the generic single-filter block.
             return wsType == df::workshop_type::Mechanics;
+        case df::job_type::MakeWeapon:
+        case df::job_type::MakeArmor:
+            // Item-SUBTYPE pinning wave (docs/decisions.md, follows the
+            // 2026-07-19 material-pinning entry): metal-only this pass --
+            // confirmed via stockflow.lua's metal-forging block
+            // (`if material.flags.IS_METAL then`, lines 443-491) which is
+            // the ONE place MakeWeapon (ITEMS_WEAPON/ITEMS_WEAPON_RANGED/
+            // ITEMS_DIGGER resources -- picks are a digger_type weapon) and
+            // MakeArmor (ITEMS_ARMOR resource) both resolve against
+            // MetalsmithsForge. Reuses the exact BAR/metal job_item filter
+            // MakeChain/ForgeAnvil already established just above -- no new
+            // applyQueueJob shape needed, only job->item_type/item_subtype
+            // (set via resolveItemSubtype, required non-empty -- see
+            // applyQueueJob's MakeWeapon/MakeArmor/MakeTool subtype gate).
+            // Wood/bone/rock weapon variants and leather/cloth armor
+            // variants (stockflow.lua's separate wood/bone/rock/soft-
+            // material blocks) are real DF mechanisms too but would need a
+            // THIRD material-class filter this pass doesn't add -- left as
+            // documented future work, same scope-boundary style as
+            // ButcherAnimal/TanHide above.
+            return wsType == df::workshop_type::MetalsmithsForge;
+        case df::job_type::MakeTool:
+            // Unlike MakeWeapon/MakeArmor above, MakeTool is genuinely
+            // metal/wood/rock -- stockflow.lua runs a MakeTool
+            // resource_reactions call in ALL THREE of its metal-forging
+            // (line 498), wooden-items (line 592), and rock-items (line
+            // 632) blocks. All three already share this switch's existing
+            // WOOD/BOULDER/BAR material-class fallthrough (Carpenters/
+            // Masons/MetalsmithsForge), so no new job_item shape is needed
+            // for any of the three, only the same job->item_type/
+            // item_subtype pin MakeWeapon/MakeArmor need. Glass-furnace
+            // tools (stockflow.lua's glasses loop, line 663) are NOT wired
+            // -- GlassFurnace is a furnace_type, and this job_type reaches
+            // only the workshop (`ws`) branch here, same boundary as every
+            // other case in this switch.
+            return wsType == df::workshop_type::MetalsmithsForge
+                || wsType == df::workshop_type::Carpenters
+                || wsType == df::workshop_type::Masons;
         default:
             return false;
     }
@@ -913,8 +1034,16 @@ static df::job_item *newFilterJobItem()
 // job_type: SmeltOre (an exact ore raw, e.g. "INORGANIC:LIMONITE",
 // resolved via MaterialInfo::find -- see this function's dedicated SmeltOre
 // case below). Ignored for every other job_type.
+//
+// subtype is the item-SUBTYPE pinning wave's own addition (docs/
+// decisions.md): a bare raws itemdef token (e.g. "ITEM_WEAPON_PICK"),
+// REQUIRED for exactly MakeWeapon/MakeArmor/MakeTool (a bare job_type name
+// has no way to pick which weapon/armor/tool to make, same "needs a
+// specific raw" reasoning as SmeltOre's material requirement) and resolved
+// via resolveItemSubtype onto job->item_type/item_subtype. Ignored for
+// every other job_type.
 bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std::string &jobTypeName,
-                    const std::string &material, std::string &error)
+                    const std::string &material, const std::string &subtype, std::string &error)
 {
     // ORDER_TYPE_CUSTOM_REACTION bypasses job-type resolution entirely --
     // it's keyed by reaction code, not df::job_type -- and its
@@ -1368,8 +1497,42 @@ bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std
         return true;
     }
 
+    // MakeWeapon/MakeArmor/MakeTool unlock (item-SUBTYPE pinning wave,
+    // docs/decisions.md): unlike every other job_type reaching the generic
+    // single-material-reagent path below, these three have NO usable "any"
+    // queue -- DF's own build menu forces a specific weapon/armor/tool raws
+    // choice the instant the job is queued, the same "a bare job_type name
+    // has no way to pick..." reasoning SmeltOre's material requirement
+    // above already established. subtype resolves via resolveItemSubtype
+    // (ENUM_ATTR(job_type,item,...) supplies the item_type half
+    // automatically -- WEAPON/ARMOR/TOOL respectively -- so the caller
+    // names only the bare raws token, e.g. subtype=ITEM_WEAPON_PICK). Both
+    // pinned values are stamped onto job->item_type/item_subtype right
+    // after job->job_type below; everything else about these three reuses
+    // the exact WOOD/BOULDER/BAR job_item filter every other case here
+    // already gets -- jobTypeAllowedAtWorkshop above already confirmed
+    // MakeWeapon/MakeArmor are MetalsmithsForge-only and MakeTool spans
+    // all three material-class workshops.
+    df::item_type pinnedItemType = df::item_type::NONE;
+    int16_t pinnedItemSubtype = -1;
+    if (jobType == df::job_type::MakeWeapon || jobType == df::job_type::MakeArmor || jobType == df::job_type::MakeTool) {
+        if (subtype.empty()) {
+            error = ENUM_KEY_STR(job_type, jobType) +
+                    " needs subtype=<raws itemdef token>, e.g. subtype=ITEM_WEAPON_PICK "
+                    "(a bare job_type name has no way to pick which item to forge)";
+            return false;
+        }
+        if (!resolveItemSubtype(jobType, subtype, pinnedItemType, pinnedItemSubtype, error)) {
+            return false;
+        }
+    }
+
     df::job *job = new df::job();
     job->job_type = jobType;
+    if (pinnedItemType != df::item_type::NONE) {
+        job->item_type = pinnedItemType;
+        job->item_subtype = pinnedItemSubtype;
+    }
     // flags.bits.repeat defaults to false on a fresh job (df.job.xml has no
     // init-value for it) — a single one-off task, matching this command's
     // "queue one job" model; call again to queue more.
@@ -1420,6 +1583,200 @@ bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std
         Job::removeJob(job);
         error = "failed to attach job to workshop/furnace (queue full or invalid building)";
         return false;
+    }
+
+    return true;
+}
+
+// applyCancelOrder deletes ONE manager_order (orderID) from
+// world->manager_orders.all -- the safe single-order delete sequence this
+// project's own manager-work-order-lifecycle research pass (Q1,
+// docs/decisions.md 2026-07-19) synthesized from two facts:
+//
+//   1. df::manager_order has NO back-pointer to jobs it has spawned -- the
+//      link runs the other way, via df::job::order_id (a plain int32_t
+//      copy of the order's id, not a live pointer, df.job.xml since
+//      v0.43.01). Deleting the order object alone leaves any already-
+//      dispatched job pointed at a dead order_id forever.
+//   2. The ONLY in-tree removal path, DFHack's own orders_clear_command
+//      (plugins/orders.cpp), deletes every order in the SAME pass -- so it
+//      never needs to worry about one surviving order's own
+//      order_conditions referencing the id of an order being deleted next
+//      to it. A single-order delete does need to worry about that.
+//
+// Sequence, matching the research's own recommendation exactly:
+//   (a) cancel every job this order already spawned, via DFHack's own
+//       Job::removeJob (disconnects item refs, then invokes the game's own
+//       job_handler::cancel_job vmethod -- job destructor + free, done by
+//       the engine itself, not reimplemented here). Collected into a
+//       vector first, then removed, since removeJob unlinks the job from
+//       world->jobs.list -- mutating that list while walking it directly
+//       would be unsafe (mirrors this file's own collect-then-act
+//       precedent, e.g. applyQueueReactionJob's jobItems cleanup).
+//   (b) free the order's own item_conditions/order_conditions/items
+//       pointers -- the exact per-order shape orders_clear_command already
+//       uses, just applied to one order instead of every order at once.
+//   (c) delete the order object and erase it from manager_orders.all.
+//   (d) scan every SURVIVING order's own order_conditions for a dependency
+//       reference to the just-deleted id (order_id == orderID) and
+//       delete+erase those condition objects too -- nothing in-tree does
+//       this today, and leaving it would be a real dangling-int-id (a
+//       plain int compare against a manager_order that no longer exists,
+//       not a pointer deref, so not a crash risk -- just a condition that
+//       can now never be satisfied).
+bool applyCancelOrder(int32_t orderID, std::string &error)
+{
+    if (!df::global::world) {
+        error = "world is null";
+        return false;
+    }
+
+    auto &orders = df::global::world->manager_orders.all;
+    size_t targetIdx = orders.size();
+    for (size_t i = 0; i < orders.size(); i++) {
+        if (orders[i] && orders[i]->id == orderID) {
+            targetIdx = i;
+            break;
+        }
+    }
+    if (targetIdx == orders.size()) {
+        error = "no manager order with id " + std::to_string(orderID);
+        return false;
+    }
+    df::manager_order *target = orders[targetIdx];
+
+    // (a) cancel every job this order already spawned.
+    std::vector<df::job*> spawnedJobs;
+    for (df::job_list_link *node = df::global::world->jobs.list.next; node; node = node->next) {
+        df::job *job = node->item;
+        if (job && job->order_id == orderID) {
+            spawnedJobs.push_back(job);
+        }
+    }
+    for (df::job *job : spawnedJobs) {
+        Job::removeJob(job);
+    }
+
+    // (b) free the order's own condition/item pointers.
+    for (auto *condition : target->item_conditions) {
+        delete condition;
+    }
+    for (auto *condition : target->order_conditions) {
+        delete condition;
+    }
+    if (target->items) {
+        for (auto *item : target->items->elements) {
+            delete item;
+        }
+        delete target->items;
+    }
+
+    // (c) delete the order and erase it from the vector.
+    delete target;
+    orders.erase(orders.begin() + targetIdx);
+
+    // (d) scan every surviving order for a now-dangling dependency
+    // reference to the deleted id.
+    int depsCleared = 0;
+    for (df::manager_order *o : orders) {
+        if (!o) continue;
+        for (size_t i = o->order_conditions.size(); i-- > 0; ) {
+            if (o->order_conditions[i] && o->order_conditions[i]->order_id == orderID) {
+                delete o->order_conditions[i];
+                o->order_conditions.erase(o->order_conditions.begin() + i);
+                depsCleared++;
+            }
+        }
+    }
+
+    if (depsCleared > 0) {
+        error = "order " + std::to_string(orderID) + " cancelled (also cleared " +
+                std::to_string(depsCleared) +
+                " dependency reference(s) on it from other orders' order_conditions)";
+    }
+    return true;
+}
+
+// applyEditOrder changes an existing, already-queued manager_order's
+// amount_total/amount_left and/or frequency IN PLACE -- see Q1 research
+// (docs/decisions.md, 2026-07-19 manager-work-order-lifecycle pass) for the
+// confirmed-safe basis. hasAmount/hasFrequency gate each edit
+// independently; the df_ai_protocol.cpp dispatch case requires at least one
+// to be set before calling this.
+//
+// newAmount (when hasAmount) is the NEW desired amount_total (1..100,
+// range-checked by the caller same as WORK_ORDER's own Quantity) -- NOT a
+// delta. Mirrors DFHack's own scripts/workorder.lua mutation exactly:
+// amount_left gets the SAME delta applied (amount_left += new_total -
+// old_total), so progress already made toward the order is preserved
+// rather than reset, then amount_total is overwritten. If that leaves
+// amount_left <= 0, the edit has fully satisfied the order -- deleted via
+// applyCancelOrder's own cleanup sequence (same "delete once amount_left
+// <= 0" completion behavior workorder.lua itself has), and *deleted is set
+// so the caller's ACK can say so explicitly rather than claiming a bare
+// "edited" when the order no longer exists.
+//
+// newFrequency (when hasFrequency) is a WORK_ORDER_FREQUENCY_* byte.
+// Changing frequency also resets finished_year/finished_year_tick
+// (df.workquota.xml's next_check_year/next_check_season_count) to -1,
+// their own struct-default init value -- per the research's own
+// recommendation: no in-tree code ever mutates frequency on an
+// already-active order, so whether DF's manager tolerates a stale
+// checkpoint after an in-place change is UNVERIFIED; resetting costs
+// nothing and matches what a freshly-created order already carries.
+bool applyEditOrder(int32_t orderID, bool hasAmount, uint16_t newAmount,
+                     bool hasFrequency, uint8_t newFrequency,
+                     bool &deleted, std::string &error)
+{
+    deleted = false;
+    if (!df::global::world) {
+        error = "world is null";
+        return false;
+    }
+
+    df::manager_order *target = nullptr;
+    for (auto *o : df::global::world->manager_orders.all) {
+        if (o && o->id == orderID) {
+            target = o;
+            break;
+        }
+    }
+    if (!target) {
+        error = "no manager order with id " + std::to_string(orderID);
+        return false;
+    }
+
+    if (hasAmount) {
+        int32_t diff = (int32_t)newAmount - (int32_t)target->amount_total;
+        target->amount_total = (int16_t)newAmount;
+        target->amount_left = (int16_t)((int32_t)target->amount_left + diff);
+    }
+    if (hasFrequency) {
+        switch (newFrequency) {
+            case WORK_ORDER_FREQUENCY_DAILY:      target->frequency = df::workquota_frequency_type::Daily;      break;
+            case WORK_ORDER_FREQUENCY_MONTHLY:    target->frequency = df::workquota_frequency_type::Monthly;    break;
+            case WORK_ORDER_FREQUENCY_SEASONALLY: target->frequency = df::workquota_frequency_type::Seasonally; break;
+            case WORK_ORDER_FREQUENCY_YEARLY:     target->frequency = df::workquota_frequency_type::Yearly;     break;
+            case WORK_ORDER_FREQUENCY_ONE_TIME:
+            default:                              target->frequency = df::workquota_frequency_type::OneTime;   break;
+        }
+        target->finished_year = -1;
+        target->finished_year_tick = -1;
+    }
+
+    if (hasAmount && target->amount_left <= 0) {
+        std::string cancelError;
+        if (!applyCancelOrder(orderID, cancelError)) {
+            // Extremely unlikely (this function just found the same order
+            // above) -- surface whatever applyCancelOrder says rather than
+            // masking it behind a generic failure.
+            error = cancelError;
+            return false;
+        }
+        deleted = true;
+        error = "order " + std::to_string(orderID) +
+                " edit satisfied its remaining amount -- order completed and removed";
+        return true;
     }
 
     return true;

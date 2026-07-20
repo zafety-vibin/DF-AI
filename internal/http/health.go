@@ -7,12 +7,12 @@ import (
 
 // HealthStatus represents current operational state
 type HealthStatus struct {
-	Status                string     `json:"status"`
-	UptimeSeconds         int64      `json:"uptime_seconds"`
-	DFHackConnected       bool       `json:"dfhack_connected"`
-	DFHackConnectionTime  *time.Time `json:"dfhack_connection_time,omitempty"`
-	LastHeartbeat         *time.Time `json:"last_heartbeat,omitempty"`
-	Timestamp             time.Time  `json:"timestamp"`
+	Status               string     `json:"status"`
+	UptimeSeconds        int64      `json:"uptime_seconds"`
+	DFHackConnected      bool       `json:"dfhack_connected"`
+	DFHackConnectionTime *time.Time `json:"dfhack_connection_time,omitempty"`
+	LastHeartbeat        *time.Time `json:"last_heartbeat,omitempty"`
+	Timestamp            time.Time  `json:"timestamp"`
 }
 
 // healthHandler implements GET /health endpoint

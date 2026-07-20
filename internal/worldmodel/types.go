@@ -57,6 +57,7 @@ type ObservedState struct {
 	Entities EntitySnapshot
 	Zones    ZoneSnapshot
 	Fort     FortSnapshot
+	World    WorldSnapshot
 
 	// Alerts is the rolling buffer of DF announcements (cancellations,
 	// ambushes, migrant arrivals, etc.). Populator.OnAnnouncementUpdate
@@ -93,6 +94,33 @@ type FortSnapshot struct {
 	Year          uint32
 	UpdatedAt     time.Time
 	Valid         bool
+}
+
+// WorldSnapshot is the plugin's most recently reported save identity
+// (protocol.WorldIdentity), plus Switches: a count of how many times a
+// DIFFERENT identity has been observed since this Go process started. A
+// model reading the dashboard sees Switches change between two calls the
+// same way it already watches the "events=" tick counter — the persistent,
+// always-visible signal that a save-swap happened underneath it, so it
+// never mistakes the previous world's entity roster for the current one
+// (the live incident this closes: stale census across a save-swap). Known
+// is false until the plugin ever reports an identity at all (an older peer,
+// or before the first ENTITY_UPDATE arrives).
+type WorldSnapshot struct {
+	SaveDir  string
+	ID1, ID2 uint32
+	Known    bool
+	Switches int
+}
+
+// Changed reports whether other is a genuinely different world identity
+// than w (both must be Known — an unknown snapshot never "changes" into
+// anything, it's simply the absence of data).
+func (w WorldSnapshot) Changed(other WorldSnapshot) bool {
+	if !w.Known || !other.Known {
+		return false
+	}
+	return w.SaveDir != other.SaveDir || w.ID1 != other.ID1 || w.ID2 != other.ID2
 }
 
 // PlanReader is the read side of the plan package. The WorldModel exposes
@@ -214,6 +242,7 @@ type Snapshot struct {
 	Entities    EntitySnapshot
 	Zones       ZoneSnapshot
 	Fort        FortSnapshot
+	World       WorldSnapshot
 	Predictions PredictedSummary
 
 	// ActiveAlerts is the current set of un-dismissed DF announcements,
@@ -263,6 +292,7 @@ func (w *WorldModel) Snapshot() Snapshot {
 		Entities:         w.Observed.Entities,
 		Zones:            w.Observed.Zones,
 		Fort:             w.Observed.Fort,
+		World:            w.Observed.World,
 		Predictions:      w.Predicted.summary(),
 		ActiveAlerts:     alerts,
 		ActiveAlertCount: activeCount,

@@ -241,12 +241,12 @@ type alertEntry struct {
 // is typically a few Z below the top of the map. Dwarves on a fresh
 // embark stand on that surface Z.
 type orientationView struct {
-	MapDims    string `json:"map_dims"`     // "WxHxD"
-	ZTop       int16  `json:"z_top"`         // highest Z index in the map (sky)
-	ZBottom    int16  `json:"z_bottom"`      // lowest Z (typically 0, deepest stone)
-	MinDwarfZ  int16  `json:"min_dwarf_z"`   // lowest Z any dwarf is currently on
-	MaxDwarfZ  int16  `json:"max_dwarf_z"`   // highest Z any dwarf is currently on
-	Note       string `json:"note"`          // plain-English orientation hint
+	MapDims   string `json:"map_dims"`    // "WxHxD"
+	ZTop      int16  `json:"z_top"`       // highest Z index in the map (sky)
+	ZBottom   int16  `json:"z_bottom"`    // lowest Z (typically 0, deepest stone)
+	MinDwarfZ int16  `json:"min_dwarf_z"` // lowest Z any dwarf is currently on
+	MaxDwarfZ int16  `json:"max_dwarf_z"` // highest Z any dwarf is currently on
+	Note      string `json:"note"`        // plain-English orientation hint
 }
 
 // zoneCountsView breaks down zones by type for predicate reasoning.
@@ -273,23 +273,23 @@ type modificationsView struct {
 type topologyView struct {
 	// OpenPercentage is the fraction of KNOWN tiles that are open,
 	// across the whole map. Excludes unknown / unallocated tiles.
-	OpenPercentage float64        `json:"open_percentage"`
-	MemoryKB       uint64         `json:"memory_kb"`
-	OpenTiles      uint32         `json:"open_tiles"`
-	ClosedTiles    uint32         `json:"closed_tiles"`
-	UnknownTiles   uint32         `json:"unknown_tiles"`
-	ByZ            []topoZView    `json:"by_z,omitempty"` // band around the dwarves
+	OpenPercentage float64     `json:"open_percentage"`
+	MemoryKB       uint64      `json:"memory_kb"`
+	OpenTiles      uint32      `json:"open_tiles"`
+	ClosedTiles    uint32      `json:"closed_tiles"`
+	UnknownTiles   uint32      `json:"unknown_tiles"`
+	ByZ            []topoZView `json:"by_z,omitempty"` // band around the dwarves
 }
 
 // topoZView is one Z-level's open/closed/unknown breakdown plus a
 // human-readable note ("your dwarves' Z", "above surface", etc.).
 type topoZView struct {
-	Z            int16   `json:"z"`
-	OpenPct      float64 `json:"open_pct"`
-	Open         uint32  `json:"open"`
-	Closed       uint32  `json:"closed"`
-	Unknown      uint32  `json:"unknown"`
-	Note         string  `json:"note,omitempty"`
+	Z       int16   `json:"z"`
+	OpenPct float64 `json:"open_pct"`
+	Open    uint32  `json:"open"`
+	Closed  uint32  `json:"closed"`
+	Unknown uint32  `json:"unknown"`
+	Note    string  `json:"note,omitempty"`
 }
 
 func buildObservedView(wm *worldmodel.WorldModel, snap worldmodel.Snapshot, opts RenderOptions) observedView {

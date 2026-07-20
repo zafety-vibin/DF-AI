@@ -228,7 +228,7 @@ func (e *Executor) executeUnsuspend(n Node) {
 // workshop fits. Without a manager dwarf and a manager office, DF queues
 // the order without dispatching — predicate logic should warn the LLM.
 func (e *Executor) executeOrder(n Node) {
-	res, err := e.cmdExec.SendWorkOrderCommand(n.Action.OrderType, n.Action.Quantity, "", "", protocol.WorkOrderFrequencyOneTime)
+	res, err := e.cmdExec.SendWorkOrderCommand(n.Action.OrderType, n.Action.Quantity, "", "", "", protocol.WorkOrderFrequencyOneTime)
 	if err != nil {
 		e.markFailed(n.ID, err.Error())
 		return
@@ -311,7 +311,6 @@ func (e *Executor) executeDig(n Node) {
 			logging.Field{Key: "region", Value: fmt.Sprintf("(%d,%d,%d)-(%d,%d,%d)", r.X1, r.Y1, r.Z1, r.X2, r.Y2, r.Z2)})
 	}
 }
-
 
 // writeDigPredictionsForRegion writes one TilePrediction per (x, y, z) in
 // the action's region, expecting each tile to become walkable. Stair-type

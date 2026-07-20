@@ -18,15 +18,15 @@ const (
 
 // QueuedZone represents a single queued zone command with retry metadata
 type QueuedZone struct {
-	ZoneType       uint8           // Type of zone to create (protocol zone type constant)
-	Region         protocol.Region // Target coordinates
-	CommandID      uint32          // Associated dig command ID
-	RetryCount     int             // How many retries attempted (0-3)
-	MaxRetries     int             // Retry limit (default: 3)
-	TimeoutCycles  int             // Cycles remaining before timeout (1-10)
-	Status         QueueStatus     // Current state
-	CreatedAt      time.Time       // When zone was queued
-	LastRetryAt    time.Time       // Last retry attempt timestamp (may be zero)
+	ZoneType      uint8           // Type of zone to create (protocol zone type constant)
+	Region        protocol.Region // Target coordinates
+	CommandID     uint32          // Associated dig command ID
+	RetryCount    int             // How many retries attempted (0-3)
+	MaxRetries    int             // Retry limit (default: 3)
+	TimeoutCycles int             // Cycles remaining before timeout (1-10)
+	Status        QueueStatus     // Current state
+	CreatedAt     time.Time       // When zone was queued
+	LastRetryAt   time.Time       // Last retry attempt timestamp (may be zero)
 }
 
 // ShouldRetry returns true if retry conditions met

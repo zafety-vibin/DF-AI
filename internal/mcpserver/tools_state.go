@@ -97,12 +97,24 @@ func renderBuildings(raw []byte) string {
 // place. The two are tallied separately upstream in queries.cpp
 // handleStockpileInventory so callers can't mistake "fort has 3 beds
 // total" for "3 beds are free to assign."
+//
+// Units/InUseUnits are the additive stack-unit siblings of Count/InUse:
+// Count is the number of df::item STRUCTS (stacks/entries), Units sums
+// each struct's actual stack_size (servings/units) — a stockpile with 8
+// near-empty drink stacks (Count=8, Units~40) reads very differently from
+// 8 full ones (Count=8, Units=200), and Count alone can't distinguish them
+// (a live client-vs-tool discrepancy: "8 wine" undersold roughly 80
+// servings actually on hand). For item types that don't stack (structs
+// where DF's stack_size concept doesn't apply), the plugin reports
+// Units==Count — see queries.cpp's itemStackUnits.
 type stockItem struct {
-	ItemType string `json:"item_type"`
-	Material string `json:"material"`
-	Count    int    `json:"count"`
-	InUse    int    `json:"in_use,omitempty"`
-	Economic bool   `json:"economic,omitempty"`
+	ItemType   string `json:"item_type"`
+	Material   string `json:"material"`
+	Count      int    `json:"count"`
+	InUse      int    `json:"in_use,omitempty"`
+	Units      int    `json:"units,omitempty"`
+	InUseUnits int    `json:"in_use_units,omitempty"`
+	Economic   bool   `json:"economic,omitempty"`
 }
 
 // stockQuality is one (item_type, quality tier) tally from the plugin's
@@ -240,11 +252,32 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 			if it.Economic {
 				econ = " [economic]"
 			}
+			// Stack-unit total: only worth printing when it exceeds the
+			// struct count (a non-stacking item type reports Units==Count,
+			// which would be pure noise here) — see stockItem's doc comment
+			// for why the two numbers can diverge a lot (8 near-empty drink
+			// stacks vs. 8 full ones). ">" rather than "!=" is deliberate: a
+			// real plugin payload always has Units>=Count (every item
+			// contributes at least 1 unit — queries.cpp's itemStackUnits
+			// clamps to that), so Units>Count is both the correct stacking
+			// test AND the backward-compatible one — an older plugin (or a
+			// hand-written test fixture) that omits "units" entirely decodes
+			// it as the zero value, which this comparison silently and
+			// correctly treats as "no unit data" rather than fabricating a
+			// false "0 units" note.
+			countStr := fmt.Sprintf("x%d", it.Count)
+			if it.Units > it.Count {
+				countStr = fmt.Sprintf("x%d (%d units)", it.Count, it.Units)
+			}
 			inUse := ""
 			if it.InUse > 0 {
-				inUse = fmt.Sprintf(" (+%d built-in)", it.InUse)
+				if it.InUseUnits > it.InUse {
+					inUse = fmt.Sprintf(" (+%d built-in = %d units)", it.InUse, it.InUseUnits)
+				} else {
+					inUse = fmt.Sprintf(" (+%d built-in)", it.InUse)
+				}
 			}
-			fmt.Fprintf(&sb, "- %s: %s x%d%s%s\n", it.ItemType, it.Material, it.Count, econ, inUse)
+			fmt.Fprintf(&sb, "- %s: %s %s%s%s\n", it.ItemType, it.Material, countStr, econ, inUse)
 		}
 		// Quality and subtype are each tallied per item_type, not per
 		// material, so both print once per type below the material entries
@@ -265,10 +298,12 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 	}
 
 	type typeAgg struct {
-		total     int
-		inUse     int
-		economic  int
-		materials []stockItem
+		total      int
+		totalUnits int
+		inUse      int
+		inUseUnits int
+		economic   int
+		materials  []stockItem
 	}
 	order := make([]string, 0)
 	byType := make(map[string]*typeAgg)
@@ -280,7 +315,9 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 			order = append(order, it.ItemType)
 		}
 		agg.total += it.Count
+		agg.totalUnits += it.Units
 		agg.inUse += it.InUse
+		agg.inUseUnits += it.InUseUnits
 		if it.Economic {
 			agg.economic += it.Count
 		}
@@ -304,16 +341,31 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 		if agg.economic > 0 {
 			econNote = fmt.Sprintf(" (%d economic)", agg.economic)
 		}
+		// Stack-unit total across the whole type: only worth printing when it
+		// exceeds the struct count (see the detailed view's identical ">"
+		// rationale above) — a type with no stacking members (e.g. BOULDER)
+		// reports totalUnits==total and would just repeat the same number,
+		// and an old-plugin/test payload lacking "units" decodes to 0,
+		// which this comparison correctly treats as "no data" rather than
+		// a fabricated "0 units".
+		unitsNote := ""
+		if agg.totalUnits > agg.total {
+			unitsNote = fmt.Sprintf(" = %d units", agg.totalUnits)
+		}
 		inUseNote := ""
 		if agg.inUse > 0 {
-			inUseNote = fmt.Sprintf(" (+%d built-in)", agg.inUse)
+			if agg.inUseUnits > agg.inUse {
+				inUseNote = fmt.Sprintf(" (+%d built-in = %d units)", agg.inUse, agg.inUseUnits)
+			} else {
+				inUseNote = fmt.Sprintf(" (+%d built-in)", agg.inUse)
+			}
 		}
 		qualityNote := ""
 		if qs, ok := qualityByType[t]; ok {
 			qualityNote = fmt.Sprintf(" [%s]", formatQuality(qs))
 		}
-		fmt.Fprintf(&sb, "- %s: %d total across %d material%s%s%s%s; top: %s\n",
-			t, agg.total, len(agg.materials), plural(len(agg.materials)), econNote, inUseNote, qualityNote, strings.Join(tops, ", "))
+		fmt.Fprintf(&sb, "- %s: %d total%s across %d material%s%s%s%s; top: %s\n",
+			t, agg.total, unitsNote, len(agg.materials), plural(len(agg.materials)), econNote, inUseNote, qualityNote, strings.Join(tops, ", "))
 	}
 	return sb.String()
 }
@@ -912,6 +964,135 @@ func renderNobleDemands(raw []byte) string {
 	return sb.String()
 }
 
+// positionVacancyAssignment is one entity_position_assignment slot from the
+// plugin's position_vacancies query -- vacant (histfig < 0) or filled, plus
+// DF's own possible_appointable/possible_elected cache membership (the
+// authoritative "can appoint_position actually fill this" signal, since
+// e.g. MAYOR carries the ELECTED flag and is periodically re-elected,
+// never player-appointed).
+type positionVacancyAssignment struct {
+	AssignmentID       int    `json:"assignment_id"`
+	Vacant             bool   `json:"vacant"`
+	Appointable        bool   `json:"appointable"`
+	InPossibleElected  bool   `json:"in_possible_elected"`
+	HolderHistFigureID int    `json:"holder_hist_figure_id"`
+	HolderUnitID       int    `json:"holder_unit_id"`
+	HolderName         string `json:"holder_name"`
+}
+
+// positionVacancyPosition is one entity_position DF has defined -- the same
+// per-position fields noble_demands already surfaces (see
+// noblePositionEntry above) plus eligibility flags read from the ENTITY
+// side (no held unit required, unlike noble_demands) and the
+// cross-referenced assignment slot(s) for this position.
+type positionVacancyPosition struct {
+	Code               string                      `json:"code"`
+	Name               string                      `json:"name"`
+	Precedence         int                         `json:"precedence"`
+	SquadSize          int                         `json:"squad_size"`
+	Active             bool                        `json:"active"`
+	Elected            bool                        `json:"elected"`
+	RequiresMarket     bool                        `json:"requires_market"`
+	HasMetMarketReq    bool                        `json:"has_met_market_req"`
+	RequiresPopulation int                         `json:"requires_population"`
+	HasMetPopReq       bool                        `json:"has_met_pop_req"`
+	Responsibilities   []string                    `json:"responsibilities"`
+	RequiredOffice     int                         `json:"required_office"`
+	RequiredBedroom    int                         `json:"required_bedroom"`
+	RequiredDining     int                         `json:"required_dining"`
+	RequiredTomb       int                         `json:"required_tomb"`
+	RequiredBoxes      int                         `json:"required_boxes"`
+	RequiredCabinets   int                         `json:"required_cabinets"`
+	RequiredRacks      int                         `json:"required_racks"`
+	RequiredStands     int                         `json:"required_stands"`
+	Assignments        []positionVacancyAssignment `json:"assignments"`
+}
+
+// positionVacancyEntity is one historical_entity -- the fort's own "group"
+// (df::global::plotinfo->group_id: Manager/Bookkeeper/Broker/Sheriff/
+// Captain of the Guard/militia-squad-leader positions) or the parent
+// civilization's "civ" (plotinfo->civ_id: Monarch/Baron/Count/Duke
+// succession positions) -- from the plugin's position_vacancies query.
+type positionVacancyEntity struct {
+	EntityID  int                       `json:"entity_id"`
+	Role      string                    `json:"role"`
+	Positions []positionVacancyPosition `json:"positions"`
+}
+
+// renderPositionVacancies renders the position_vacancies response --
+// appoint_position's discovery surface: which position codes exist, which
+// slots are vacant, and whether DF's own possible_appointable/
+// possible_elected caches consider a slot directly assignable at all.
+func renderPositionVacancies(raw []byte) string {
+	var resp struct {
+		Entities []positionVacancyEntity `json:"entities"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Sprintf("unparseable position_vacancies response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	if len(resp.Entities) == 0 {
+		return "No entities found (plotinfo civ_id/group_id unresolved)."
+	}
+	var sb strings.Builder
+	for _, e := range resp.Entities {
+		fmt.Fprintf(&sb, "%s entity (id=%d):\n", e.Role, e.EntityID)
+		if len(e.Positions) == 0 {
+			sb.WriteString("  no positions defined\n")
+			continue
+		}
+		for _, p := range e.Positions {
+			var flags []string
+			if p.Elected {
+				flags = append(flags, "ELECTED")
+			}
+			if !p.Active {
+				flags = append(flags, "inactive")
+			}
+			if p.RequiresMarket && !p.HasMetMarketReq {
+				flags = append(flags, "market requirement unmet")
+			}
+			if p.RequiresPopulation > 0 && !p.HasMetPopReq {
+				flags = append(flags, fmt.Sprintf("population requirement unmet (needs %d)", p.RequiresPopulation))
+			}
+			if p.SquadSize > 0 {
+				flags = append(flags, fmt.Sprintf("leads squad of %d", p.SquadSize))
+			}
+			flagStr := ""
+			if len(flags) > 0 {
+				flagStr = " [" + strings.Join(flags, ", ") + "]"
+			}
+			fmt.Fprintf(&sb, "  %s (%s), precedence %d%s\n", p.Code, p.Name, p.Precedence, flagStr)
+			if len(p.Assignments) == 0 {
+				sb.WriteString("    no assignment slot yet (not unlocked)\n")
+				continue
+			}
+			for _, a := range p.Assignments {
+				if a.Vacant {
+					appointStr := "NOT directly appointable"
+					if a.Appointable {
+						appointStr = "appointable"
+					}
+					if a.InPossibleElected {
+						appointStr += ", elected"
+					}
+					fmt.Fprintf(&sb, "    VACANT (assignment#%d) — %s\n", a.AssignmentID, appointStr)
+					continue
+				}
+				who := a.HolderName
+				if who == "" {
+					who = fmt.Sprintf("histfig#%d", a.HolderHistFigureID)
+				}
+				unitNote := " (no unit at this fort)"
+				if a.HolderUnitID >= 0 {
+					unitNote = fmt.Sprintf(" (unit#%d)", a.HolderUnitID)
+				}
+				fmt.Fprintf(&sb, "    held by %s%s\n", who, unitNote)
+			}
+		}
+	}
+	return sb.String()
+}
+
 // fortWealthBreakdown mirrors df::entity_activity_statistics::T_wealth as
 // read by the plugin (queries.cpp handleFortWealth) — DF's own int32
 // wealth-tracking categories, reported verbatim.
@@ -1259,6 +1440,50 @@ func renderJobTypes(raw []byte, filtered bool) string {
 	}
 	if !filtered && !truncated {
 		sb.WriteString("(pass filter next time to narrow this list)\n")
+	}
+	return sb.String()
+}
+
+// jobSubtypeEntry is one raws itemdef entry from the plugin's list_orders
+// query's subtype_of mode — the item-SUBTYPE pinning wave's discovery
+// counterpart to jobTypeEntry above. ID round-trips into queue_job's/
+// order's subtype param verbatim (e.g. "ITEM_WEAPON_PICK"); Name is just
+// for human/model readability.
+type jobSubtypeEntry struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// renderJobSubtypes renders the list_orders response for job_types'
+// subtype_of discovery mode (see the job_types tool registration below) —
+// the catalog half of item-SUBTYPE pinning, work_orders.cpp
+// resolveItemSubtype is the resolution half. jobType is only used for the
+// human-readable header; the plugin's own response already echoes it back
+// as subtype_of.
+func renderJobSubtypes(raw []byte, jobType string) string {
+	var resp struct {
+		ItemType string            `json:"item_type"`
+		Subtypes []jobSubtypeEntry `json:"subtypes"`
+		Error    string            `json:"error"`
+		Note     string            `json:"note"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Sprintf("unparseable list_orders response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	if resp.Error != "" {
+		return fmt.Sprintf("%s: %s", jobType, resp.Error)
+	}
+	if len(resp.Subtypes) == 0 {
+		note := resp.Note
+		if note == "" {
+			note = "no discoverable subtypes"
+		}
+		return fmt.Sprintf("%s (item_type=%s): %s", jobType, resp.ItemType, note)
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s (item_type=%s) — %d subtype tokens for queue_job's/order's subtype param:\n", jobType, resp.ItemType, len(resp.Subtypes))
+	for _, s := range resp.Subtypes {
+		fmt.Fprintf(&sb, "- %s (%s)\n", s.ID, s.Name)
 	}
 	return sb.String()
 }
@@ -1991,6 +2216,17 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "position_vacancies",
+		Description: "Every entity_position DF has defined on the fort's own entity (Manager/Bookkeeper/Broker/Sheriff/Captain of the Guard/militia-squad-leader) and the parent civilization's (Monarch/Baron/Count/Duke), cross-referenced against assignment slots to show which are vacant vs. filled and whether DF's own possible_appointable/possible_elected caches consider each directly assignable (vs. e.g. MAYOR, which is elected and never player-appointed). Discovery surface for appoint_position — check here first for valid position codes and open slots.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+		raw, err := b.Query(ctx, "position_vacancies", "{}")
+		if err != nil {
+			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+		}
+		return withDash(b, ctx, renderPositionVacancies(raw)), nil, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "caravan_status",
 		Description: "Active caravans (civ, trade state, days until forced departure, tribute/casualty/hardship/seized/offended flags, trade-session value/mood so far, whether the liaison is actively meeting), scheduled-but-not-yet-arrived caravan/diplomat events, and trade depot readiness (built, accessible, trader_requested, anyone_can_trade). Executing the actual trade exchange stays a human-in-the-client action — see bring_goods_to_depot for what a model can do at a caravan, and depot_goods for what's currently staged.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
@@ -2048,12 +2284,21 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 	})
 
 	type jobTypesIn struct {
-		Filter string `json:"filter,omitempty" jsonschema:"optional case-insensitive substring filter on the job type name (e.g. 'hatch', 'construct') — narrows the ~240-entry DF job_type enum instead of dumping all of it"`
+		Filter    string `json:"filter,omitempty" jsonschema:"optional case-insensitive substring filter on the job type name (e.g. 'hatch', 'construct') — narrows the ~240-entry DF job_type enum instead of dumping all of it. Ignored when subtype_of is set."`
+		SubtypeOf string `json:"subtype_of,omitempty" jsonschema:"a job type name that supports item-SUBTYPE pinning (e.g. MakeWeapon, MakeArmor, MakeTool) — returns its valid raws itemdef tokens (e.g. ITEM_WEAPON_PICK) for queue_job's/order's subtype param, instead of the name catalog."`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "job_types",
-		Description: "Look up DFHack job_type enum names for queue_job's name-based path — names not in queue_job's short vocabulary (bed/table/.../blocks) can still be queued by passing the exact name found here as queue_job's item, though queue_job still rejects a few workshop-compatible job types outright (meal, crafts) pending a verified material filter — see queue_job's item description. Call this ONLY when you need to discover a name you don't already know; it is a separate tool from order/queue_job/orders precisely so it isn't paid on every call. Pass filter to narrow.",
+		Description: "Look up DFHack job_type enum names for queue_job's name-based path — names not in queue_job's short vocabulary (bed/table/.../blocks) can still be queued by passing the exact name found here as queue_job's item, though queue_job still rejects a few workshop-compatible job types outright (meal, crafts) pending a verified material filter — see queue_job's item description. Also looks up subtype tokens (subtype_of) for job types that need one (e.g. MakeWeapon needs subtype=ITEM_WEAPON_PICK to forge a pick specifically). Call this ONLY when you need to discover a name you don't already know; it is a separate tool from order/queue_job/orders precisely so it isn't paid on every call. Pass filter to narrow.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in jobTypesIn) (*mcp.CallToolResult, any, error) {
+		if in.SubtypeOf != "" {
+			argBytes, _ := json.Marshal(map[string]string{"subtype_of": in.SubtypeOf})
+			raw, err := b.Query(ctx, "list_orders", string(argBytes))
+			if err != nil {
+				return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+			}
+			return withDash(b, ctx, renderJobSubtypes(raw, in.SubtypeOf)), nil, nil
+		}
 		args := "{}"
 		if in.Filter != "" {
 			argBytes, _ := json.Marshal(map[string]string{"filter": in.Filter})

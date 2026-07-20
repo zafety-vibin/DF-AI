@@ -12,10 +12,10 @@ import (
 type PersistentModifications struct {
 	*ModificationOverlay
 
-	savePath     string
+	savePath         string
 	autoSaveInterval time.Duration
-	lastSave     time.Time
-	enabled      bool
+	lastSave         time.Time
+	enabled          bool
 }
 
 // SaveData represents persisted modification state

@@ -49,9 +49,14 @@ bool applySmoothDesignation(const std::vector<uint8_t> &payload, std::string &er
 
 // Forward declarations for functions from work_orders.cpp
 bool applyWorkOrder(uint8_t orderType, uint16_t quantity, const std::string &jobTypeName,
-                     const std::string &material, uint8_t frequencyByte, std::string &error);
+                     const std::string &material, uint8_t frequencyByte,
+                     const std::string &subtype, std::string &error);
 bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std::string &jobTypeName,
-                    const std::string &material, std::string &error);
+                    const std::string &material, const std::string &subtype, std::string &error);
+bool applyCancelOrder(int32_t orderID, std::string &error);
+bool applyEditOrder(int32_t orderID, bool hasAmount, uint16_t newAmount,
+                     bool hasFrequency, uint8_t newFrequency,
+                     bool &deleted, std::string &error);
 
 // Forward declarations for functions from plants.cpp
 bool applyChopDesignation(int16_t x1, int16_t y1, int16_t z1, int16_t x2, int16_t y2, int16_t z2, std::string &error);
@@ -72,6 +77,16 @@ bool applyCreateWorkDetail(const std::string &name, uint8_t mode, const std::vec
 bool applyBringGoodsToDepot(int16_t x, int16_t y, int16_t z,
                             const std::string &itemTypeFilter, const std::string &materialFilter,
                             int32_t maxCount, int64_t maxTotalValue, std::string &error);
+
+// Forward declarations for functions from nobles.cpp
+bool applyAppointPosition(int32_t unitID, const std::string &positionCode, std::string &error);
+bool applySetBookkeeperPrecision(uint8_t precisionByte, std::string &error);
+
+// Forward declarations for functions from military.cpp
+bool applyCreateSquad(const std::string &positionCode, std::string &error);
+bool applyAssignSquad(int32_t squadID, int32_t unitID, bool add, std::string &error);
+bool applySquadOrder(int32_t squadID, uint8_t orderType, int16_t x, int16_t y, int16_t z,
+                      const std::string &burrowName, std::string &error);
 
 // Forward declarations for functions in buildings.cpp
 bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint32_t groupMask, std::string &error, bool &partial);
@@ -811,6 +826,12 @@ void executeCommand(const std::vector<uint8_t> &payload)
             //          and Frequency=WORK_ORDER_FREQUENCY_ONE_TIME --
             //          mirrors internal/protocol/codec.go's EOF-tolerant
             //          decode of the same two fields.
+            //
+            //          Item-SUBTYPE pinning wave: one more trailing field,
+            //          ALWAYS appended by the Go encoder after Frequency --
+            //          [2:SubtypeLen][N:Subtype]. A payload ending before it
+            //          is present decodes as Subtype="" -- same EOF-tolerant
+            //          backward-compat rule as Material/Frequency above.
             if (payload.size() < 8) {
                 sendCommandAck(cmdID, 0x02, "Invalid WORK_ORDER payload");
                 return;
@@ -839,6 +860,7 @@ void executeCommand(const std::vector<uint8_t> &payload)
             }
             std::string material;
             uint8_t frequencyByte = WORK_ORDER_FREQUENCY_ONE_TIME;
+            std::string subtype;
             if (payload.size() >= offset + 2) {
                 uint16_t materialLen = ((uint16_t)payload[offset] << 8) | payload[offset + 1];
                 size_t matStart = offset + 2;
@@ -847,10 +869,18 @@ void executeCommand(const std::vector<uint8_t> &payload)
                     size_t freqOffset = matStart + materialLen;
                     if (payload.size() >= freqOffset + 1) {
                         frequencyByte = payload[freqOffset];
+                        size_t subOffset = freqOffset + 1;
+                        if (payload.size() >= subOffset + 2) {
+                            uint16_t subtypeLen = ((uint16_t)payload[subOffset] << 8) | payload[subOffset + 1];
+                            size_t subStart = subOffset + 2;
+                            if (payload.size() >= subStart + subtypeLen) {
+                                subtype.assign(payload.begin() + subStart, payload.begin() + subStart + subtypeLen);
+                            }
+                        }
                     }
                 }
             }
-            success = applyWorkOrder(orderType, quantity, jobTypeName, material, frequencyByte, error);
+            success = applyWorkOrder(orderType, quantity, jobTypeName, material, frequencyByte, subtype, error);
             break;
         }
         case 0x0B: {  // SMOOTH
@@ -945,6 +975,12 @@ void executeCommand(const std::vector<uint8_t> &payload)
             //          it is present (old pre-this-change encodings)
             //          decodes as Material="" -- mirrors internal/protocol/
             //          codec.go's EOF-tolerant decode of the same field.
+            //
+            //          Item-SUBTYPE pinning wave: one more trailing field,
+            //          ALWAYS appended by the Go encoder after Material --
+            //          [2:SubtypeLen][N:Subtype]. A payload ending before it
+            //          is present decodes as Subtype="" -- same EOF-tolerant
+            //          backward-compat rule as Material above.
             if (payload.size() < 12) {
                 sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid QUEUE_JOB payload");
                 return;
@@ -970,14 +1006,23 @@ void executeCommand(const std::vector<uint8_t> &payload)
                 offset += nameLen;
             }
             std::string material;
+            std::string subtype;
             if (payload.size() >= offset + 2) {
                 uint16_t materialLen = ((uint16_t)payload[offset] << 8) | payload[offset + 1];
                 size_t matStart = offset + 2;
                 if (payload.size() >= matStart + materialLen) {
                     material.assign(payload.begin() + matStart, payload.begin() + matStart + materialLen);
+                    size_t subOffset = matStart + materialLen;
+                    if (payload.size() >= subOffset + 2) {
+                        uint16_t subtypeLen = ((uint16_t)payload[subOffset] << 8) | payload[subOffset + 1];
+                        size_t subStart = subOffset + 2;
+                        if (payload.size() >= subStart + subtypeLen) {
+                            subtype.assign(payload.begin() + subStart, payload.begin() + subStart + subtypeLen);
+                        }
+                    }
                 }
             }
-            success = applyQueueJob(x, y, z, orderType, jobTypeName, material, error);
+            success = applyQueueJob(x, y, z, orderType, jobTypeName, material, subtype, error);
             break;
         }
         case COMMAND_TYPE_SET_LABOR: {
@@ -1323,6 +1368,112 @@ void executeCommand(const std::vector<uint8_t> &payload)
             for (int i = 0; i < 8; i++) maxTotalValueRaw = (maxTotalValueRaw << 8) | payload[offset + i];
             int64_t maxTotalValue = (int64_t)maxTotalValueRaw;
             success = applyBringGoodsToDepot(x, y, z, itemTypeFilter, materialFilter, maxCount, maxTotalValue, error);
+            break;
+        }
+        case COMMAND_TYPE_APPOINT_POSITION: {
+            // Payload: [4:cmdID][1:cmdType][4:UnitID][2:CodeLen][N:Code]
+            if (payload.size() < 11) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid APPOINT_POSITION payload");
+                return;
+            }
+            int32_t unitID = (int32_t)read_uint32_be(payload, 5);
+            uint16_t codeLen = ((uint16_t)payload[9] << 8) | payload[10];
+            if (payload.size() < 11 + (size_t)codeLen) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid APPOINT_POSITION payload size");
+                return;
+            }
+            std::string positionCode(payload.begin() + 11, payload.begin() + 11 + codeLen);
+            success = applyAppointPosition(unitID, positionCode, error);
+            break;
+        }
+        case COMMAND_TYPE_SET_BOOKKEEPER_PRECISION: {
+            // Payload: [4:cmdID][1:cmdType][1:Precision]
+            if (payload.size() < 6) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SET_BOOKKEEPER_PRECISION payload");
+                return;
+            }
+            uint8_t precision = payload[5];
+            success = applySetBookkeeperPrecision(precision, error);
+            break;
+        }
+        case COMMAND_TYPE_CREATE_SQUAD: {
+            // Payload: [4:cmdID][1:cmdType][2:CodeLen][N:Code]
+            if (payload.size() < 7) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid CREATE_SQUAD payload");
+                return;
+            }
+            uint16_t codeLen = ((uint16_t)payload[5] << 8) | payload[6];
+            if (payload.size() < 7 + (size_t)codeLen) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid CREATE_SQUAD payload size");
+                return;
+            }
+            std::string positionCode(payload.begin() + 7, payload.begin() + 7 + codeLen);
+            success = applyCreateSquad(positionCode, error);
+            break;
+        }
+        case COMMAND_TYPE_ASSIGN_SQUAD: {
+            // Payload: [4:cmdID][1:cmdType][4:SquadID][4:UnitID][1:Add]
+            if (payload.size() < 14) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid ASSIGN_SQUAD payload");
+                return;
+            }
+            int32_t squadID = (int32_t)read_uint32_be(payload, 5);
+            int32_t unitID = (int32_t)read_uint32_be(payload, 9);
+            bool add = payload[13] != 0;
+            success = applyAssignSquad(squadID, unitID, add, error);
+            break;
+        }
+        case COMMAND_TYPE_SQUAD_ORDER: {
+            // Payload: [4:cmdID][1:cmdType][4:SquadID][1:Type][2:X][2:Y][2:Z][2:NameLen][N:BurrowName]
+            if (payload.size() < 18) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SQUAD_ORDER payload");
+                return;
+            }
+            int32_t squadID = (int32_t)read_uint32_be(payload, 5);
+            uint8_t orderType = payload[9];
+            int16_t x = ((int16_t)payload[10] << 8) | payload[11];
+            int16_t y = ((int16_t)payload[12] << 8) | payload[13];
+            int16_t z = ((int16_t)payload[14] << 8) | payload[15];
+            uint16_t nameLen = ((uint16_t)payload[16] << 8) | payload[17];
+            if (payload.size() < 18 + (size_t)nameLen) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SQUAD_ORDER payload size");
+                return;
+            }
+            std::string burrowName(payload.begin() + 18, payload.begin() + 18 + nameLen);
+            success = applySquadOrder(squadID, orderType, x, y, z, burrowName, error);
+            break;
+        }
+        case COMMAND_TYPE_CANCEL_ORDER: {
+            // Payload: [4:cmdID][1:cmdType][4:OrderID]
+            if (payload.size() < 9) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid CANCEL_ORDER payload");
+                return;
+            }
+            int32_t orderID = (int32_t)read_uint32_be(payload, 5);
+            success = applyCancelOrder(orderID, error);
+            break;
+        }
+        case COMMAND_TYPE_EDIT_ORDER: {
+            // Payload: [4:cmdID][1:cmdType][4:OrderID][1:HasAmount][2:Amount][1:HasFrequency][1:Frequency]
+            if (payload.size() < 14) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid EDIT_ORDER payload");
+                return;
+            }
+            int32_t orderID = (int32_t)read_uint32_be(payload, 5);
+            bool hasAmount = payload[9] != 0;
+            uint16_t amount = ((uint16_t)payload[10] << 8) | payload[11];
+            bool hasFrequency = payload[12] != 0;
+            uint8_t frequency = payload[13];
+            if (!hasAmount && !hasFrequency) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "EDIT_ORDER requires at least one of amount or frequency to change");
+                return;
+            }
+            if (hasAmount && (amount == 0 || amount > 100)) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "EDIT_ORDER amount out of range (1-100)");
+                return;
+            }
+            bool deleted = false;
+            success = applyEditOrder(orderID, hasAmount, amount, hasFrequency, frequency, deleted, error);
             break;
         }
         default:

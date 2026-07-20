@@ -24,9 +24,9 @@ func (s *Server) aiHistoryHandler(w http.ResponseWriter, r *http.Request) {
 
 	if history == nil {
 		s.writeJSON(w, http.StatusOK, map[string]interface{}{
-			"turns":        []interface{}{},
-			"total_turns":  0,
-			"message":      "No AI decisions yet",
+			"turns":       []interface{}{},
+			"total_turns": 0,
+			"message":     "No AI decisions yet",
 		})
 		return
 	}
@@ -66,7 +66,7 @@ func (s *Server) saveHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status": "success",
+		"status":  "success",
 		"message": "Modifications saved to disk",
 	})
 }

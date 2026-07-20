@@ -12,17 +12,17 @@ import (
 type NodeType string
 
 const (
-	NodeTypeBedroom      NodeType = "bedroom_cluster"
-	NodeTypeMiningShaft  NodeType = "mining_shaft"
-	NodeTypeFarmPlot     NodeType = "farm_plot"
-	NodeTypeWorkshop     NodeType = "workshop_zone"
-	NodeTypeCorridor     NodeType = "corridor_connector"
-	NodeTypeSealEntrance NodeType = "seal_entrance"
-	NodeTypeExploratory  NodeType = "exploratory_tunnel"
-	NodeTypeDefensive    NodeType = "defensive_wall"
-	NodeTypeStairCluster NodeType = "stair_cluster"
-	NodeTypeStockpile    NodeType = "stockpile_zone"
-	NodeTypeGatherZone   NodeType = "gather_zone"
+	NodeTypeBedroom        NodeType = "bedroom_cluster"
+	NodeTypeMiningShaft    NodeType = "mining_shaft"
+	NodeTypeFarmPlot       NodeType = "farm_plot"
+	NodeTypeWorkshop       NodeType = "workshop_zone"
+	NodeTypeCorridor       NodeType = "corridor_connector"
+	NodeTypeSealEntrance   NodeType = "seal_entrance"
+	NodeTypeExploratory    NodeType = "exploratory_tunnel"
+	NodeTypeDefensive      NodeType = "defensive_wall"
+	NodeTypeStairCluster   NodeType = "stair_cluster"
+	NodeTypeStockpile      NodeType = "stockpile_zone"
+	NodeTypeGatherZone     NodeType = "gather_zone"
 	NodeTypeProductionArea NodeType = "production_area"
 )
 
@@ -258,16 +258,16 @@ func (pg *ProposalGraph) ToJSON() (string, error) {
 
 // ArbitrationDecision represents arbiter's final decision
 type ArbitrationDecision struct {
-	ExecutionSequence []ModificationNode         `json:"execution_sequence"`
-	InjectedNodes     []ModificationNode         `json:"injected_nodes"`
-	DeferredNodes     []ModificationNode         `json:"deferred_nodes"`
-	RejectedNodes     []RejectedNode             `json:"rejected_nodes"`
+	ExecutionSequence []ModificationNode              `json:"execution_sequence"`
+	InjectedNodes     []ModificationNode              `json:"injected_nodes"`
+	DeferredNodes     []ModificationNode              `json:"deferred_nodes"`
+	RejectedNodes     []RejectedNode                  `json:"rejected_nodes"`
 	SpatialAllocation map[string]modifications.Region `json:"spatial_allocation"`
-	LaborAllocation   int                        `json:"labor_allocation"`
-	Rationale         string                     `json:"rationale"`
-	Timestamp         time.Time                  `json:"timestamp"`
-	Latency           time.Duration              `json:"latency"`
-	TokensUsed        int                        `json:"tokens_used"`
+	LaborAllocation   int                             `json:"labor_allocation"`
+	Rationale         string                          `json:"rationale"`
+	Timestamp         time.Time                       `json:"timestamp"`
+	Latency           time.Duration                   `json:"latency"`
+	TokensUsed        int                             `json:"tokens_used"`
 }
 
 // RejectedNode represents a rejected proposal with reason

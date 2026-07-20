@@ -11,11 +11,11 @@ import (
 
 // StaircaseAnchor represents a staircase location within a blueprint (relative coordinates)
 type StaircaseAnchor struct {
-	RelativeX    int    `json:"x"`          // X offset from blueprint origin
-	RelativeY    int    `json:"y"`          // Y offset from blueprint origin
-	RelativeZ    int    `json:"z"`          // Z offset (0 for single-level blueprints)
-	StairType    string `json:"type"`       // "up", "down", "updown"
-	IsEntryPoint bool   `json:"entry"`      // True if this is the main entry staircase
+	RelativeX    int    `json:"x"`     // X offset from blueprint origin
+	RelativeY    int    `json:"y"`     // Y offset from blueprint origin
+	RelativeZ    int    `json:"z"`     // Z offset (0 for single-level blueprints)
+	StairType    string `json:"type"`  // "up", "down", "updown"
+	IsEntryPoint bool   `json:"entry"` // True if this is the main entry staircase
 }
 
 // BlueprintMetadata represents metadata about blueprints for arbiter context
@@ -32,8 +32,8 @@ type BlueprintMetadata struct {
 	SuitabilityCriteria map[string]interface{} // Min space, constraints
 
 	// Staircase tracking for connectivity (CRITICAL)
-	StairCount     int                `json:"stair_count"`      // Total stairs in blueprint
-	StairLocations []StaircaseAnchor `json:"stair_locations"`  // Relative coordinates of stairs
+	StairCount     int               `json:"stair_count"`     // Total stairs in blueprint
+	StairLocations []StaircaseAnchor `json:"stair_locations"` // Relative coordinates of stairs
 }
 
 // ToPromptString formats metadata for arbiter system prompt (includes stair info)

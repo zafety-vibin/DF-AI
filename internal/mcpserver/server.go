@@ -29,5 +29,6 @@ func New(bridge *Bridge) *mcp.Server {
 	registerLocationTools(srv, bridge)
 	registerFarmTools(srv, bridge)
 	registerDefenseTools(srv, bridge)
+	registerMilitaryTools(srv, bridge)
 	return srv
 }

@@ -48,58 +48,58 @@ type Config struct {
 	LLMAPIKey   string `yaml:"llm_api_key"`  // API key if required
 
 	// LLM Request tuning
-	LLMTemperature   float64       `yaml:"llm_temperature"`    // Randomness (0.0-1.0)
-	LLMMaxTokens     int           `yaml:"llm_max_tokens"`     // Max response length
+	LLMTemperature    float64       `yaml:"llm_temperature"`     // Randomness (0.0-1.0)
+	LLMMaxTokens      int           `yaml:"llm_max_tokens"`      // Max response length
 	LLMTimeoutSeconds time.Duration `yaml:"llm_timeout_seconds"` // Request timeout
 
 	// Context assembly settings
-	ContextBudgetKB              int `yaml:"context_budget_kb"`               // Max context size in KB
+	ContextBudgetKB               int `yaml:"context_budget_kb"`                // Max context size in KB
 	ContextUpdateFrequencySeconds int `yaml:"context_update_frequency_seconds"` // Update frequency
 
 	// Viewport settings
-	ViewportActiveZMargin     uint16 `yaml:"viewport_active_z_margin"`      // Z-levels above/below active
-	ViewportHazardMarginTiles uint16 `yaml:"viewport_hazard_margin_tiles"`  // Tile margin around hazards
+	ViewportActiveZMargin     uint16 `yaml:"viewport_active_z_margin"`     // Z-levels above/below active
+	ViewportHazardMarginTiles uint16 `yaml:"viewport_hazard_margin_tiles"` // Tile margin around hazards
 
 	// Fort phase configuration
-	PhaseEmbarkDays    int `yaml:"phase_embark_days"`     // Days in embark phase
-	PhaseEstablishDays int `yaml:"phase_establish_days"`  // Days in establish phase
-	PhaseExpandDays    int `yaml:"phase_expand_days"`     // Days before fortify phase
-	EnablePhaseSystem  bool `yaml:"enable_phase_system"`   // Enable phase-based strategies
+	PhaseEmbarkDays    int  `yaml:"phase_embark_days"`    // Days in embark phase
+	PhaseEstablishDays int  `yaml:"phase_establish_days"` // Days in establish phase
+	PhaseExpandDays    int  `yaml:"phase_expand_days"`    // Days before fortify phase
+	EnablePhaseSystem  bool `yaml:"enable_phase_system"`  // Enable phase-based strategies
 
 	// Task queue settings
-	EnableTaskQueue       bool `yaml:"enable_task_queue"`        // Enable multi-step planning
-	MaxQueuedTasks        int  `yaml:"max_queued_tasks"`         // Max tasks in queue
-	TaskTimeoutSeconds    int  `yaml:"task_timeout_seconds"`     // Task execution timeout
+	EnableTaskQueue        bool `yaml:"enable_task_queue"`        // Enable multi-step planning
+	MaxQueuedTasks         int  `yaml:"max_queued_tasks"`         // Max tasks in queue
+	TaskTimeoutSeconds     int  `yaml:"task_timeout_seconds"`     // Task execution timeout
 	EnableTaskDependencies bool `yaml:"enable_task_dependencies"` // Allow dependent tasks
 
 	// Persistence settings
-	EnablePersistence    bool   `yaml:"enable_persistence"`      // Save modifications to disk
-	PersistencePath      string `yaml:"persistence_path"`        // Where to save state
-	AutoSaveIntervalSec  int    `yaml:"autosave_interval_sec"`   // Auto-save frequency
-	LoadOnStartup        bool   `yaml:"load_on_startup"`         // Load saved state on boot
+	EnablePersistence   bool   `yaml:"enable_persistence"`    // Save modifications to disk
+	PersistencePath     string `yaml:"persistence_path"`      // Where to save state
+	AutoSaveIntervalSec int    `yaml:"autosave_interval_sec"` // Auto-save frequency
+	LoadOnStartup       bool   `yaml:"load_on_startup"`       // Load saved state on boot
 
 	// Spatial reasoning settings
-	EnableRoomDetection   bool `yaml:"enable_room_detection"`    // Detect room types
-	EnableAreaClustering  bool `yaml:"enable_area_clustering"`   // Cluster rooms into areas
-	RoomMinSize           int  `yaml:"room_min_size"`            // Minimum tiles for room
-	RoomMaxSize           int  `yaml:"room_max_size"`            // Maximum tiles for room
+	EnableRoomDetection  bool `yaml:"enable_room_detection"`  // Detect room types
+	EnableAreaClustering bool `yaml:"enable_area_clustering"` // Cluster rooms into areas
+	RoomMinSize          int  `yaml:"room_min_size"`          // Minimum tiles for room
+	RoomMaxSize          int  `yaml:"room_max_size"`          // Maximum tiles for room
 
 	// Dynamic context settings
-	EnableDynamicContext  bool `yaml:"enable_dynamic_context"`   // Use query-based context
-	ContextAlwaysInclude  []string `yaml:"context_always_include"` // Always send these fields
-	ContextMaxSizeBytes   int  `yaml:"context_max_size_bytes"`   // Hard limit on context
+	EnableDynamicContext bool     `yaml:"enable_dynamic_context"` // Use query-based context
+	ContextAlwaysInclude []string `yaml:"context_always_include"` // Always send these fields
+	ContextMaxSizeBytes  int      `yaml:"context_max_size_bytes"` // Hard limit on context
 
 	// Goal Agent System (Feature 006)
-	EnableGoalAgents bool                `yaml:"enable_goal_agents"` // Enable graph-based agents (true) or direct-LLM mode (false)
+	EnableGoalAgents bool `yaml:"enable_goal_agents"` // Enable graph-based agents (true) or direct-LLM mode (false)
 
 	// HRM Architecture (Feature 007 Refactor)
-	UseIntentPlanning bool                `yaml:"use_intent_planning"` // Enable intent-based planning (HRM-style) vs coordinate-based
+	UseIntentPlanning bool `yaml:"use_intent_planning"` // Enable intent-based planning (HRM-style) vs coordinate-based
 
-	AgentFood        AgentConfig         `yaml:"agent_food"`
-	AgentHousing     AgentConfig         `yaml:"agent_housing"`
-	AgentMining      AgentConfig         `yaml:"agent_mining"`
-	AgentWealth      AgentConfig         `yaml:"agent_wealth"`
-	AgentDefense     DefenseAgentConfig  `yaml:"agent_defense"`
+	AgentFood    AgentConfig        `yaml:"agent_food"`
+	AgentHousing AgentConfig        `yaml:"agent_housing"`
+	AgentMining  AgentConfig        `yaml:"agent_mining"`
+	AgentWealth  AgentConfig        `yaml:"agent_wealth"`
+	AgentDefense DefenseAgentConfig `yaml:"agent_defense"`
 
 	// Local LLM Configuration
 	LocalLLMEndpoint string `yaml:"local_llm_endpoint"` // LM Studio endpoint (http://localhost:1234/v1)
@@ -107,11 +107,11 @@ type Config struct {
 	LLMTimeoutMS     int    `yaml:"llm_timeout_ms"`     // Request timeout in milliseconds
 
 	// Feature 007: SVP Configuration
-	UseSVP             bool   `yaml:"use_svp"`              // Enable Spatial Validator Planner
-	SVPPersistenceDir  string `yaml:"svp_persistence_dir"`  // Directory for SVP layout files (saves/)
+	UseSVP            bool   `yaml:"use_svp"`             // Enable Spatial Validator Planner
+	SVPPersistenceDir string `yaml:"svp_persistence_dir"` // Directory for SVP layout files (saves/)
 
 	// Feature 007: Zone Extraction Configuration
-	ExtractZones             bool `yaml:"extract_zones"`              // Enable zone extraction from DF
+	ExtractZones             bool `yaml:"extract_zones"`               // Enable zone extraction from DF
 	ZoneExtractionIntervalMS int  `yaml:"zone_extraction_interval_ms"` // Zone extraction frequency (milliseconds)
 
 	// Feature 007: Blueprint Configuration
@@ -119,8 +119,8 @@ type Config struct {
 	IncludeBlueprintMetadata bool   `yaml:"include_blueprint_metadata"` // Add blueprint metadata to arbiter prompt
 
 	// Feature 007: Zone Queue Configuration
-	ZoneQueueMaxSize      int `yaml:"zone_queue_max_size"`      // Maximum queued zones
-	ZoneQueueMaxRetries   int `yaml:"zone_queue_max_retries"`   // Max retry attempts per zone
+	ZoneQueueMaxSize       int `yaml:"zone_queue_max_size"`       // Maximum queued zones
+	ZoneQueueMaxRetries    int `yaml:"zone_queue_max_retries"`    // Max retry attempts per zone
 	ZoneQueueTimeoutCycles int `yaml:"zone_queue_timeout_cycles"` // Cycles before zone timeout
 }
 
@@ -133,9 +133,9 @@ type AgentConfig struct {
 
 // DefenseAgentConfig holds configuration for defense agent with variable priority
 type DefenseAgentConfig struct {
-	Enabled       bool `yaml:"enabled"`
-	PriorityBase  int  `yaml:"priority_base"`   // Priority when no threats
-	PriorityThreat int `yaml:"priority_threat"` // Priority when enemies detected
+	Enabled        bool `yaml:"enabled"`
+	PriorityBase   int  `yaml:"priority_base"`   // Priority when no threats
+	PriorityThreat int  `yaml:"priority_threat"` // Priority when enemies detected
 }
 
 // Load reads and parses the configuration file. Environment variable
@@ -352,7 +352,7 @@ func (c *Config) setDefaults() {
 		// Defense agent defaults
 		if c.AgentDefense.PriorityBase == 0 && c.AgentDefense.PriorityThreat == 0 {
 			c.AgentDefense.Enabled = true
-			c.AgentDefense.PriorityBase = 0   // Low when no threats
+			c.AgentDefense.PriorityBase = 0    // Low when no threats
 			c.AgentDefense.PriorityThreat = 10 // Max when threats detected
 		}
 	}

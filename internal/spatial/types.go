@@ -36,9 +36,9 @@ func (rt RoomType) String() string {
 
 // Room represents a functional space in the fort
 type Room struct {
-	ID        string                  // Unique identifier
-	Type      RoomType                // Functional purpose
-	Bounds    modifications.Region    // 3D bounding box
+	ID        string                     // Unique identifier
+	Type      RoomType                   // Functional purpose
+	Bounds    modifications.Region       // 3D bounding box
 	Tiles     []modifications.Coordinate // All tiles in room
 	Entrances []modifications.Coordinate // Entrance points
 
@@ -99,7 +99,7 @@ type FortLayout struct {
 	Areas map[string]*Area // Area ID → Area
 
 	// Indexing for fast queries
-	roomsByType  map[RoomType][]*Room
+	roomsByType   map[RoomType][]*Room
 	roomsByZLevel map[int16][]*Room
 }
 

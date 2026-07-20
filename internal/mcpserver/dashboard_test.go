@@ -70,6 +70,27 @@ func TestDataAgeStamp(t *testing.T) {
 	}
 }
 
+// TestRenderDashboardWorldIdentity covers Q5's dashboard disclosure: unknown
+// identity (no ENTITY_UPDATE with World data has arrived yet) renders
+// plainly, and a known identity always names the save dir plus the
+// persistent switches= tripwire so a save-swap is visible on every
+// subsequent call, not just the one right after it happened.
+func TestRenderDashboardWorldIdentity(t *testing.T) {
+	var unknown worldmodel.Snapshot
+	if out := renderDashboard(unknown, true, ""); !strings.Contains(out, "world=unknown") {
+		t.Fatalf("expected world=unknown before any identity is reported, got %q", out)
+	}
+
+	known := worldmodel.Snapshot{World: worldmodel.WorldSnapshot{Known: true, SaveDir: "region2", Switches: 1}}
+	out := renderDashboard(known, true, "")
+	if !strings.Contains(out, "world=region2") {
+		t.Fatalf("expected the current save dir named in the dashboard, got %q", out)
+	}
+	if !strings.Contains(out, "switches=1") {
+		t.Fatalf("expected the persistent switch counter in the dashboard, got %q", out)
+	}
+}
+
 func TestRenderDashboardStaleData(t *testing.T) {
 	now := time.Now()
 	snap := worldmodel.Snapshot{Tick: 7, TakenAt: now, LastUpdate: now.Add(-142 * time.Second)}

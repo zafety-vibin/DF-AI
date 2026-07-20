@@ -10,7 +10,7 @@ import (
 // BenchmarkTileAccess tests tile coordinate lookup speed
 func BenchmarkTileAccess(b *testing.B) {
 	testCases := []struct {
-		name                string
+		name                 string
 		width, height, depth uint16
 	}{
 		{"Small_48x48x20", 48, 48, 20},

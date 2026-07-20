@@ -10,7 +10,7 @@ Each turn you receive a world-model snapshot. You decide WHAT to do; the
 executor handles dispatch and the reconciler verifies outcomes. You can
 operate in TWO modes per response:
 
-  RESEARCH mode — emit one or more `+"`request <tool>(<args>)`"+` calls.
+  RESEARCH mode — emit one or more ` + "`request <tool>(<args>)`" + ` calls.
                   The system runs the queries and returns results in the
                   next pass. Use this when you need detail the snapshot
                   doesn't include (specific dwarf, future region, plan
@@ -97,7 +97,7 @@ almost always tell you why directly:
 Your options when you see an alert:
 
   - ACT — address the cause (order materials, redesignate, evacuate).
-    Then `+"`dismiss alert <id>`"+` to clear it from future snapshots.
+    Then ` + "`dismiss alert <id>`" + ` to clear it from future snapshots.
   - WAIT — if the alert is transient and you've already addressed it,
     leave it; it will stop appearing once DF regenerates state.
   - DISMISS WITHOUT ACTING — only for purely informational alerts you've

@@ -27,7 +27,7 @@ type CommandSpec struct {
 type RegionSpec struct {
 	X1 uint16 `json:"x1"`
 	Y1 uint16 `json:"y1"`
-	Z  uint16 `json:"z"`  // Start Z
+	Z  uint16 `json:"z"` // Start Z
 	X2 uint16 `json:"x2"`
 	Y2 uint16 `json:"y2"`
 	Z2 uint16 `json:"z2"` // End Z (for vertical shafts)
@@ -97,10 +97,10 @@ func parseJSON(text string) (*ParsedResponse, error) {
 // parseNaturalLanguage uses regex to extract commands from natural language.
 // It matches three syntaxes:
 //
-//   dig [type] from (x1, y1, z1) to (x2, y2, z2)         -- ranged digs
-//   chop / gather from (x1, y1, z1) to (x2, y2, z2)      -- ranged designations
-//   build <type-name> at (x, y, z)                       -- single-tile builds
-//   wait                                                  -- no-op
+//	dig [type] from (x1, y1, z1) to (x2, y2, z2)         -- ranged digs
+//	chop / gather from (x1, y1, z1) to (x2, y2, z2)      -- ranged designations
+//	build <type-name> at (x, y, z)                       -- single-tile builds
+//	wait                                                  -- no-op
 func parseNaturalLanguage(text string) *ParsedResponse {
 	result := &ParsedResponse{
 		Reasoning: extractReasoning(text),
@@ -391,27 +391,27 @@ func lookupBuildType(name string) (uint8, bool) {
 
 // zoneTypeNames maps zone names to protocol ZoneType bytes.
 var zoneTypeNames = map[string]uint8{
-	"bedroom":     0x01,
-	"dining":      0x02,
-	"dining_hall": 0x02,
-	"meeting":     0x03,
-	"meeting_hall":0x03,
-	"barracks":    0x04,
-	"dormitory":   0x05,
-	"farm":        0x10,
-	"pen":         0x11,
-	"pasture":     0x11,
-	"garbage":     0x12,
-	"garbage_dump":0x12,
-	"pit":         0x13,
-	"pond":        0x13,
-	"water":       0x14,
-	"water_source":0x14,
-	"fishing":     0x15,
-	"hospital":    0x16,
-	"animal":      0x17,
-	"animal_train":0x17,
-	"tomb":        0x18,
+	"bedroom":      0x01,
+	"dining":       0x02,
+	"dining_hall":  0x02,
+	"meeting":      0x03,
+	"meeting_hall": 0x03,
+	"barracks":     0x04,
+	"dormitory":    0x05,
+	"farm":         0x10,
+	"pen":          0x11,
+	"pasture":      0x11,
+	"garbage":      0x12,
+	"garbage_dump": 0x12,
+	"pit":          0x13,
+	"pond":         0x13,
+	"water":        0x14,
+	"water_source": 0x14,
+	"fishing":      0x15,
+	"hospital":     0x16,
+	"animal":       0x17,
+	"animal_train": 0x17,
+	"tomb":         0x18,
 }
 
 func lookupZoneType(name string) (uint8, bool) {
@@ -447,30 +447,30 @@ func lookupOrderType(name string) (uint8, bool) {
 // stockpileGroupMasks maps human-readable category names to GroupMask
 // bitfields. Empty / "all" / "everything" = accept every category.
 var stockpileGroupMasks = map[string]uint32{
-	"":             0x1FFFF, // unspecified → all
-	"all":          0x1FFFF,
-	"everything":   0x1FFFF,
-	"animals":      1 << 0,
-	"food":         1 << 1,
-	"furniture":    1 << 2,
-	"corpses":      1 << 3,
-	"refuse":       1 << 4,
-	"stone":        1 << 5,
-	"ammo":         1 << 6,
-	"coins":        1 << 7,
-	"bars":         1 << 8,
-	"blocks":       1 << 8,
-	"bars_blocks":  1 << 8,
-	"gems":         1 << 9,
-	"goods":        1 << 10,
-	"finished":     1 << 10,
+	"":               0x1FFFF, // unspecified → all
+	"all":            0x1FFFF,
+	"everything":     0x1FFFF,
+	"animals":        1 << 0,
+	"food":           1 << 1,
+	"furniture":      1 << 2,
+	"corpses":        1 << 3,
+	"refuse":         1 << 4,
+	"stone":          1 << 5,
+	"ammo":           1 << 6,
+	"coins":          1 << 7,
+	"bars":           1 << 8,
+	"blocks":         1 << 8,
+	"bars_blocks":    1 << 8,
+	"gems":           1 << 9,
+	"goods":          1 << 10,
+	"finished":       1 << 10,
 	"finished_goods": 1 << 10,
-	"leather":      1 << 11,
-	"cloth":        1 << 12,
-	"wood":         1 << 13,
-	"weapons":      1 << 14,
-	"armor":        1 << 15,
-	"sheet":        1 << 16,
+	"leather":        1 << 11,
+	"cloth":          1 << 12,
+	"wood":           1 << 13,
+	"weapons":        1 << 14,
+	"armor":          1 << 15,
+	"sheet":          1 << 16,
 }
 
 func lookupStockpileGroup(name string) (uint32, bool) {

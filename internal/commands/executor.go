@@ -361,14 +361,18 @@ func (e *CommandExecutor) SendRemoveZone(x, y, z int16) (*CommandResult, error) 
 // silk, plant, cloth, yarn) or an exact DFHack material token (e.g.
 // "INORGANIC", "INORGANIC:LIMONITE") — needed for job types with real
 // material ambiguity (e.g. MakeFigurine, whose material choice also picks
-// the workshop); pass "" for job types with none. frequency is a
-// protocol.WorkOrderFrequency* constant selecting a recurring cadence
-// instead of the default one-time order.
-func (e *CommandExecutor) SendWorkOrderCommand(orderType uint8, quantity uint16, jobTypeName, material string, frequency uint8) (*CommandResult, error) {
+// the workshop); pass "" for job types with none. subtype is a bare raws
+// itemdef token (e.g. "ITEM_WEAPON_PICK") pinning which specific item the
+// manager should make — optional for every job type (leave "" to let the
+// manager pick); discover valid tokens via the job_types tool's
+// subtype_of param. frequency is a protocol.WorkOrderFrequency* constant
+// selecting a recurring cadence instead of the default one-time order.
+func (e *CommandExecutor) SendWorkOrderCommand(orderType uint8, quantity uint16, jobTypeName, material, subtype string, frequency uint8) (*CommandResult, error) {
 	order := protocol.WorkOrderDesignation{
 		OrderType: orderType,
 		Quantity:  quantity,
 		Material:  material,
+		Subtype:   subtype,
 		Frequency: frequency,
 	}
 	if orderType == protocol.OrderTypeByName {
@@ -404,11 +408,19 @@ func (e *CommandExecutor) SendWorkOrderCommand(orderType uint8, quantity uint16,
 // the BOULDER job_item to that one ore raw); the plugin returns a truthful
 // FAILED ack if it's missing there. Ignored (and left unset on the wire)
 // otherwise.
-func (e *CommandExecutor) SendQueueJob(x, y, z int16, orderType uint8, name, material string) (*CommandResult, error) {
+//
+// subtype is required only for OrderTypeByName names "MakeWeapon",
+// "MakeArmor", or "MakeTool" (a bare raws itemdef token, e.g.
+// "ITEM_WEAPON_PICK" — pins job.item_type/item_subtype to that one raws
+// entry); the plugin returns a truthful FAILED ack if it's missing there.
+// Discover valid tokens via the job_types tool's subtype_of param. Ignored
+// (and left unset on the wire) otherwise.
+func (e *CommandExecutor) SendQueueJob(x, y, z int16, orderType uint8, name, material, subtype string) (*CommandResult, error) {
 	qj := protocol.QueueJobDesignation{
 		X: x, Y: y, Z: z,
 		OrderType: orderType,
 		Material:  material,
+		Subtype:   subtype,
 	}
 	switch orderType {
 	case protocol.OrderTypeByName:
@@ -681,6 +693,140 @@ func (e *CommandExecutor) SendBringGoodsToDepot(x, y, z int16, itemTypeFilter, m
 			MaterialFilter: materialFilter,
 			MaxCount:       maxCount,
 			MaxTotalValue:  maxTotalValue,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendAppointPosition appoints (or replaces the holder of) unitID into the
+// entity_position_assignment slot named by positionCode -- see
+// protocol.AppointPositionDesignation for the exact eligibility rules and
+// dfhack-plugin/nobles.cpp applyAppointPosition for the write sequence.
+// Discover live vacant/appointable position codes via the
+// position_vacancies tool first.
+func (e *CommandExecutor) SendAppointPosition(unitID int32, positionCode string) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeAppointPosition,
+		AppointPosition: protocol.AppointPositionDesignation{
+			UnitID:       unitID,
+			PositionCode: positionCode,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendSetBookkeeperPrecision writes plotinfo->nobles.bookkeeper_settings
+// (a protocol.BookkeeperPrecision* constant) -- the Bookkeeper's goal
+// record-keeping precision. UNVERIFIED whether DF clamps/ignores a
+// precision beyond what the current bookkeeper's Appraisal skill supports.
+func (e *CommandExecutor) SendSetBookkeeperPrecision(precision uint8) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeSetBookkeeperPrecision,
+		SetBookkeeperPrecision: protocol.SetBookkeeperPrecisionDesignation{
+			Precision: precision,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendCreateSquad fills (or, if none exists yet, mints -- see
+// protocol.CreateSquadDesignation's doc comment for the UNVERIFIED risk
+// flag on that path) a vacant entity_position_assignment slot for
+// positionCode ("" defaults to "MILITIA_CAPTAIN") and calls DFHack's own
+// Military::makeSquad on it. Discover other valid position codes (with
+// squad_size > 0) via the position_vacancies tool.
+func (e *CommandExecutor) SendCreateSquad(positionCode string) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeCreateSquad,
+		CreateSquad: protocol.CreateSquadDesignation{PositionCode: positionCode},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendAssignSquad adds (add=true) or removes (add=false) unitID from
+// squadID's membership -- see protocol.AssignSquadDesignation for the
+// exact semantics (first-free-non-commander-slot auto-pick on add;
+// civilian labors are not auto-disabled).
+func (e *CommandExecutor) SendAssignSquad(squadID, unitID int32, add bool) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeAssignSquad,
+		AssignSquad: protocol.AssignSquadDesignation{
+			SquadID: squadID,
+			UnitID:  unitID,
+			Add:     add,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendSquadOrderStation orders squadID to station at (x,y,z) -- builds a
+// squad_order_movest, replacing the squad's entire orders queue. See
+// protocol.SquadOrderStation's doc comment for its UNVERIFIED status.
+func (e *CommandExecutor) SendSquadOrderStation(squadID int32, x, y, z int16) (*CommandResult, error) {
+	return e.sendSquadOrder(squadID, protocol.SquadOrderStation, x, y, z, "")
+}
+
+// SendSquadOrderDefendBurrow orders squadID to defend the named burrow
+// (must already exist -- see designate_burrow) -- builds a
+// squad_order_defend_burrowsst, replacing the squad's entire orders queue.
+func (e *CommandExecutor) SendSquadOrderDefendBurrow(squadID int32, burrowName string) (*CommandResult, error) {
+	return e.sendSquadOrder(squadID, protocol.SquadOrderDefendBurrow, 0, 0, 0, burrowName)
+}
+
+// SendSquadOrderCancel clears squadID's orders queue entirely, with no
+// replacement -- combine with SendAssignSquad(add=false) per member to
+// fully return a squad to civilian duty.
+func (e *CommandExecutor) SendSquadOrderCancel(squadID int32) (*CommandResult, error) {
+	return e.sendSquadOrder(squadID, protocol.SquadOrderCancel, 0, 0, 0, "")
+}
+
+func (e *CommandExecutor) sendSquadOrder(squadID int32, orderType uint8, x, y, z int16, burrowName string) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeSquadOrder,
+		SquadOrder: protocol.SquadOrderDesignation{
+			SquadID:    squadID,
+			Type:       orderType,
+			X:          x,
+			Y:          y,
+			Z:          z,
+			BurrowName: burrowName,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendCancelOrder deletes manager work order orderID entirely -- cancels
+// every job it already spawned, frees its own condition/item pointers, and
+// cleans up any surviving order's dangling dependency reference to it. See
+// protocol.CancelOrderDesignation's doc comment for the full sequence.
+func (e *CommandExecutor) SendCancelOrder(orderID int32) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeCancelOrder,
+		CancelOrder: protocol.CancelOrderDesignation{OrderID: orderID},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendEditOrder changes manager work order orderID's amount_total (a NEW
+// target total, not a delta -- see protocol.EditOrderDesignation's doc
+// comment) and/or frequency in place. Pass hasAmount/hasFrequency false to
+// leave that field untouched; at least one must be true.
+func (e *CommandExecutor) SendEditOrder(orderID int32, hasAmount bool, amount uint16, hasFrequency bool, frequency uint8) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeEditOrder,
+		EditOrder: protocol.EditOrderDesignation{
+			OrderID:      orderID,
+			HasAmount:    hasAmount,
+			Amount:       amount,
+			HasFrequency: hasFrequency,
+			Frequency:    frequency,
 		},
 	}
 	return e.SendCommand(cmd)

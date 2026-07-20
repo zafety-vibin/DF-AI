@@ -40,8 +40,8 @@ var (
 	queryExecutor        *appcontext.QueryExecutor
 	autonomousLoop       *autonomous.AutonomousLoop
 	llmProvider          llm.Provider
-	phaseManager         *phases.PhaseManager // Fort development phase tracking
-	firstEntityUpdate    bool = true          // Track if we should trigger first AI cycle
+	phaseManager         *phases.PhaseManager        // Fort development phase tracking
+	firstEntityUpdate    bool                 = true // Track if we should trigger first AI cycle
 )
 
 var (
@@ -428,11 +428,11 @@ func main() {
 					bp := blueprintLib.GetBlueprint(name)
 					if bp != nil {
 						bpInfos = append(bpInfos, appcontext.BlueprintInfo{
-							Name:       name,
+							Name:        name,
 							Description: bp.Description,
-							Dimensions: fmt.Sprintf("%dx%dx%d", bp.Width, bp.Height, bp.Depth),
-							TileCount:  len(bp.Digs),
-							Tags:       bp.Tags,
+							Dimensions:  fmt.Sprintf("%dx%dx%d", bp.Width, bp.Height, bp.Depth),
+							TileCount:   len(bp.Digs),
+							Tags:        bp.Tags,
 						})
 					}
 				}

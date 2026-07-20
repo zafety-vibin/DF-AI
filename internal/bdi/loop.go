@@ -286,13 +286,13 @@ func (l *Loop) runCycle() {
 	currentMsg := initialMsg
 
 	var (
-		totalTokensPrompt    int
+		totalTokensPrompt     int
 		totalTokensCompletion int
-		totalLatencyMs       int64
-		totalRequests        int
-		committed            int
-		finalRespText        string
-		stopReason           string
+		totalLatencyMs        int64
+		totalRequests         int
+		committed             int
+		finalRespText         string
+		stopReason            string
 	)
 
 	maxPasses := l.cfg.MaxPasses
@@ -506,26 +506,26 @@ func (l *Loop) logTurn(
 	}
 
 	entry := map[string]any{
-		"timestamp":            cycleStart.Format(time.RFC3339Nano),
-		"turn":                 turn,
-		"tick":                 snap.Tick,
-		"event_seq":            snap.EventSeq,
-		"duration_ms":          time.Since(cycleStart).Milliseconds(),
-		"dwarf_count":          len(snap.Entities.Dwarves),
-		"enemy_count":          len(snap.Entities.Enemies),
-		"fort_age_days":        snap.Fort.DaysElapsed,
-		"predicates":           summarizePredicates(results),
-		"plan_stats":           in.PlanStats,
-		"recent_divergences":   len(in.RecentDivergences),
+		"timestamp":               cycleStart.Format(time.RFC3339Nano),
+		"turn":                    turn,
+		"tick":                    snap.Tick,
+		"event_seq":               snap.EventSeq,
+		"duration_ms":             time.Since(cycleStart).Milliseconds(),
+		"dwarf_count":             len(snap.Entities.Dwarves),
+		"enemy_count":             len(snap.Entities.Enemies),
+		"fort_age_days":           snap.Fort.DaysElapsed,
+		"predicates":              summarizePredicates(results),
+		"plan_stats":              in.PlanStats,
+		"recent_divergences":      len(in.RecentDivergences),
 		"predictions_outstanding": snap.Predictions.OutstandingCount,
-		"predictions_diverged": snap.Predictions.DivergedCount,
-		"user_msg_size":        len(userMsg),
-		"response_size":        len(respText),
-		"response_preview":     truncate(respText, 4000),
-		"nodes_committed":      nodesCommitted,
-		"summary":              summary,
-		"provider":             l.llm.GetProviderType(),
-		"model":                l.llm.GetModelName(),
+		"predictions_diverged":    snap.Predictions.DivergedCount,
+		"user_msg_size":           len(userMsg),
+		"response_size":           len(respText),
+		"response_preview":        truncate(respText, 4000),
+		"nodes_committed":         nodesCommitted,
+		"summary":                 summary,
+		"provider":                l.llm.GetProviderType(),
+		"model":                   l.llm.GetModelName(),
 	}
 
 	bytes, err := json.Marshal(entry)

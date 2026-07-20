@@ -68,10 +68,28 @@ func renderDashboard(snap worldmodel.Snapshot, connected bool, simJSON string) s
 		season = seasons[snap.Fort.Season]
 	}
 	nAlerts := snap.ActiveAlertCount
-	return fmt.Sprintf("[GROUND TRUTH events=%d year=%d season=%s day=%d | dwarves=%d enemies=%d | paused=%s | alerts=%d active | %s]",
+	return fmt.Sprintf("[GROUND TRUTH events=%d year=%d season=%s day=%d | dwarves=%d enemies=%d | paused=%s | alerts=%d active | %s | %s]",
 		snap.Tick, snap.Fort.Year, season, snap.Fort.DaysElapsed,
 		len(snap.Entities.Dwarves), len(snap.Entities.Enemies), paused, nAlerts,
+		worldStamp(snap.World),
 		dataAgeStamp(snap.TakenAt, snap.LastUpdate))
+}
+
+// worldStamp renders the save-identity segment of the dashboard (Q5:
+// world-switch detection). world= names the CURRENT save directory so a
+// switch is visible the instant it happens, not just inferable from a
+// discontinuity in some other counter; switches=N is the persistent,
+// always-visible tripwire (same idiom as events=) — a model that reads
+// "switches=1" where a prior call read "switches=0" knows a different save
+// loaded underneath it and the entity cache/alerts were just flushed (see
+// Populator.OnEntityUpdate), even if it never thought to ask. Unknown
+// (no identity reported yet — an older plugin, or before the first
+// ENTITY_UPDATE arrives) renders plainly rather than fabricating a name.
+func worldStamp(w worldmodel.WorldSnapshot) string {
+	if !w.Known {
+		return "world=unknown"
+	}
+	return fmt.Sprintf("world=%s switches=%d", w.SaveDir, w.Switches)
 }
 
 // withDash prepends the dashboard to a tool body. The sim_status fetch +

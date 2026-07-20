@@ -32,14 +32,14 @@ func TestMajorityGlyph(t *testing.T) {
 		open, closed, unknown, total int
 		want                         rune
 	}{
-		{6, 0, 0, 6, '.'},  // unanimous open
-		{0, 6, 0, 6, '#'},  // unanimous closed
-		{0, 0, 6, 6, '?'},  // unanimous unknown
-		{3, 3, 0, 6, 'x'},  // even split, no majority
-		{4, 2, 0, 6, '.'},  // strict majority open
-		{2, 4, 0, 6, '#'},  // strict majority closed
-		{2, 2, 2, 6, 'x'},  // three-way split, no majority
-		{0, 0, 0, 0, '?'},  // empty block (defensive; shouldn't occur on a real map)
+		{6, 0, 0, 6, '.'}, // unanimous open
+		{0, 6, 0, 6, '#'}, // unanimous closed
+		{0, 0, 6, 6, '?'}, // unanimous unknown
+		{3, 3, 0, 6, 'x'}, // even split, no majority
+		{4, 2, 0, 6, '.'}, // strict majority open
+		{2, 4, 0, 6, '#'}, // strict majority closed
+		{2, 2, 2, 6, 'x'}, // three-way split, no majority
+		{0, 0, 0, 0, '?'}, // empty block (defensive; shouldn't occur on a real map)
 	}
 	for _, c := range cases {
 		if got := majorityGlyph(c.open, c.closed, c.unknown, c.total); got != c.want {

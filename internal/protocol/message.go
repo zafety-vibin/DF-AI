@@ -265,6 +265,20 @@ type FortInfo struct {
 	Year          uint32 // Current year
 }
 
+// WorldIdentity fingerprints the currently loaded save, read once per
+// ENTITY_UPDATE from df::global::world->cur_savegame (DFHack 53.15-r2:
+// save_dir + world_header.id1/id2). SaveDir alone is not a safe fingerprint
+// (two save folders could coincidentally share a name across reinstalls);
+// ID1/ID2 ("based on tick at start of game" / "based on tick at creation
+// time") are a numeric pair that cannot collide the same way -- together
+// they change the instant a different save loads, even mid-connection.
+// See Populator.OnEntityUpdate for how a change is detected and surfaced.
+type WorldIdentity struct {
+	SaveDir string
+	ID1     uint32
+	ID2     uint32
+}
+
 // ZoneData represents a DF civzone extracted from game state. ZoneID is
 // DFHack's internal building id — informational only; assign_zone and
 // unassign_zone target zones by tile coordinate (matching
@@ -284,6 +298,10 @@ type EntityUpdateMessage struct {
 	Entities []EntityInfo
 	FortInfo *FortInfo  // Optional (nil if not included)
 	Zones    []ZoneData // Feature 007: Zone data (empty if zone extraction disabled)
+	// World is the currently loaded save's identity fingerprint -- optional
+	// additive trailing block (nil when the plugin peer predates it, same
+	// pattern as FortInfo). See WorldIdentity's doc comment.
+	World *WorldIdentity
 }
 
 func (m *EntityUpdateMessage) Type() uint8 { return MessageTypeEntityUpdate }
@@ -349,7 +367,7 @@ const (
 	// brand-new custom detail into a free CUSTOM_1..CUSTOM_8 icon slot.
 	// Matches dfhack-plugin/protocol.h COMMAND_TYPE_ASSIGN_WORK_DETAIL /
 	// COMMAND_TYPE_SET_WORK_DETAIL_MODE / COMMAND_TYPE_CREATE_WORK_DETAIL.
-	CommandTypeAssignWorkDetail   uint8 = 0x20
+	CommandTypeAssignWorkDetail  uint8 = 0x20
 	CommandTypeSetWorkDetailMode uint8 = 0x21
 	CommandTypeCreateWorkDetail  uint8 = 0x22
 
@@ -358,6 +376,74 @@ const (
 	// the built trade depot at (X,Y,Z) -- see BringGoodsToDepotDesignation's
 	// doc comment and dfhack-plugin/protocol.h COMMAND_TYPE_BRING_GOODS_TO_DEPOT.
 	CommandTypeBringGoodsToDepot uint8 = 0x23
+
+	// CommandTypeAppointPosition fills (or replaces the holder of) one
+	// entity_position_assignment slot -- see AppointPositionDesignation's
+	// doc comment and dfhack-plugin/protocol.h COMMAND_TYPE_APPOINT_POSITION.
+	CommandTypeAppointPosition uint8 = 0x24
+
+	// CommandTypeSetBookkeeperPrecision writes plotinfo->nobles.
+	// bookkeeper_settings (df::record_precision_level_type) directly -- see
+	// SetBookkeeperPrecisionDesignation's doc comment and
+	// dfhack-plugin/protocol.h COMMAND_TYPE_SET_BOOKKEEPER_PRECISION.
+	CommandTypeSetBookkeeperPrecision uint8 = 0x25
+
+	// CommandTypeCreateSquad fills (or, if none exists yet for the
+	// requested position code, mints -- see CreateSquadDesignation's doc
+	// comment for the UNVERIFIED risk flag on that path) a vacant
+	// entity_position_assignment slot and calls DFHack's own
+	// Military::makeSquad on it -- see docs/decisions.md (2026-07-19
+	// military research pass) for the full data-model citation.
+	CommandTypeCreateSquad uint8 = 0x26
+
+	// CommandTypeAssignSquad adds or removes one unit from a squad's
+	// membership -- see AssignSquadDesignation's doc comment.
+	CommandTypeAssignSquad uint8 = 0x27
+
+	// CommandTypeSquadOrder replaces a squad's entire orders queue with
+	// at most one order (station/defend-burrow) or clears it entirely --
+	// see SquadOrderDesignation's doc comment.
+	CommandTypeSquadOrder uint8 = 0x28
+
+	// CommandTypeCancelOrder deletes ONE manager work order by id --
+	// cancels every job it already spawned, frees its own condition/item
+	// pointers, and cleans up any surviving order's dangling dependency
+	// reference to it. See CancelOrderDesignation's doc comment and
+	// dfhack-plugin/work_orders.cpp applyCancelOrder for the full sequence
+	// (docs/decisions.md 2026-07-19 manager-work-order-lifecycle pass, Q1).
+	CommandTypeCancelOrder uint8 = 0x29
+
+	// CommandTypeEditOrder changes an existing manager work order's
+	// amount_total/amount_left and/or frequency IN PLACE -- see
+	// EditOrderDesignation's doc comment and dfhack-plugin/work_orders.cpp
+	// applyEditOrder.
+	CommandTypeEditOrder uint8 = 0x2A
+)
+
+// SquadOrder* constants for SquadOrderDesignation.Type -- DF-AI's own wire
+// values (the minimal, chokepoint-defense-scoped subset of DF's real
+// squad_order subtype family; see docs/decisions.md 2026-07-19 military
+// research pass for why kill-list/kill-hf, patrol-route, and the
+// site-leaving raid/drive-off/rescue/retrieve order family are all left
+// out). Matches dfhack-plugin/protocol.h SQUAD_ORDER_* constants.
+const (
+	// SquadOrderStation constructs a squad_order_movest targeting
+	// SquadOrderDesignation.X/Y/Z -- DF's "station here" order. UNVERIFIED:
+	// no DFHack code in this checkout ever constructs one; point_id is
+	// always sent as -1 (no associated saved Notes-screen waypoint).
+	SquadOrderStation uint8 = 0x00
+
+	// SquadOrderDefendBurrow constructs a squad_order_defend_burrowsst
+	// referencing the burrow named SquadOrderDesignation.BurrowName (see
+	// the existing designate_burrow tool) -- DF's native "hold this area"
+	// order, and the best-fit real order type for chokepoint defense.
+	SquadOrderDefendBurrow uint8 = 0x01
+
+	// SquadOrderCancel clears the squad's orders queue entirely with no
+	// replacement -- "return to its default schedule/idle behavior".
+	// Combine with assign_squad (remove) to fully return a unit to
+	// civilian duty.
+	SquadOrderCancel uint8 = 0x02
 )
 
 // Labor constants for the SET_LABOR command. The value IS the real
@@ -410,6 +496,21 @@ const (
 	WorkDetailModeEverybodyDoesThis    uint8 = 0x01
 	WorkDetailModeNobodyDoesThis       uint8 = 0x02
 	WorkDetailModeOnlySelectedDoesThis uint8 = 0x03
+)
+
+// BookkeeperPrecision constants for the SET_BOOKKEEPER_PRECISION command's
+// single payload byte. Matches df::record_precision_level_type directly
+// (df.d_basics.xml: NONE=-1 is never sent over the wire -- there is no
+// "unset" sentinel here, only a concrete goal precision to write), so the
+// wire byte IS the enum value with no translation table, same pattern as
+// WorkDetailMode above. Kept in sync with dfhack-plugin/protocol.h
+// BOOKKEEPER_PRECISION_* constants.
+const (
+	BookkeeperPrecisionNearest10    uint8 = 0x00
+	BookkeeperPrecisionNearest100   uint8 = 0x01
+	BookkeeperPrecisionNearest1000  uint8 = 0x02
+	BookkeeperPrecisionNearest10000 uint8 = 0x03
+	BookkeeperPrecisionAllAccurate  uint8 = 0x04
 )
 
 // MaterialClass constants for the BUILD command's first trailing byte.
@@ -1201,12 +1302,25 @@ type RemoveBuildingDesignation struct {
 // ambiguity. Wire shape: unconditionally appended [2:MaterialLen][N:Material]
 // after the existing (conditional) name/reaction tail — old encoded payloads
 // missing this trailer decode with Material="".
+//
+// Subtype is the item-SUBTYPE pinning wave's addition (docs/decisions.md,
+// follows the Material entry above): a bare raws itemdef `id` token (e.g.
+// "ITEM_WEAPON_PICK" — no "WEAPON:" type prefix; work_orders.cpp derives
+// item_type from the job_type itself), resolved plugin-side onto
+// job->item_type/item_subtype. Required for OrderType naming MakeWeapon,
+// MakeArmor, or MakeTool (a bare job_type name has no way to pick which
+// weapon/armor/tool to forge, the same reasoning as SmeltOre's Material
+// requirement); ignored for every other job type. Discover valid tokens via
+// the job_types tool's subtype_of param. Wire shape: unconditionally
+// appended [2:SubtypeLen][N:Subtype] after the existing Material trailer —
+// old encoded payloads missing this trailer decode with Subtype="".
 type QueueJobDesignation struct {
 	X, Y, Z      int16
 	OrderType    uint8  // What to produce (OrderTypeMakeBed etc.), OrderTypeByName, or OrderTypeCustomReaction
 	JobTypeName  string // DFHack job_type enum key name; only used when OrderType == OrderTypeByName
 	ReactionCode string // df::reaction.code; only used when OrderType == OrderTypeCustomReaction
 	Material     string // job_material_category keyword or DFHack material token; required for SmeltOre, else optional
+	Subtype      string // bare raws itemdef token (e.g. ITEM_WEAPON_PICK); required for MakeWeapon/MakeArmor/MakeTool, else ignored
 }
 
 // SetLaborDesignation represents a single labor toggle on one unit.
@@ -1292,12 +1406,26 @@ type CreateWorkDetailDesignation struct {
 // ([2:MaterialLen][N:Material] then [1:Frequency]) after the existing
 // (conditional) name tail — old encoded payloads missing this trailer
 // decode with Material="" and Frequency=WorkOrderFrequencyOneTime.
+//
+// Subtype is the item-SUBTYPE pinning wave's addition (docs/decisions.md,
+// follows the Material/Frequency entries above): a bare raws itemdef `id`
+// token (e.g. "ITEM_WEAPON_PICK"), resolved plugin-side onto
+// manager_order::item_type/item_subtype. "" is a legal no-op ("let the
+// manager pick", the pre-existing behavior) — unlike QueueJobDesignation's
+// own Subtype, this is NOT required for any particular job type: applyWorkOrder
+// needs no workshop-compatibility whitelist at all, so any job type whose
+// ENUM_ATTR(item) resolves a real itemdef vector can be pinned here.
+// Discover valid tokens via the job_types tool's subtype_of param. Wire
+// shape: unconditionally appended [2:SubtypeLen][N:Subtype] after the
+// existing Frequency byte — old encoded payloads missing this trailer
+// decode with Subtype="".
 type WorkOrderDesignation struct {
 	OrderType   uint8  // What to produce (OrderTypeMakeBed etc.), or OrderTypeByName
 	Quantity    uint16 // How many to produce (1..100)
 	JobTypeName string // DFHack job_type enum key name; only used when OrderType == OrderTypeByName
 	Material    string // job_material_category keyword or DFHack material token; optional
 	Frequency   uint8  // WorkOrderFrequency* constant; default WorkOrderFrequencyOneTime
+	Subtype     string // bare raws itemdef token (e.g. ITEM_WEAPON_PICK); optional, pins item_type/item_subtype when set
 }
 
 // BringGoodsToDepotDesignation marks up to MaxCount free fort items for
@@ -1328,6 +1456,164 @@ type BringGoodsToDepotDesignation struct {
 	MaterialFilter string
 	MaxCount       int32
 	MaxTotalValue  int64
+}
+
+// AppointPositionDesignation appoints (or replaces the holder of) one
+// entity_position_assignment slot -- see docs/decisions.md (2026-07-19
+// nobles research pass) for the full data model. PositionCode is DFHack's
+// own entity_position.code token (e.g. "MANAGER", "BOOKKEEPER", "BROKER",
+// "SHERIFF") -- discover live vacant/appointable codes via the
+// position_vacancies query/tool rather than a hardcoded list here, per this
+// project's house rule for enum-like params with per-value facts (the
+// vacancies view IS the discovery tool). Only fills an EXISTING assignment
+// slot DF itself already created (vacant, or currently held for a
+// replacement); a position with no assignment record at all fails
+// truthfully instead of fabricating one -- see dfhack-plugin/nobles.cpp
+// applyAppointPosition for the exact mutation sequence (mirrors DFHack's
+// own scripts/make-monarch.lua). Restricted to current citizens
+// (Units::isCitizen) as a safety net independent of raw-defined caste
+// eligibility rules. Justice-mechanic consequences of Sheriff/Captain of
+// the Guard appointment are explicitly out of scope -- only the
+// appointment write itself.
+type AppointPositionDesignation struct {
+	UnitID       int32
+	PositionCode string
+}
+
+// SetBookkeeperPrecisionDesignation writes plotinfo->nobles.
+// bookkeeper_settings (df::record_precision_level_type) -- the goal
+// precision the Nobles screen lets the player pick for the appointed
+// Bookkeeper's record-keeping. UNVERIFIED (see nobles research pass):
+// whether DF clamps/ignores a precision beyond what the current
+// bookkeeper's Appraisal skill supports (the in-game UI grays out unearned
+// options; this direct write bypasses that gate).
+type SetBookkeeperPrecisionDesignation struct {
+	Precision uint8 // BookkeeperPrecision* constant
+}
+
+// CreateSquadDesignation fills (or, if none exists yet, mints) a vacant
+// entity_position_assignment slot for PositionCode (a df::entity_position.
+// code token on the fort's own historical_entity, e.g. "MILITIA_CAPTAIN" --
+// discover other codes with squad_size > 0 via the existing
+// position_vacancies tool) and calls DFHack's own Military::makeSquad on
+// it. PositionCode == "" defaults to "MILITIA_CAPTAIN", the position
+// vanilla DF's own [SQUAD:...] raw token attaches to.
+//
+// Two-phase per docs/decisions.md (2026-07-19 military research pass):
+//  1. If an entity_position_assignment already exists for this position
+//     with squad_id == -1 (vacant), reuse it -- this is the common case
+//     once at least one prior squad-leader slot has ever existed.
+//  2. Otherwise (the fresh-embark case -- nothing forces an assignment
+//     record to exist before the first squad), MINT a brand-new one:
+//     allocate, assign id from positions.next_assignment_id, wire
+//     position_id, leave histfig/histfig2/squad_id at the codegen
+//     constructor's own -1 defaults. UNVERIFIED, highest risk: no DFHack
+//     code anywhere in the 53.15-r2 checkout does this write; it is
+//     inferred from entity_position_assignment's struct shape and
+//     df::create_squad_interfacest's own candidate-list field (proving the
+//     closed DF binary treats this as a distinct step) -- not confirmed
+//     against any known-working DFHack script. The plugin's success ACK
+//     says so explicitly when this path is taken, rather than claiming
+//     unearned certainty; live-verify (Squads/Nobles screen) before
+//     leaning on it in a real fort.
+type CreateSquadDesignation struct {
+	PositionCode string
+}
+
+// AssignSquadDesignation adds (Add=true) or removes (Add=false) UnitID
+// from SquadID's membership -- thin wrapper around DFHack's own
+// Military::addToSquad/removeFromSquad, both proven-safe (real callers in
+// scripts/autotraining.lua at this exact tag). Add auto-picks the first
+// free NON-commander slot (position 0 is never auto-assignable via this
+// path -- addToSquad itself refuses it; assigning a commander is out of
+// scope for this minimal surface). Remove only needs the unit id
+// (Military::removeFromSquad's own signature) -- SquadID is still carried
+// so the plugin can cross-check the unit is actually in the squad the
+// caller thinks it's in, not because the underlying DFHack call requires
+// it. Civilian labors are NOT auto-disabled when a unit joins a squad (v50
+// does not do this -- see scripts/uniform-unstick.lua's own warning about
+// this exact conflict); use the existing set_labor tool if a dedicated,
+// non-working soldier is wanted.
+type AssignSquadDesignation struct {
+	SquadID int32
+	UnitID  int32
+	Add     bool
+}
+
+// SquadOrderDesignation replaces SquadID's entire orders queue with at
+// most one order, or clears it entirely -- see SquadOrder* constants.
+// Type selects the operation:
+//   - SquadOrderStation: builds a squad_order_movest targeting X/Y/Z.
+//   - SquadOrderDefendBurrow: builds a squad_order_defend_burrowsst
+//     referencing the burrow named BurrowName (must already exist --
+//     see designate_burrow).
+//   - SquadOrderCancel: clears the queue with no replacement.
+//
+// The plugin always clears any existing orders first (mirrors DFHack's
+// own Military.cpp room-removal deletion idiom: delete each pointer, then
+// clear the vector) before pushing at most one new order -- this
+// sidesteps the UNVERIFIED question of how DF actually processes a
+// multi-entry squad->orders queue, since no code in this checkout ever
+// reads or writes that vector outside construction. X/Y/Z are ignored
+// unless Type == SquadOrderStation; BurrowName is ignored unless Type ==
+// SquadOrderDefendBurrow.
+type SquadOrderDesignation struct {
+	SquadID    int32
+	Type       uint8
+	X, Y, Z    int16
+	BurrowName string
+}
+
+// CancelOrderDesignation deletes ONE manager_order (OrderID) entirely --
+// see docs/decisions.md (2026-07-19 manager-work-order-lifecycle research
+// pass, Q1) for the confirmed-safe basis and
+// dfhack-plugin/work_orders.cpp's applyCancelOrder for the exact sequence:
+// every job the order already spawned is cancelled (matched via
+// df::job.order_id, since a manager_order carries no back-pointer to its
+// own jobs), the order's own item_conditions/order_conditions/items
+// pointers are freed (mirrors DFHack's own orders_clear_command, the only
+// in-tree removal path, applied per-order instead of to every order at
+// once), the order object is deleted and erased, and finally every
+// surviving order's own order_conditions are scanned for a dangling
+// dependency reference to the deleted id (cleaned up too, since nothing
+// in-tree does this on its own).
+type CancelOrderDesignation struct {
+	OrderID int32
+}
+
+// EditOrderDesignation changes an existing, already-queued manager_order's
+// amount_total/amount_left and/or frequency IN PLACE -- see
+// docs/decisions.md (2026-07-19 manager-work-order-lifecycle research
+// pass, Q1) for the confirmed-safe basis. HasAmount/HasFrequency gate each
+// edit independently; at least one must be set (Validate rejects neither).
+//
+// Amount, when HasAmount, is the NEW desired amount_total (1..100, the same
+// range WorkOrderDesignation.Quantity validates at creation) -- NOT a
+// delta. The plugin mirrors DFHack's own scripts/workorder.lua mutation
+// shape exactly: amount_left += (new_total - old_total); amount_total =
+// new_total -- so progress already made toward the order is preserved
+// rather than reset. If that leaves amount_left <= 0, the order is fully
+// satisfied by this edit and gets deleted outright (the same cleanup
+// CancelOrderDesignation uses), matching workorder.lua's own "delete once
+// amount_left <= 0" completion behavior; the plugin's ACK says so
+// explicitly rather than claiming a bare "edited" when the order no longer
+// exists. Amount == 0 is deliberately NOT accepted as the "infinite/
+// repeating" sentinel some freshly-created orders carry (Q1 flagged that
+// sentinel's edit-time interplay with amount_left as unverified) --
+// EditOrderDesignation always requires 1..100, same as order creation.
+//
+// Frequency, when HasFrequency, is a WorkOrderFrequency* constant. Changing
+// it also resets the order's finished_year/finished_year_tick checkpoint
+// fields to -1 (their own struct-default init value) -- per Q1's own
+// recommendation: no in-tree DFHack code mutates frequency on an
+// already-active order, so whether DF's manager tolerates a stale
+// checkpoint after an in-place change otherwise is UNVERIFIED.
+type EditOrderDesignation struct {
+	OrderID      int32
+	HasAmount    bool
+	Amount       uint16 // new amount_total (1..100); ignored unless HasAmount
+	HasFrequency bool
+	Frequency    uint8 // WorkOrderFrequency* constant; ignored unless HasFrequency
 }
 
 // StockpileDesignation represents a stockpile zone designation. The
@@ -1411,6 +1697,16 @@ type CommandMessage struct {
 
 	BringGoodsToDepot BringGoodsToDepotDesignation // For BRING_GOODS_TO_DEPOT commands
 
+	AppointPosition        AppointPositionDesignation        // For APPOINT_POSITION commands
+	SetBookkeeperPrecision SetBookkeeperPrecisionDesignation // For SET_BOOKKEEPER_PRECISION commands
+
+	CreateSquad CreateSquadDesignation // For CREATE_SQUAD commands
+	AssignSquad AssignSquadDesignation // For ASSIGN_SQUAD commands
+	SquadOrder  SquadOrderDesignation  // For SQUAD_ORDER commands
+
+	CancelOrder CancelOrderDesignation // For CANCEL_ORDER commands
+	EditOrder   EditOrderDesignation   // For EDIT_ORDER commands
+
 	CreateLocation  CreateLocationDesignation  // For CREATE_LOCATION commands
 	AssignLodging   AssignLodgingDesignation   // For ASSIGN_LODGING commands
 	UnassignLodging UnassignLodgingDesignation // For UNASSIGN_LODGING commands
@@ -1426,7 +1722,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeBringGoodsToDepot {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeEditOrder {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -1556,6 +1852,38 @@ func (m *CommandMessage) Validate() error {
 	case CommandTypeBringGoodsToDepot:
 		if m.BringGoodsToDepot.MaxCount < 1 {
 			return errors.New("bring_goods_to_depot requires MaxCount >= 1")
+		}
+	case CommandTypeAppointPosition:
+		if m.AppointPosition.PositionCode == "" {
+			return errors.New("appoint_position requires a non-empty PositionCode")
+		}
+	case CommandTypeSetBookkeeperPrecision:
+		if m.SetBookkeeperPrecision.Precision > BookkeeperPrecisionAllAccurate {
+			return fmt.Errorf("invalid bookkeeper precision: 0x%02X", m.SetBookkeeperPrecision.Precision)
+		}
+	case CommandTypeSquadOrder:
+		if m.SquadOrder.Type > SquadOrderCancel {
+			return fmt.Errorf("invalid squad order type: 0x%02X", m.SquadOrder.Type)
+		}
+		if m.SquadOrder.Type == SquadOrderDefendBurrow && m.SquadOrder.BurrowName == "" {
+			return errors.New("squad_order defend_burrow requires a non-empty BurrowName")
+		}
+	case CommandTypeCancelOrder:
+		if m.CancelOrder.OrderID < 0 {
+			return errors.New("cancel_order requires OrderID >= 0")
+		}
+	case CommandTypeEditOrder:
+		if m.EditOrder.OrderID < 0 {
+			return errors.New("edit_order requires OrderID >= 0")
+		}
+		if !m.EditOrder.HasAmount && !m.EditOrder.HasFrequency {
+			return errors.New("edit_order requires at least one of Amount or Frequency to change")
+		}
+		if m.EditOrder.HasAmount && (m.EditOrder.Amount == 0 || m.EditOrder.Amount > 100) {
+			return fmt.Errorf("edit_order amount out of range (1-100): %d", m.EditOrder.Amount)
+		}
+		if m.EditOrder.HasFrequency && m.EditOrder.Frequency > WorkOrderFrequencyYearly {
+			return fmt.Errorf("invalid work order frequency: 0x%02X", m.EditOrder.Frequency)
 		}
 	}
 

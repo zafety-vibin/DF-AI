@@ -129,6 +129,112 @@ constexpr uint8_t COMMAND_TYPE_CREATE_WORK_DETAIL   = 0x22;
 // non-viewscreen API and is deliberately NOT implemented.
 constexpr uint8_t COMMAND_TYPE_BRING_GOODS_TO_DEPOT = 0x23;
 
+// COMMAND_TYPE_APPOINT_POSITION fills (or replaces the holder of) one
+// entity_position_assignment slot on either the fort's own historical_entity
+// (df::global::plotinfo->group_id -- Manager/Bookkeeper/Broker/Sheriff/
+// Captain of the Guard/militia-squad-leader positions) or the parent
+// civilization's (plotinfo->civ_id -- Monarch/Baron/Count/Duke succession
+// positions), following the exact mutation sequence DFHack's own
+// scripts/make-monarch.lua uses (old-holder unlink, assignment.histfig set,
+// new histfig_entity_link_positionst insert on the new holder) -- there is
+// no C++ module helper for this write; Units.h/Units.cpp and Military.cpp
+// only ever READ entity_position_assignment. See dfhack-plugin/nobles.cpp
+// applyAppointPosition for the full sequence. Only ever fills an assignment
+// slot DF ITSELF already created (histfig==-1, i.e. vacant, or currently
+// held for a replacement) -- a requested position code with no assignment
+// record at all means the position hasn't unlocked yet (population/market
+// threshold unmet), and the command fails truthfully rather than fabricate
+// one. Position eligibility/vacancy is discovered via the
+// position_vacancies query, not a hardcoded list here -- see
+// dfhack-plugin/queries.cpp handlePositionVacancies.
+constexpr uint8_t COMMAND_TYPE_APPOINT_POSITION = 0x24;
+
+// COMMAND_TYPE_SET_BOOKKEEPER_PRECISION writes
+// df::global::plotinfo->nobles.bookkeeper_settings (df::record_precision_
+// level_type) directly -- the same field plugins/stockflow.cpp already
+// mutates (bookkeeper_precision/bookkeeper_cooldown, a sibling field) with
+// no recompute call, in this exact checkout. UNVERIFIED: whether vanilla DF
+// clamps/ignores a precision beyond what the current bookkeeper's Appraisal
+// skill supports (the in-game Nobles screen grays out unearned options; a
+// direct memory write bypasses that UI gate) -- flagged for live
+// verification, not assumed either way.
+constexpr uint8_t COMMAND_TYPE_SET_BOOKKEEPER_PRECISION = 0x25;
+
+// COMMAND_TYPE_CREATE_SQUAD / COMMAND_TYPE_ASSIGN_SQUAD /
+// COMMAND_TYPE_SQUAD_ORDER -- minimal DF v50 military capability
+// (create/staff/order a squad), per docs/decisions.md (2026-07-19
+// military research pass). See dfhack-plugin/military.cpp for the exact
+// mutation sequences and their UNVERIFIED risk flags:
+//   CREATE_SQUAD fills (or, if none exists yet, MINTS -- highest-risk,
+//     no DFHack precedent -- see military.cpp applyCreateSquad) a vacant
+//     entity_position_assignment slot, then calls DFHack's own
+//     Military::makeSquad on it.
+//   ASSIGN_SQUAD wraps DFHack's own Military::addToSquad/removeFromSquad
+//     (both proven-safe -- real callers in scripts/autotraining.lua).
+//   SQUAD_ORDER always clears the squad's existing orders queue first,
+//     then pushes AT MOST ONE new order (a squad_order_movest "station"
+//     order or a squad_order_defend_burrowsst "defend burrow" order), or
+//     leaves the queue empty (SQUAD_ORDER_CANCEL) -- sidesteps the
+//     UNVERIFIED question of squad->orders' multi-entry processing order.
+// Deliberately out of scope: training schedules, uniforms, patrol routes,
+// kill-list/kill-hf orders, and the raid/drive-off/rescue/retrieve
+// site-leaving order family -- see military.cpp's file comment for the
+// full reasoning.
+constexpr uint8_t COMMAND_TYPE_CREATE_SQUAD = 0x26;
+constexpr uint8_t COMMAND_TYPE_ASSIGN_SQUAD = 0x27;
+constexpr uint8_t COMMAND_TYPE_SQUAD_ORDER  = 0x28;
+
+// Squad order type byte -- SQUAD_ORDER's Type payload field. Matches
+// internal/protocol/message.go's SquadOrder* constants.
+constexpr uint8_t SQUAD_ORDER_STATION       = 0x00; // squad_order_movest targeting X/Y/Z -- UNVERIFIED (see military.cpp)
+constexpr uint8_t SQUAD_ORDER_DEFEND_BURROW = 0x01; // squad_order_defend_burrowsst referencing a named burrow
+constexpr uint8_t SQUAD_ORDER_CANCEL        = 0x02; // clear the orders queue, no replacement
+
+// Bookkeeper precision byte -- SET_BOOKKEEPER_PRECISION's single payload
+// byte. Matches df::record_precision_level_type directly (df.d_basics.xml:
+// NONE=-1 is never sent over the wire -- there is no "unset" sentinel here,
+// only a concrete goal precision to write), so the wire byte IS the enum
+// value with no translation table, same pattern as WORK_DETAIL_MODE_*.
+constexpr uint8_t BOOKKEEPER_PRECISION_NEAREST_10    = 0x00;
+constexpr uint8_t BOOKKEEPER_PRECISION_NEAREST_100   = 0x01;
+constexpr uint8_t BOOKKEEPER_PRECISION_NEAREST_1000  = 0x02;
+constexpr uint8_t BOOKKEEPER_PRECISION_NEAREST_10000 = 0x03;
+constexpr uint8_t BOOKKEEPER_PRECISION_ALL_ACCURATE  = 0x04;
+
+// COMMAND_TYPE_CANCEL_ORDER / COMMAND_TYPE_EDIT_ORDER -- manager
+// work-order lifecycle management, per docs/decisions.md's 2026-07-19
+// manager-work-order-lifecycle research pass (Q1). See work_orders.cpp
+// applyCancelOrder/applyEditOrder for the exact mutation sequences.
+//
+//   CANCEL_ORDER deletes ONE manager_order by id: cancels every job it has
+//     already spawned (Job::removeJob, matched via df::job::order_id --
+//     job.order_id has NO back-reference from the order side, so this
+//     requires a full world->jobs.list scan), frees the order's own
+//     item_conditions/order_conditions/items pointers (the same per-order
+//     cleanup shape the plugin's only other removal path, DFHack's own
+//     orders_clear_command, applies to every order at once), deletes the
+//     order object, and finally scans every SURVIVING order's own
+//     order_conditions for a dependency reference to the deleted id
+//     (order_id == target) so no dangling int-id is left behind (a plain
+//     int compare, not a pointer deref, so not a crash risk, but a
+//     silently-never-satisfied dependency condition if left alone).
+//   EDIT_ORDER changes an existing, already-queued order's amount_total/
+//     amount_left and/or frequency IN PLACE, matching DFHack's own
+//     scripts/workorder.lua mutation shape: Amount is the NEW desired
+//     amount_total (NOT a delta) -- the plugin computes amount_left +=
+//     (new_total - old_total) itself so progress already made is
+//     preserved, and deletes the order outright (via the same cleanup
+//     CANCEL_ORDER uses) if that leaves amount_left <= 0, exactly like
+//     workorder.lua's own "delete once amount_left <= 0" behavior.
+//     Frequency is a WORK_ORDER_FREQUENCY_* byte; changing it also resets
+//     the order's finished_year/finished_year_tick checkpoint fields to
+//     -1 (their own struct-default init value) per the research's
+//     recommendation -- UNVERIFIED whether DF's manager tolerates a stale
+//     checkpoint after an in-place frequency change otherwise. HasAmount/
+//     HasFrequency gate each edit independently; at least one must be set.
+constexpr uint8_t COMMAND_TYPE_CANCEL_ORDER = 0x29;
+constexpr uint8_t COMMAND_TYPE_EDIT_ORDER   = 0x2A;
+
 // Location types -- DF-AI's own wire values for df::abstract_building_type's
 // INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL/HOSPITAL. A Location is created FROM an
 // existing MeetingHall civzone (see designate_zone), not designated
@@ -314,6 +420,21 @@ constexpr uint8_t WORK_ORDER_FREQUENCY_YEARLY     = 0x04;
 // ORDER_TYPE_CUSTOM_REACTION (below) remains QUEUE_JOB-only; applyWorkOrder
 // does not accept it — ORDER_TYPE_BREW_DRINK above is still the one
 // reaction-backed order type the manager-queue path supports.
+//
+// Item-SUBTYPE pinning wave (follows the above): both WORK_ORDER and
+// QUEUE_JOB gained a further trailing Subtype string (a bare raws itemdef
+// `id` token, e.g. "ITEM_WEAPON_PICK" — no type prefix; the plugin derives
+// item_type from the job_type itself via ENUM_ATTR(job_type,item,...)).
+// See WorkOrderDesignation.Subtype / QueueJobDesignation.Subtype
+// (message.go) and work_orders.cpp's resolveItemSubtype for the resolution
+// mechanism. Required (truthful FAILED otherwise) for QUEUE_JOB naming
+// MakeWeapon/MakeArmor/MakeTool — a bare job_type name has no way to pick
+// which weapon/armor/tool to forge, the same reasoning Material's SmeltOre
+// requirement above already established. Optional everywhere else,
+// including WORK_ORDER (which needs no per-job-type whitelist at all, so
+// any job type with a real itemdef vocabulary can be pinned there).
+// Discover valid tokens via the job_types query/tool's subtype_of param
+// (queries.cpp handleListJobSubtypes).
 constexpr uint8_t ORDER_TYPE_BY_NAME       = 0x00;
 
 // Sentinel OrderType for COMMAND_TYPE_QUEUE_JOB's reaction-based path:

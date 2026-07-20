@@ -120,6 +120,22 @@ queued tile; there's no cost to having far more designated than can be
 worked at once). Furniture and labor are the actually scarce, staged
 resources — that's what gets rationed, not the dig.
 
+**Street-grid-first infill [OVERSEER-DEMONSTRATED 2026-07-19]:** the
+cheapest staged form of dig-ahead, observed working at scale in the
+overseer's own forts: dig a level's CORRIDOR NETWORK first (streets,
+ring corridors, the spine connection — fast, low tile count), which
+implicitly defines every future room as an undug block inside the
+established grid. Each migration wave then only needs its blocks
+hollowed and furnished — growth becomes infill that continues the
+existing geometry instead of reactive annexes that fight it. Pair with
+paired-cell rooms sharing door walls for density without dormitories.
+
+**Run multiple fronts per step [OVERSEER-CONFIRMED 2026-07-19]:** plan
+and designate across SEVERAL sites/tasks before each `step`, so the
+simulation employs the whole labor force at once — a
+one-project-then-step loop leaves whole labor groups idle every step.
+Batch designations, builds, and orders across fronts; then step long.
+
 **Furnish by population gate, not by calendar time.** Tie furnishing
 waves to migration-wave arrival and `check_goals` evidence, never to "it's
 been N days, build more beds." Against the wave math above: expect to
@@ -197,7 +213,16 @@ real tooling status — don't promise a stage the tooling can't back yet.
    real build type but still pending its own live verification — treat
    it as shipped-but-unproven until a session confirms it, unlike the
    lever/bridge/door/hatch chain.
-5. **Barbican/moat.** Far future; no current tooling story.
+5. **Surface compound + archer deck [OVERSEER-DEMONSTRATED
+   2026-07-19]:** a walled surface building completely capping the
+   stair-top (door-defensible), with a floored, parapeted deck built
+   one level above it as an elevated firing position over the
+   approach. The STRUCTURE is buildable today (walls, floor-over,
+   door); what gates its full function is military tooling (no squads
+   yet) and fortification-carving (no carve-fortification tool exists
+   — check before promising arrow slits). It is the fighting-answer
+   counterpart to the civilian-alert hole-up doctrine below.
+6. **Barbican/moat.** Far future; no current tooling story.
 
 **Shared upstream for stages 3-4**: every lever, plate, trap, and linked
 mechanism consumes mechanism items, so the mechanic's workshop and a
@@ -432,6 +457,18 @@ built one bridge/lever already knows how to build a power cutoff.
 
 ## Aesthetics that survive function
 
+- **The terrain picks the design language [OVERSEER-DEMONSTRATED
+  2026-07-19]:** on a dramatic site (canyon, brook, waterfall), shape
+  the fort TO the feature — walls tracking a gorge edge, social halls
+  fronting the view, a mist room harvesting a waterfall (dwarves love
+  mist). On a flat featureless site, go pure geometry — quadrant or
+  bilateral symmetry radiating from the spine. Don't impose either
+  language on the other kind of site; read the site first.
+- **Keep the pretty rock:** ore-vein pillars left standing as
+  colonnades, and vein stone incorporated into room walls, are free
+  architecture — weigh a vein's decorative value in place against its
+  ore value mined out before stripping it. (Both uses are real; the
+  mistake is only ever seeing one.)
 - **Odd-width rooms and halls center doors and thrones at zero cost** —
   the sanctioned exception to the no-fixed-dimensions rule, because it's
   a stated aesthetic principle rather than a functional spec.
@@ -445,12 +482,18 @@ built one bridge/lever already knows how to build a power cutoff.
   THEN furniture.** You cannot smooth a tile that already has furniture
   on it, and engraving needs an already-smoothed wall. Get the sequence
   right the first time or redo the earlier step.
-- **Smoothing needs no pick** — any dwarf can do it, not just a miner.
-  That makes it THE canonical idle-dwarf job to pair with dig-ahead:
-  while miners advance the rough-dig front, idle non-miners smooth the
-  level behind them. The `smooth` tool exists and works today. Engraving
-  is selective — which rooms earn it is a taste call per room, not a
-  default-everywhere behavior.
+- **Smoothing is an idle-labor luxury, not a default state
+  [OVERSEER-CONFIRMED 2026-07-19]** — it's labor-intensive for little
+  return unless many dwarves are genuinely idle. Smooth deliberately:
+  value targets (noble rooms, per the response loop above) and
+  idle-labor absorption when the census actually shows idle hands —
+  never as a floor's automatic finishing pass. It needs no pick (any
+  dwarf can do it), which is what makes it the right idle-absorber when
+  that condition holds. Engraving is selective on top of that — a taste
+  call per room. HARD SAFETY RULE: never include carved stairs or ramps
+  in a smooth rect — smoothing DESTROYS them (live incident: a 2x2
+  shaft half-lost). Check the rect against stair tiles before
+  designating, same discipline as dig-vs-building overlap.
 
 **v50 cave-in note**: pillars are pure decoration under current
 mechanics — a single support column holds up anything, so wide open

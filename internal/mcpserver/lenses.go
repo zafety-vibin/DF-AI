@@ -39,7 +39,7 @@ var lenses = map[string]LensDef{
 	},
 	"minerals": {
 		Name:   "minerals",
-		Legend: "lens=minerals: vein tiles painted a,b,c... (skipping t/u, reserved elsewhere) keyed to THIS view's mineral names, listed in a footnote below",
+		Legend: "lens=minerals: vein tiles painted a,b,c... (skipping d/t/u, reserved elsewhere) keyed to THIS view's mineral names, listed in a footnote below",
 		Gather: gatherMineralsLens,
 	},
 }
@@ -73,15 +73,21 @@ func lensGlyphSet(name string) []rune {
 	}
 }
 
-// mineralLetterAlphabet is a-z minus 't' (sapling/shrub, base terrain glyph)
-// and 'u' (pending-building, an always-on overlay) — the two lowercase
-// letters already reserved outside any lens. 24 letters remain for
-// per-view mineral identities; a view with more distinct minerals than
-// that just stops labeling beyond the cap (see gatherMineralsLens).
+// mineralLetterAlphabet is a-z minus 'd' (the designations lens's always-on
+// dig-designation glyph — RenderCrop paints s.Designated as 'd' on every
+// crop regardless of lens, so a vein tile that also happens to be
+// designated for digging would otherwise have its minerals-lens letter
+// silently overwrite that dig indicator, or vice versa depending on paint
+// order — a live collision confirmed on a fort tour), 't' (sapling/shrub,
+// base terrain glyph), and 'u' (pending-building, an always-on overlay) —
+// the three lowercase letters already reserved outside any lens. 23
+// letters remain for per-view mineral identities; a view with more
+// distinct minerals than that just stops labeling beyond the cap (see
+// gatherMineralsLens).
 var mineralLetterAlphabet = func() []rune {
 	var out []rune
 	for c := 'a'; c <= 'z'; c++ {
-		if c == 't' || c == 'u' {
+		if c == 'd' || c == 't' || c == 'u' {
 			continue
 		}
 		out = append(out, c)

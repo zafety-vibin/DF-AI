@@ -38,6 +38,9 @@
 #include "df/world.h"
 #include "df/job.h"
 #include "df/job_type.h"
+#include "df/itemdef_weaponst.h"
+#include "df/itemdef_armorst.h"
+#include "df/itemdef_toolst.h"
 #include "df/job_list_link.h"
 #include "df/job_item.h"
 #include "df/job_item_ref.h"
@@ -75,6 +78,7 @@
 #include "df/building.h"
 #include "df/building_type.h"
 #include "df/item.h"
+#include "df/item_actual.h"
 #include "df/item_type.h"
 #include "df/item_quality.h"
 #include "df/map_block.h"
@@ -103,6 +107,8 @@
 #include "df/item_flags.h"
 #include "df/entity_position.h"
 #include "df/entity_position_responsibility.h"
+#include "df/entity_position_assignment.h"
+#include "df/entity_position_flags.h"
 #include "df/unit_demand.h"
 #include "df/demand_room.h"
 #include "df/building_actual.h"
@@ -236,6 +242,80 @@ static int64_t jsonGetInt(const std::string &args, const std::string &key, int64
 // string and sets `status` (QUERY_STATUS_*).
 // ---------------------------------------------------------------------------
 
+// handleListJobSubtypes is job_types' second discovery mode (the
+// subtype_of arg, see handleListOrders below) -- the discovery half of the
+// item-SUBTYPE pinning wave (docs/decisions.md), the counterpart to
+// work_orders.cpp's resolveItemSubtype (queue_job/order's execution-time
+// resolver). Given a df::job_type NAME (resolved via the SAME find_enum_item
+// lookup resolveJobTypeByName/resolveItemSubtype use), enumerates every raws
+// itemdef `id` token valid for that job_type's produced item -- item_type
+// itself is derived from the job_type's own ENUM_ATTR(item), the same way
+// execution does, so this and the execution-time resolver can never
+// disagree about which raws vector is authoritative for a given job_type.
+//
+// Scoped to exactly the three item_types this pass's queue_job whitelist
+// actually needs (WEAPON/ARMOR/TOOL — MakeWeapon/MakeArmor/MakeTool) rather
+// than every item_type ItemTypeInfo::find's own switch could resolve
+// (Items.cpp's ITEMDEF_VECTORS macro covers 14): order's subtype path is
+// deliberately fully generic and would still resolve, say, MakeShield's
+// SHIELD subtype correctly even though it isn't listed here -- this is a
+// documented discovery-catalog gap, not a resolution-correctness one.
+static std::string handleListJobSubtypes(const std::string &jobTypeName, uint8_t &status) {
+    df::job_type jt;
+    std::ostringstream os;
+    if (!find_enum_item(&jt, jobTypeName)) {
+        os << "{\"orders\":[],\"subtype_of\":" << jsonStr(jobTypeName)
+           << ",\"error\":\"unrecognized job type name\"}";
+        status = QUERY_STATUS_SUCCESS;
+        return os.str();
+    }
+
+    df::item_type itemType = ENUM_ATTR(job_type, item, jt);
+    os << "{\"orders\":[],\"subtype_of\":" << jsonStr(jobTypeName)
+       << ",\"item_type\":" << jsonStr(ENUM_KEY_STR(item_type, itemType));
+
+    os << ",\"subtypes\":[";
+    bool first = true;
+    auto emit = [&](const std::string &id, const std::string &name) {
+        if (!first) os << ",";
+        first = false;
+        os << "{\"id\":" << jsonStr(id) << ",\"name\":" << jsonStr(name) << "}";
+    };
+    if (df::global::world) {
+        auto &defs = df::global::world->raws.itemdefs;
+        switch (itemType) {
+            case df::item_type::WEAPON:
+                for (auto *d : defs.weapons) if (d) emit(d->id, d->name);
+                break;
+            case df::item_type::ARMOR:
+                for (auto *d : defs.armor) if (d) emit(d->id, d->name);
+                break;
+            case df::item_type::TOOL:
+                for (auto *d : defs.tools) if (d) emit(d->id, d->name);
+                break;
+            default:
+                break;
+        }
+    }
+    os << "]";
+
+    if (first) {
+        // No subtypes were emitted -- either this job type has no item at
+        // all (itemType == NONE, e.g. ConstructBed) or a valid item_type
+        // this discovery catalog doesn't enumerate yet (see the scope note
+        // above). Distinguish the two rather than a single flat "empty".
+        if (itemType == df::item_type::NONE) {
+            os << ",\"note\":\"this job type has no associated item -- subtype pinning does not apply to it\"";
+        } else {
+            os << ",\"note\":\"no subtype catalog for item_type " << ENUM_KEY_STR(item_type, itemType)
+               << " yet -- order's subtype param may still resolve a valid raws token for it directly\"";
+        }
+    }
+    os << "}";
+    status = QUERY_STATUS_SUCCESS;
+    return os.str();
+}
+
 // handleListOrders is the discovery half of generalized item construction:
 // queue_job's ORDER_TYPE_BY_NAME path (work_orders.cpp:
 // resolveJobTypeByName, via DFHack's find_enum_item<df::job_type>) accepts
@@ -244,7 +324,16 @@ static int64_t jsonGetInt(const std::string &args, const std::string &key, int64
 // plugin rebuild. Exposed on the Go side as the standalone `job_types` tool
 // (NOT folded into order/queue_job/orders — those stay cheap on every
 // call; see internal/mcpserver/tools_state.go).
+//
+// subtype_of (optional): when set, bypasses the name-catalog listing below
+// entirely and delegates to handleListJobSubtypes above instead -- job_types'
+// second discovery mode, added for the item-SUBTYPE pinning wave.
 static std::string handleListOrders(const std::string &args, uint8_t &status) {
+    std::string subtypeOf = jsonGetString(args, "subtype_of");
+    if (!subtypeOf.empty()) {
+        return handleListJobSubtypes(subtypeOf, status);
+    }
+
     // filter is an optional case-insensitive SUBSTRING match against the
     // job type NAME (e.g. filter="hatch" finds ConstructHatchCover among
     // ~240 entries) — mirrors the stocks tool's category param
@@ -916,6 +1005,149 @@ static std::string handleNobleDemands(const std::string &args, uint8_t &status) 
     return os.str();
 }
 
+// handlePositionVacancies enumerates every entity_position DF has defined
+// on the fort's own historical_entity (df::global::plotinfo->group_id --
+// Manager/Bookkeeper/Broker/Sheriff/Captain of the Guard/militia-squad-
+// leader positions) and the parent civilization's (plotinfo->civ_id --
+// Monarch/Baron/Count/Duke succession positions), cross-referenced against
+// positions.assignments to report each slot vacant or filled. This is the
+// discovery surface appoint_position needs BEFORE calling it: which
+// position codes exist, which slots are open, and whether DF's own
+// possible_appointable/possible_elected caches (df.entity.xml's
+// T_positions compound, since v0.40.01) consider a slot directly
+// assignable at all -- MAYOR carries the ELECTED flag and is periodically
+// re-elected, never player-appointed, per general DF community knowledge
+// NOT independently verified against this checkout's raws (none bundled
+// here) -- the possible_elected/possible_appointable membership below is
+// the runtime-verifiable substitute for hardcoding that.
+//
+// This is the analogous data to noble_demands' positions[] block, but read
+// from the ENTITY side instead of a held unit's side -- required since a
+// VACANT slot has no unit to walk from (Units::getNoblePositions, which
+// noble_demands uses, only ever resolves FROM a historical figure).
+//
+// possible_appointable/possible_elected membership is checked by POINTER
+// identity against entity->positions.assignments (both vectors hold
+// pointers into that same underlying set of entity_position_assignment
+// objects) -- valid within this single read; no pointer is cached across
+// calls.
+static std::string handlePositionVacancies(const std::string &args, uint8_t &status) {
+    if (!df::global::world || !df::global::plotinfo) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("world or plotinfo is null");
+    }
+
+    std::ostringstream os;
+    os << "{\"entities\":[";
+    bool firstEntity = true;
+    std::set<int32_t> seenEntityIDs;
+
+    struct EntityRole { int32_t id; const char *role; };
+    EntityRole roles[2] = {
+        {df::global::plotinfo->group_id, "group"},
+        {df::global::plotinfo->civ_id, "civ"},
+    };
+
+    for (auto &er : roles) {
+        df::historical_entity *entity = df::historical_entity::find(er.id);
+        if (!entity) continue;
+        if (!seenEntityIDs.insert(entity->id).second) continue; // already emitted (civ_id==group_id edge case)
+
+        if (!firstEntity) os << ",";
+        firstEntity = false;
+
+        os << "{\"entity_id\":" << jsonInt(entity->id)
+           << ",\"role\":" << jsonStr(er.role);
+
+        std::set<df::entity_position_assignment*> appointableSet(
+            entity->positions.possible_appointable.begin(), entity->positions.possible_appointable.end());
+        std::set<df::entity_position_assignment*> electedSet(
+            entity->positions.possible_elected.begin(), entity->positions.possible_elected.end());
+
+        os << ",\"positions\":[";
+        bool firstPos = true;
+        for (auto *p : entity->positions.own) {
+            if (!p) continue;
+            if (!firstPos) os << ",";
+            firstPos = false;
+
+            os << "{\"code\":" << jsonStr(p->code)
+               << ",\"name\":" << jsonStr(p->name[0])
+               << ",\"precedence\":" << jsonInt(p->precedence)
+               << ",\"squad_size\":" << jsonInt(p->squad_size)
+               << ",\"active\":" << (p->flags.is_set(df::entity_position_flags::ACTIVE) ? "true" : "false")
+               << ",\"elected\":" << (p->flags.is_set(df::entity_position_flags::ELECTED) ? "true" : "false")
+               << ",\"requires_market\":" << (p->flags.is_set(df::entity_position_flags::REQUIRES_MARKET) ? "true" : "false")
+               << ",\"has_met_market_req\":" << (p->flags.is_set(df::entity_position_flags::HAS_MET_MARKET_REQ) ? "true" : "false")
+               << ",\"requires_population\":" << jsonInt(p->requires_population)
+               << ",\"has_met_pop_req\":" << (p->flags.is_set(df::entity_position_flags::HAS_MET_POP_REQ) ? "true" : "false");
+
+            os << ",\"responsibilities\":[";
+            bool firstResp = true;
+            for (int r = 0; r <= df::enum_traits<df::entity_position_responsibility>::last_item_value; r++) {
+                if (!p->responsibilities[r]) continue;
+                if (!firstResp) os << ",";
+                firstResp = false;
+                os << jsonStr(ENUM_KEY_STR(entity_position_responsibility, (df::entity_position_responsibility)r));
+            }
+            os << "]";
+
+            os << ",\"required_office\":" << jsonInt(p->required_office)
+               << ",\"required_bedroom\":" << jsonInt(p->required_bedroom)
+               << ",\"required_dining\":" << jsonInt(p->required_dining)
+               << ",\"required_tomb\":" << jsonInt(p->required_tomb)
+               << ",\"required_boxes\":" << jsonInt(p->required_boxes)
+               << ",\"required_cabinets\":" << jsonInt(p->required_cabinets)
+               << ",\"required_racks\":" << jsonInt(p->required_racks)
+               << ",\"required_stands\":" << jsonInt(p->required_stands);
+
+            os << ",\"assignments\":[";
+            bool firstAssign = true;
+            for (auto *a : entity->positions.assignments) {
+                if (!a || a->position_id != p->id) continue;
+                if (!firstAssign) os << ",";
+                firstAssign = false;
+
+                bool vacant = (a->histfig < 0);
+                os << "{\"assignment_id\":" << jsonInt(a->id)
+                   << ",\"vacant\":" << (vacant ? "true" : "false")
+                   << ",\"appointable\":" << (appointableSet.count(a) ? "true" : "false")
+                   << ",\"in_possible_elected\":" << (electedSet.count(a) ? "true" : "false")
+                   << ",\"holder_hist_figure_id\":" << jsonInt(a->histfig);
+
+                int32_t holderUnitID = -1;
+                std::string holderName;
+                if (!vacant) {
+                    // Resolve to a currently-active citizen unit, if any --
+                    // a holder may be a historical figure with no live unit
+                    // at this fort (e.g. a monarch who never physically
+                    // visits), in which case these stay -1/"".
+                    for (auto *u : df::global::world->units.active) {
+                        if (u && u->hist_figure_id == a->histfig) {
+                            holderUnitID = u->id;
+                            holderName = u->name.first_name;
+                            break;
+                        }
+                    }
+                }
+                os << ",\"holder_unit_id\":" << jsonInt(holderUnitID)
+                   << ",\"holder_name\":" << jsonStr(holderName)
+                   << "}";
+            }
+            os << "]";
+
+            os << "}";
+        }
+        os << "]";
+
+        os << "}";
+    }
+
+    os << "]}";
+    status = QUERY_STATUS_SUCCESS;
+    return os.str();
+}
+
 // handleFortWealth reports overall fort wealth plus embark-relative age.
 // df::global::plotinfo->tasks is df::entity_activity_statistics
 // (original-name reportst, defined in df.report.xml) -- its 'wealth'
@@ -1541,6 +1773,11 @@ uint8_t wireFromAbstractBuildingType(df::abstract_building_type t);
 // as wireFromAbstractBuildingType above).
 std::string handleListBurrows(const std::string &args, uint8_t &status);
 
+// Forward declaration -- implemented in military.cpp (uses df::squad/
+// Military types that file already includes; same forward-declared-
+// elsewhere pattern as handleListBurrows above).
+std::string handleListSquads(const std::string &args, uint8_t &status);
+
 static std::string handleListLocations(const std::string &args, uint8_t &status) {
     if (!df::global::world || !df::global::plotinfo) {
         status = QUERY_STATUS_ERROR;
@@ -1623,6 +1860,26 @@ static const uint32_t kNeverFortStockFlags =
     (uint32_t)df::item_flags::Mask::mask_rotten |
     (uint32_t)df::item_flags::Mask::mask_trader |
     (uint32_t)df::item_flags::Mask::mask_artifact;
+
+// itemStackUnits: how many actual servings/units a single df::item struct
+// represents -- handleStockpileInventory's existing tally counts STRUCTS
+// (one entry per stack), which silently undercounts anything that stacks
+// (df::item_actual::stack_size, original name 'amount'): 8 wine item
+// structs can be 8 nearly-empty stacks or 8 full ones (~200 servings), and
+// the struct-count tally alone can't tell those apart -- a live discrepancy
+// between the tool's "8" and the in-game stock screen's much larger number.
+// DRINK/FOOD/AMMO/POWDER_MISC/MEAT/FISH/EGG/PLANT/GLOB/CHEESE/SEEDS/BAR all
+// inherit item_actual (df.item.xml); strict_virtual_cast returns null for
+// anything that doesn't (bins, containers, artifacts, buildings-as-items),
+// which correctly falls back to 1 unit per struct -- same convention as
+// handleZoneValue's building_actual cast below. Clamped to >=1: a
+// structurally-real item is at least one physical unit regardless of what
+// stack_size happens to hold.
+static int32_t itemStackUnits(df::item *it) {
+    if (auto *ia = strict_virtual_cast<df::item_actual>(it))
+        return std::max<int32_t>(1, ia->stack_size);
+    return 1;
+}
 
 // handleListCrops enumerates plantable crops (plant raws carrying the SEED
 // flag) for the build_farm_plot/assign_crop workflow -- each entry's
@@ -1715,6 +1972,11 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
     // don't belong in either tally.
     std::map<std::tuple<int, int, int>, int> freeCounts;  // (item_type, mat_type, mat_index) → count
     std::map<std::tuple<int, int, int>, int> inUseCounts;
+    // Additive sibling of freeCounts/inUseCounts above: same keys, but
+    // summing itemStackUnits() (real serving/unit count) instead of
+    // incrementing by one per struct -- see itemStackUnits' doc comment.
+    std::map<std::tuple<int, int, int>, int> freeUnits;
+    std::map<std::tuple<int, int, int>, int> inUseUnits;
 
     // qualityCounts tallies (item_type, item_quality) → count across every
     // non-junk item, free or in-use alike -- a built bed's craftsmanship is
@@ -1750,10 +2012,13 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
         auto key = std::make_tuple((int)it->getType(),
                                    (int)it->getActualMaterial(),
                                    (int)it->getActualMaterialIndex());
+        int32_t units = itemStackUnits(it);
         if (it->flags.bits.in_building || it->flags.bits.construction) {
             inUseCounts[key]++;
+            inUseUnits[key] += units;
         } else {
             freeCounts[key]++;
+            freeUnits[key] += units;
         }
 
         int itype = (int)it->getType();
@@ -1788,12 +2053,24 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
         auto inUseIt = inUseCounts.find(key);
         int freeCount = (freeIt != freeCounts.end()) ? freeIt->second : 0;
         int inUseCount = (inUseIt != inUseCounts.end()) ? inUseIt->second : 0;
+        // units/in_use_units: additive siblings of count/in_use above,
+        // summing itemStackUnits() instead of counting structs -- see that
+        // function's doc comment. Present for every item type (not just
+        // stackable ones); for a non-stacking type units==count, which the
+        // Go renderer uses to decide whether showing the units number adds
+        // any information worth a caller's attention.
+        auto freeUnitsIt = freeUnits.find(key);
+        auto inUseUnitsIt = inUseUnits.find(key);
+        int freeUnitCount = (freeUnitsIt != freeUnits.end()) ? freeUnitsIt->second : 0;
+        int inUseUnitCount = (inUseUnitsIt != inUseUnits.end()) ? inUseUnitsIt->second : 0;
         if (!first) os << ",";
         first = false;
         os << "{\"item_type\":" << jsonStr(typeName)
            << ",\"material\":" << jsonStr(matName)
            << ",\"count\":" << jsonInt(freeCount)
-           << ",\"in_use\":" << jsonInt(inUseCount);
+           << ",\"in_use\":" << jsonInt(inUseCount)
+           << ",\"units\":" << jsonInt(freeUnitCount)
+           << ",\"in_use_units\":" << jsonInt(inUseUnitCount);
         if (itype == df::item_type::BOULDER) {
             // Economic stones (flux, ore-adjacent, etc.) are reserved by the
             // stone-use screen and masons won't take them by default — the
@@ -2304,6 +2581,123 @@ static std::string queryColumnProfile(const std::string &args, uint8_t &status) 
     return "{\"x\":" + jsonInt(x) + ",\"y\":" + jsonInt(y) + ",\"levels\":" + levels + "}";
 }
 
+// isUnambiguousModificationMarker: true when tt carries one of the tiletype-
+// level signals that can ONLY come from player action, never natural map
+// generation (source-audited against this checkout, see docs/decisions.md
+// look-scope-fort entry): a built Construction tile (tileMaterial==
+// CONSTRUCTION), a smoothed/engraved tile (isSmoothedAt above, which
+// already excludes Construction's own SMOOTH stamp), or a carved shape DF's
+// own map generator never produces -- STAIR_UP/DOWN/UPDOWN or
+// FORTIFICATION. RAMP is deliberately EXCLUDED here despite being a carved
+// shape elsewhere in this file (see designations.cpp's isCarvedFeatureShape,
+// a different use case): natural cavern/chasm terrain generates ramps too,
+// so a bare RAMP is not proof of player action. Carved minecart tracks
+// (tile_occupancy's carve_track_* bits) are a separate, always-player-made
+// signal checked by the caller via hasCarveTrackAt below, since they live
+// on a different DFHack struct (tile_occupancy, not tiletype).
+static bool isUnambiguousModificationMarker(df::tiletype tt) {
+    if (tileMaterial(tt) == df::tiletype_material::CONSTRUCTION) return true;
+    if (isSmoothedAt(tt)) return true;
+    df::tiletype_shape shape = tileShape(tt);
+    return shape == df::tiletype_shape::STAIR_UP ||
+           shape == df::tiletype_shape::STAIR_DOWN ||
+           shape == df::tiletype_shape::STAIR_UPDOWN ||
+           shape == df::tiletype_shape::FORTIFICATION;
+}
+
+static bool hasCarveTrackAt(df::tile_occupancy occ) {
+    return occ.bits.carve_track_north || occ.bits.carve_track_south ||
+           occ.bits.carve_track_east || occ.bits.carve_track_west;
+}
+
+// handleFortFootprint answers look scope=fort's data-source question the
+// honest way the backing research confirmed is possible: DFHack keeps no
+// persistent per-tile "a dwarf touched this" marker, so a scan can only
+// ever bound the tiletype-level signals above (plus carved minecart
+// tracks) -- an ordinary dug-out floor tile is byte-for-byte identical to
+// natural cave floor of the same material once the transient dig
+// designation bit clears (mirrors des.bits.smooth's own documented
+// lifecycle: a transient queue marker, not a permanent record). This query
+// therefore returns a BOUNDING BOX of the unambiguous markers on ONE
+// z-level, scanned across the WHOLE map, not scoped to any session --
+// this is what lets look scope=fort see renovations/smoothing/stairs from
+// BEFORE the current connection, which the old Go-side session-delta
+// journal (only ever populated from tile updates received this
+// connection) could never see.
+//
+// may_include_natural_cave is the honest disclosure for the box's real
+// blind spot: a bounding RECTANGLE can enclose untouched natural terrain
+// between two separate marked areas (e.g. a carved stairwell and a
+// smoothed room far apart on the same z), and plain dug-out floor inside
+// the box is invisible to this scan by construction. Set true when any
+// tile INSIDE the resulting box lacks an unambiguous marker while sitting
+// on bare, never-worked natural terrain (STONE/SOIL/MINERAL vein material)
+// -- the model should treat the box as an upper-bound approximation on
+// flagged levels, never an exact footprint.
+static std::string handleFortFootprint(const std::string &args, uint8_t &status) {
+    int64_t z = jsonGetInt(args, "z", -1);
+    if (!df::global::world || !df::global::world->map.x_count) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("world is null");
+    }
+    int32_t mapW = df::global::world->map.x_count;
+    int32_t mapH = df::global::world->map.y_count;
+    int32_t mapD = df::global::world->map.z_count;
+    if (z < 0 || z >= mapD) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("z out of range");
+    }
+
+    MapExtras::MapCache cache;
+    int16_t x1 = 32767, y1 = 32767, x2 = -32768, y2 = -32768;
+    bool found = false;
+    for (int16_t ty = 0; ty < (int16_t)mapH; ty++) {
+        for (int16_t tx = 0; tx < (int16_t)mapW; tx++) {
+            df::coord pos(tx, ty, (int16_t)z);
+            df::tiletype tt = cache.tiletypeAt(pos);
+            if (!isUnambiguousModificationMarker(tt) && !hasCarveTrackAt(cache.occupancyAt(pos)))
+                continue;
+            found = true;
+            if (tx < x1) x1 = tx;
+            if (tx > x2) x2 = tx;
+            if (ty < y1) y1 = ty;
+            if (ty > y2) y2 = ty;
+        }
+    }
+
+    if (!found) {
+        status = QUERY_STATUS_SUCCESS;
+        return "{\"found\":false,\"z\":" + jsonInt(z) + "}";
+    }
+
+    // Second pass, bounded to the box itself (cheap -- a fort's footprint is
+    // a small fraction of the whole map): does any tile INSIDE the box lack
+    // an unambiguous marker while sitting on bare natural terrain? See the
+    // doc comment above for what this disclosure is (and is not) claiming.
+    bool mayIncludeNaturalCave = false;
+    for (int16_t ty = y1; ty <= y2 && !mayIncludeNaturalCave; ty++) {
+        for (int16_t tx = x1; tx <= x2; tx++) {
+            df::coord pos(tx, ty, (int16_t)z);
+            df::tiletype tt = cache.tiletypeAt(pos);
+            if (isUnambiguousModificationMarker(tt) || hasCarveTrackAt(cache.occupancyAt(pos)))
+                continue;
+            df::tiletype_material mat = tileMaterial(tt);
+            if (mat == df::tiletype_material::STONE ||
+                mat == df::tiletype_material::SOIL ||
+                mat == df::tiletype_material::MINERAL) {
+                mayIncludeNaturalCave = true;
+                break;
+            }
+        }
+    }
+
+    status = QUERY_STATUS_SUCCESS;
+    return "{\"found\":true,\"z\":" + jsonInt(z) +
+           ",\"x1\":" + jsonInt(x1) + ",\"y1\":" + jsonInt(y1) +
+           ",\"x2\":" + jsonInt(x2) + ",\"y2\":" + jsonInt(y2) +
+           ",\"may_include_natural_cave\":" + (mayIncludeNaturalCave ? "true" : "false") + "}";
+}
+
 // handleZoneValue estimates a civzone's furniture-derived value plus a raw
 // component breakdown, for comparison against noble_demands' required_office/
 // required_bedroom/required_dining/required_tomb room-VALUE minimums
@@ -2408,20 +2802,43 @@ static std::string handleZoneValue(const std::string &args, uint8_t &status) {
         default: break;
     }
 
-    // Component walk -- see the file comment above for why no
-    // kNeverFortStockFlags-style junk filter is applied here: an item
-    // reachable only via a building's own contained_items is definitionally
-    // installed furniture, not loose stockpile-adjacent stock (and
-    // excluding mask_artifact, appropriate for the stockpile tally, would
-    // be actively wrong here -- an artifact bed is exactly the kind of item
-    // that should dominate a room's value).
+    // Component walk -- live position scan over df::global::world->
+    // buildings.all, NOT cz->contained_buildings. Confirmed by reading
+    // DFHack's own linkage code (modules/Buildings.cpp): contained_buildings
+    // is populated by two one-shot hooks -- add_building_to_all_zones()
+    // fires when a building is CONSTRUCTED (only finds a zone if one already
+    // exists at that instant) and add_zone_to_all_buildings() fires once
+    // when a zone is CONSTRUCTED (only finds buildings already in
+    // world->buildings.other.IN_PLAY, i.e. already fully built, at that
+    // instant) -- neither hook re-runs later. A zone drawn over furniture
+    // that was still under construction at zone-creation time (or built via
+    // any path that doesn't retrigger these hooks) never gets linked, and
+    // nothing ever reconciles it afterward: a live fort tour found exactly
+    // this -- a dining hall with 2 built tables + a chair reported 0
+    // components. Rather than depend on that order-sensitive DF-internal
+    // cache, scan world->buildings.all directly and test containment with
+    // Buildings::containsTile (the same extents-aware point-in-building
+    // test findCivzonesAt/findAtTile already use) -- this is a live query,
+    // always correct regardless of construction order, matching this file's
+    // existing list_buildings/list_zones precedent of scanning
+    // buildings.all fresh on every call instead of trusting a cache.
+    //
+    // See the file comment above for why no kNeverFortStockFlags-style junk
+    // filter is applied here: an item reachable only via a building's own
+    // contained_items is definitionally installed furniture, not loose
+    // stockpile-adjacent stock (and excluding mask_artifact, appropriate for
+    // the stockpile tally, would be actively wrong here -- an artifact bed
+    // is exactly the kind of item that should dominate a room's value).
     std::ostringstream comps;
     comps << "[";
     bool firstComp = true;
     int compCount = 0;
     int64_t totalValue = 0;
-    for (auto *cb : cz->contained_buildings) {
-        if (!cb) continue;
+    for (auto *cb : df::global::world->buildings.all) {
+        if (!cb || cb == b) continue;
+        if (cb->z != b->z) continue;
+        if (cb->getType() == df::building_type::Civzone) continue; // don't count a stacked zone as "furniture"
+        if (!Buildings::containsTile(b, df::coord2d(cb->centerx, cb->centery))) continue;
         auto *ba = strict_virtual_cast<df::building_actual>(cb);
         if (!ba) continue;
         std::string buildingTypeName = ENUM_KEY_STR(building_type, cb->getType());
@@ -2768,6 +3185,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = handleListMoods(args, status);
         } else if (name == "noble_demands") {
             data = handleNobleDemands(args, status);
+        } else if (name == "position_vacancies") {
+            data = handlePositionVacancies(args, status);
         } else if (name == "caravan_status") {
             data = handleCaravanStatus(args, status);
         } else if (name == "depot_goods") {
@@ -2792,6 +3211,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = handleListLocations(args, status);
         } else if (name == "list_burrows") {
             data = handleListBurrows(args, status);
+        } else if (name == "list_squads") {
+            data = handleListSquads(args, status);
         } else if (name == "list_crops") {
             data = handleListCrops(args, status);
         } else if (name == "stockpile_inventory") {
@@ -2802,6 +3223,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = queryMapSlice(args, status);
         } else if (name == "column_profile") {
             data = queryColumnProfile(args, status);
+        } else if (name == "fort_footprint") {
+            data = handleFortFootprint(args, status);
         } else {
             status = QUERY_STATUS_UNKNOWN;
             data = jsonError("unknown query name: " + name);

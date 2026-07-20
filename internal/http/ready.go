@@ -6,9 +6,9 @@ import (
 
 // ReadinessStatus indicates whether server is ready to accept requests
 type ReadinessStatus struct {
-	Ready   bool              `json:"ready"`
-	Checks  map[string]bool   `json:"checks"`
-	Message string            `json:"message,omitempty"`
+	Ready   bool            `json:"ready"`
+	Checks  map[string]bool `json:"checks"`
+	Message string          `json:"message,omitempty"`
 }
 
 // readyHandler implements GET /ready endpoint

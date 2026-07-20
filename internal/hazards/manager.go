@@ -197,7 +197,7 @@ func (m *HazardManager) BuildFromEntities(entities []protocol.EntityInfo) {
 			m.dwarves.AddEntity(entity)
 		case protocol.EntityTypeEnemy:
 			m.enemies.AddEntity(entity)
-		// Ignore animals and other types for now
+			// Ignore animals and other types for now
 		}
 	}
 }

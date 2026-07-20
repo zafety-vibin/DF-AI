@@ -18,9 +18,9 @@ import (
 //
 // Wiring:
 //
-//   pop := worldmodel.NewPopulator(wm, dfClient, logger)
-//   pop.SetModDetector(detector)   // once available, after FULL_STATE
-//   go pop.Run(ctx)                // single goroutine drives all updates
+//	pop := worldmodel.NewPopulator(wm, dfClient, logger)
+//	pop.SetModDetector(detector)   // once available, after FULL_STATE
+//	go pop.Run(ctx)                // single goroutine drives all updates
 //
 // FullState is still wired through the dfhack client's SetOnFullState
 // callback (single-callback API, not a channel) — call OnFullState from
@@ -199,12 +199,39 @@ func (p *Populator) OnEntityUpdate(msg *protocol.EntityUpdateMessage) {
 	}
 
 	p.wm.mu.Lock()
+	// World-switch detection (Q5): compare the identity this message just
+	// reported against the last one this process observed BEFORE
+	// overwriting Entities/Zones below -- a live incident served a
+	// PREVIOUS world's roster verbatim after a save-swap (fort abandoned/
+	// completed, a different save loaded into the same running DF process
+	// without restarting df-mcp) until a step forced a resync. Entities
+	// and Zones are already wholesale-replaced by every ENTITY_UPDATE
+	// regardless (no separate flush needed there); Alerts is the one piece
+	// of Observed state that ACCUMULATES instead of being overwritten, so
+	// it needs an explicit Reset() on a detected switch or the previous
+	// world's cancellations/ambushes would linger forever.
+	worldSwitched := false
+	if msg.World != nil {
+		newWorld := WorldSnapshot{SaveDir: msg.World.SaveDir, ID1: msg.World.ID1, ID2: msg.World.ID2, Known: true}
+		prev := p.wm.Observed.World
+		if prev.Changed(newWorld) {
+			worldSwitched = true
+			newWorld.Switches = prev.Switches + 1
+		} else {
+			newWorld.Switches = prev.Switches
+		}
+		p.wm.Observed.World = newWorld
+	}
 	p.wm.Observed.Entities = entSnap
 	p.wm.Observed.Zones = zoneSnap
 	if msg.FortInfo != nil {
 		p.wm.Observed.Fort = fortSnap
 	}
 	p.wm.mu.Unlock()
+
+	if worldSwitched && p.wm.Observed.Alerts != nil {
+		p.wm.Observed.Alerts.Reset()
+	}
 
 	p.wm.markUpdated()
 
@@ -216,6 +243,10 @@ func (p *Populator) OnEntityUpdate(msg *protocol.EntityUpdateMessage) {
 			logging.Field{Key: "enemy_count", Value: len(entSnap.Enemies)},
 			logging.Field{Key: "zone_count", Value: len(zoneSnap.All)},
 			logging.Field{Key: "fort_valid", Value: fortSnap.Valid})
+		if worldSwitched {
+			p.logger.Info("worldmodel: world identity changed -- entity cache and alerts flushed",
+				logging.Field{Key: "save_dir", Value: msg.World.SaveDir})
+		}
 	}
 }
 

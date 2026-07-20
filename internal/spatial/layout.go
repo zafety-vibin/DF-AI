@@ -23,14 +23,14 @@ const (
 
 // ZLevelDesignation represents a designated purpose for a Z-level with capacity and hazard metadata
 type ZLevelDesignation struct {
-	ZLevel      int                // Z-coordinate of this level (0-199)
-	Purpose     DesignationPurpose // Intended use (housing, workshop, farm, etc.)
-	Capacity    CapacityStatus     // Space availability
-	HasSoil     bool               // Whether this Z-level contains soil
-	HasAquifer  bool               // Whether this Z-level has aquifer
-	HasLava     bool               // Whether this Z-level has lava
-	IsCavern    bool               // Whether this Z-level is cavern layer
-	Notes       string             // Human-readable rationale for designation (max 200 chars)
+	ZLevel     int                // Z-coordinate of this level (0-199)
+	Purpose    DesignationPurpose // Intended use (housing, workshop, farm, etc.)
+	Capacity   CapacityStatus     // Space availability
+	HasSoil    bool               // Whether this Z-level contains soil
+	HasAquifer bool               // Whether this Z-level has aquifer
+	HasLava    bool               // Whether this Z-level has lava
+	IsCavern   bool               // Whether this Z-level is cavern layer
+	Notes      string             // Human-readable rationale for designation (max 200 chars)
 }
 
 // IsSafe returns true if no hazards present
@@ -72,12 +72,12 @@ type StrategicLayout struct {
 
 // StaircaseLocation represents a staircase on the map (absolute coordinates)
 type StaircaseLocation struct {
-	AbsoluteX   int    `json:"x"`        // Absolute map coordinates
-	AbsoluteY   int    `json:"y"`
-	AbsoluteZ   int    `json:"z"`
-	StairType   string `json:"type"`     // "up", "down", "updown"
-	IsOrphaned  bool   `json:"orphaned"` // True if no matching stair above/below
-	ConnectedTo *StaircaseLocation `json:"-"` // Link to stair on adjacent Z (internal use)
+	AbsoluteX   int                `json:"x"` // Absolute map coordinates
+	AbsoluteY   int                `json:"y"`
+	AbsoluteZ   int                `json:"z"`
+	StairType   string             `json:"type"`     // "up", "down", "updown"
+	IsOrphaned  bool               `json:"orphaned"` // True if no matching stair above/below
+	ConnectedTo *StaircaseLocation `json:"-"`        // Link to stair on adjacent Z (internal use)
 }
 
 // ZoneLayer represents a functional Z-level with available regions and existing infrastructure
@@ -92,9 +92,9 @@ type ZoneLayer struct {
 	ExistingStockpiles map[string]int `json:"existing_stockpiles"` // "stone": 3 (future)
 
 	// Staircase tracking for connectivity (CRITICAL)
-	ExistingStairs []*StaircaseLocation `json:"existing_stairs"`  // All stairs on this Z-level
-	ConnectsToZAbove bool              `json:"connects_above"` // Has up-stairs to Z+1
-	ConnectsToZBelow bool              `json:"connects_below"` // Has down-stairs to Z-1
+	ExistingStairs   []*StaircaseLocation `json:"existing_stairs"` // All stairs on this Z-level
+	ConnectsToZAbove bool                 `json:"connects_above"`  // Has up-stairs to Z+1
+	ConnectsToZBelow bool                 `json:"connects_below"`  // Has down-stairs to Z-1
 	OrphanedStairs   []*StaircaseLocation `json:"orphaned_stairs"` // Stairs leading nowhere
 
 	Constraints []string `json:"constraints"` // "avoid_aquifer", "requires_soil", "hazard_zone"

@@ -41,10 +41,10 @@ type AutonomousLoop struct {
 	feedbackGenerator   *commands.FeedbackGenerator
 	conversationHistory *ConversationHistory
 	systemPrompt        string
-	phaseManager        *phases.PhaseManager // Fort development phases
+	phaseManager        *phases.PhaseManager  // Fort development phases
 	agentRegistry       *agents.AgentRegistry // Goal-oriented agents (Feature 006)
 	enableGoalAgents    bool                  // Enable graph-based agents vs direct-LLM
-	graphExecutor       *agents.GraphExecutor  // Converts nodes to commands
+	graphExecutor       *agents.GraphExecutor // Converts nodes to commands
 
 	// Feature 007: Spatial Validator Planner
 	svp              *spatial.SpatialValidatorPlanner // Z-level designations
@@ -53,23 +53,23 @@ type AutonomousLoop struct {
 	entitiesReceived bool                             // Whether ENTITY_UPDATE received
 
 	// Feature 007: Zone Extraction
-	zoneExtractor *zones.ZoneExtractor   // Zone data extractor
-	cachedZones   []protocol.ZoneData    // Latest zone data from ENTITY_UPDATE
-	zonesMu       sync.RWMutex           // Protects zone cache
+	zoneExtractor *zones.ZoneExtractor // Zone data extractor
+	cachedZones   []protocol.ZoneData  // Latest zone data from ENTITY_UPDATE
+	zonesMu       sync.RWMutex         // Protects zone cache
 
 	// Feature 007: Blueprint Integration
 	blueprintMetadata []*blueprints.BlueprintMetadata // Available blueprint designs
-	blueprintLib      *blueprints.BlueprintLibrary   // Blueprint library for expansion
+	blueprintLib      *blueprints.BlueprintLibrary    // Blueprint library for expansion
 
 	// Feature 007: Intent-based planning (HRM architecture)
 	useIntentPlanning bool // Enable intent-based planning vs coordinate-based
 
-	logFile             *os.File
-	mu                  sync.RWMutex
-	running             bool
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	wg                  sync.WaitGroup
+	logFile *os.File
+	mu      sync.RWMutex
+	running bool
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 
 	// Pending command tracking
 	pendingCommands map[uint32]*commands.PendingCommand
@@ -335,7 +335,7 @@ func (al *AutonomousLoop) runCycle() error {
 				}
 			} else {
 				al.logger.Info("no intent proposals this cycle (all targets met)")
-				return nil  // No work needed - skip legacy LLM
+				return nil // No work needed - skip legacy LLM
 			}
 		} else {
 			// Existing coordinate-based flow
@@ -1278,7 +1278,7 @@ func (al *AutonomousLoop) computeFortMetrics() *agents.FortMetrics {
 
 	// Calculate food per dwarf (placeholder - needs actual food tracking)
 	// TODO: Add food stock tracking from game state
-	metrics.FoodPerDwarf = 15.0 // Placeholder
+	metrics.FoodPerDwarf = 15.0  // Placeholder
 	metrics.DrinkPerDwarf = 15.0 // Placeholder
 
 	// Count bedrooms from modifications (chambers)

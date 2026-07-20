@@ -24,6 +24,33 @@ import (
 // wilderness. Never returns error/warning text: a fresh designation
 // being disconnected from existing space is normal DF workflow (room
 // first, corridor second), not a mistake — see design doc "Component 3".
+//
+// KNOWN LIMITATION, re-examined and left undispatched (fortress/memory/
+// goals.md, 2026-07-19 live incident): right after a reconnect/resync,
+// this can still point at a real-but-misleading tile, sometimes near a
+// map corner. Root cause: NearestRegion (topology/regions.go) only ever
+// returns an ACTUAL member tile of a real flood-filled region (the
+// bbox-corner-synthesis bug this function's own history already fixed,
+// see git blame) — but if the topology overlay itself hasn't caught up to
+// the fort's actual dug extent yet (rg.Regions legitimately tiny right
+// after `topo` gets rebuilt from a fresh FULL_STATE, e.g. only the
+// embark's initial surface sliver is classified Open so far), the
+// "nearest" answer is technically correct and honest, just unhelpfully
+// far. This is a data-freshness gap, not an algorithm bug.
+//
+// Q4's fort_footprint plugin query (tools_percept.go, added the same pass
+// as this comment) does NOT fix it and was deliberately not wired in
+// here: it returns a coarse per-z BOUNDING RECTANGLE of unambiguous
+// modification markers, with no per-tile walkability/adjacency data at
+// all. Using it as a NearestRegion substitute could suggest a connector
+// terminating on a wall, an unexplored corner of the rectangle, or a tile
+// with no real path to it — strictly worse than today's occasionally-
+// unhelpful-but-honest region-graph answer, which is always at least a
+// real, reachable tile. A real fix needs a freshness/coverage signal for
+// the region graph itself (e.g. skip the suggestion when total known-open
+// tiles is suspiciously small relative to the fort's history, or gate on
+// time-since-last-FULL_STATE) — not attempted this pass; no such signal
+// is threaded through Bridge/WorldModel today.
 func connectorSuggestion(topo *topology.TopologyOverlay, digs *pendingDigs, x1, y1, z1, x2, y2, z2 int16) string {
 	rg := topology.BuildRegionGraph(topo)
 	if len(rg.Regions) == 0 {
@@ -689,6 +716,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		Item      string `json:"item" jsonschema:"known short vocabulary: bed|table|chair|door|barrel|bucket|cabinet|coffer|drink|meal|blocks|crafts — OR any DFHack job_type enum name (e.g. ProcessPlants, MakeCheese, MilkCreature, ShearCreature, SpinThread) for anything not in that list; look one up with the job_types tool."`
 		Count     int    `json:"count" jsonschema:"how many to queue (start small: 1-3)"`
 		Material  string `json:"material,omitempty" jsonschema:"wood|bone|shell|leather|silk|plant|cloth|yarn material-category keyword, OR any DFHack material token (e.g. INORGANIC, INORGANIC:LIMONITE) — needed for job types with real material ambiguity (e.g. MakeFigurine); leave unset otherwise — see job_types"`
+		Subtype   string `json:"subtype,omitempty" jsonschema:"a bare raws itemdef token (e.g. ITEM_WEAPON_PICK) pinning exactly which item to make — optional; leave unset to let the manager pick. Look up valid tokens with job_types subtype_of=<item>."`
 		Frequency string `json:"frequency,omitempty" jsonschema:"one_time|daily|monthly|seasonally|yearly — recurring cadence; default one_time"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
@@ -721,10 +749,13 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 			}
 			freq = f
 		}
-		res, err := b.Exec.SendWorkOrderCommand(ot, uint16(in.Count), wireName, in.Material, freq)
+		res, err := b.Exec.SendWorkOrderCommand(ot, uint16(in.Count), wireName, in.Material, in.Subtype, freq)
 		what := fmt.Sprintf("order %dx %s", in.Count, in.Item)
 		if in.Material != "" {
 			what += " [" + in.Material + "]"
+		}
+		if in.Subtype != "" {
+			what += " [" + in.Subtype + "]"
 		}
 		if freq != protocol.WorkOrderFrequencyOneTime {
 			what += " [" + strings.ToLower(in.Frequency) + "]"
@@ -736,9 +767,10 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		X        int    `json:"x" jsonschema:"target workshop's tile (any tile of its footprint)"`
 		Y        int    `json:"y"`
 		Z        int    `json:"z"`
-		Item     string `json:"item,omitempty" jsonschema:"known short vocabulary: bed|table|chair|door|barrel|bucket|cabinet|coffer|blocks (drink/meal/crafts are NOT supported here — drink has no direct job_type mapping; meal/crafts resolve fine but the plugin rejects them, no verified material filter yet — use the order tool for all three instead) — OR any DFHack job_type enum name (e.g. ConstructHatchCover, SmeltOre) for anything not in that list; look one up with the job_types tool. Mutually exclusive with reaction — set exactly one."`
+		Item     string `json:"item,omitempty" jsonschema:"known short vocabulary: bed|table|chair|door|barrel|bucket|cabinet|coffer|blocks (drink/meal/crafts are NOT supported here — drink has no direct job_type mapping; meal/crafts resolve fine but the plugin rejects them, no verified material filter yet — use the order tool for all three instead) — OR any DFHack job_type enum name (e.g. ConstructHatchCover, SmeltOre, MakeWeapon) for anything not in that list; look one up with the job_types tool. Mutually exclusive with reaction — set exactly one."`
 		Reaction string `json:"reaction,omitempty" jsonschema:"reaction code e.g. BREW_DRINK_FROM_PLANT — discover via list_reactions; requires plugin rebuild to take effect. Mutually exclusive with item — set exactly one."`
 		Material string `json:"material,omitempty" jsonschema:"an exact DFHack material token (e.g. INORGANIC:LIMONITE) — required when item=SmeltOre (pins the ore raw); unused otherwise"`
+		Subtype  string `json:"subtype,omitempty" jsonschema:"a bare raws itemdef token (e.g. ITEM_WEAPON_PICK) — required when item=MakeWeapon/MakeArmor/MakeTool (no way to pick which item to forge without it); unused otherwise. Look up valid tokens with job_types subtype_of=<item>."`
 		Count    int    `json:"count" jsonschema:"how many jobs to queue, one at a time (default 1)"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
@@ -784,7 +816,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		queued := 0
 		var lastErr string
 		for i := 0; i < count; i++ {
-			res, err := b.Exec.SendQueueJob(int16(in.X), int16(in.Y), int16(in.Z), ot, wireName, in.Material)
+			res, err := b.Exec.SendQueueJob(int16(in.X), int16(in.Y), int16(in.Z), ot, wireName, in.Material, in.Subtype)
 			if err == nil && res != nil && res.Success && res.ErrorMsg == "" {
 				queued++
 				continue
@@ -804,6 +836,59 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		default:
 			return withDash(b, ctx, fmt.Sprintf("FAILED: %s — %s", what, lastErr)), nil, nil
 		}
+	})
+
+	type cancelOrderIn struct {
+		ID int `json:"id" jsonschema:"manager order id, from the orders tool"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "cancel_order",
+		Description: "Delete a manager work order by id (see orders for ids) — cancels any jobs it already spawned and cleans up its bookkeeping, including any other order's dependency reference to it. Irreversible; use order to requeue from scratch if still needed.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in cancelOrderIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		res, err := b.Exec.SendCancelOrder(int32(in.ID))
+		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("cancel_order id=%d", in.ID))), nil, nil
+	})
+
+	type editOrderIn struct {
+		ID        int    `json:"id" jsonschema:"manager order id, from the orders tool"`
+		Amount    int    `json:"amount,omitempty" jsonschema:"new target total quantity (1-100) — NOT a delta; work already done toward the old total carries over, only the remaining count shifts. Omit to leave the amount unchanged."`
+		Frequency string `json:"frequency,omitempty" jsonschema:"one_time|daily|monthly|seasonally|yearly — new recurring cadence. Omit to leave the frequency unchanged."`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "edit_order",
+		Description: "Change an existing manager work order's target quantity and/or recurring frequency in place — cheaper than cancel_order + order when only those two fields need to change. Set at least one of amount/frequency. If the new amount is already met by work done so far, the order completes and is removed automatically (the ACK says so).",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in editOrderIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		hasAmount := in.Amount != 0
+		hasFrequency := in.Frequency != ""
+		if !hasAmount && !hasFrequency {
+			return withDash(b, ctx, "edit_order requires at least one of amount or frequency"), nil, nil
+		}
+		if hasAmount && (in.Amount < 1 || in.Amount > 100) {
+			return withDash(b, ctx, fmt.Sprintf("amount %d out of range (1-100)", in.Amount)), nil, nil
+		}
+		var freq uint8
+		if hasFrequency {
+			f, ok := workOrderFrequencies[strings.ToLower(in.Frequency)]
+			if !ok {
+				return withDash(b, ctx, fmt.Sprintf("unknown frequency %q (one_time|daily|monthly|seasonally|yearly)", in.Frequency)), nil, nil
+			}
+			freq = f
+		}
+		res, err := b.Exec.SendEditOrder(int32(in.ID), hasAmount, uint16(in.Amount), hasFrequency, freq)
+		what := fmt.Sprintf("edit_order id=%d", in.ID)
+		if hasAmount {
+			what += fmt.Sprintf(" amount=%d", in.Amount)
+		}
+		if hasFrequency {
+			what += " freq=" + strings.ToLower(in.Frequency)
+		}
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 
 	type setLaborIn struct {
@@ -1015,7 +1100,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "cancel_designation",
-		Description: "Clear dig designations in a rectangle on one z-level (undo a mistaken dig order).",
+		Description: "Clear dig AND smooth/engrave designations in a rectangle on one z-level (undo a mistaken dig or smooth order).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in rectZIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -1034,7 +1119,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "smooth",
-		Description: "Smooth or engrave natural stone in a rectangle (soil is silently skipped by DF).",
+		Description: "Smooth or engrave natural stone in a rectangle (soil is silently skipped by DF). Overwrites any carved stairs/ramps/fortifications in the rectangle -- the ack notes this rather than blocking; cancel_designation before smoothing if you need to keep them.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in smoothIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -1139,6 +1224,51 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		}
 		res, err := b.Exec.SendBringGoodsToDepot(int16(in.X), int16(in.Y), int16(in.Z), in.ItemType, in.Material, int32(in.MaxCount), int64(in.MaxTotalValue))
 		what := fmt.Sprintf("bring goods to depot (%d,%d,%d)", in.X, in.Y, in.Z)
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
+	})
+
+	type appointPositionIn struct {
+		UnitID       int    `json:"unit_id" jsonschema:"the dwarf's id from the dwarves tool — must be a current citizen"`
+		PositionCode string `json:"position_code" jsonschema:"DFHack entity_position.code token (e.g. MANAGER, BOOKKEEPER, BROKER, SHERIFF, CAPTAIN_OF_THE_GUARD) — check position_vacancies for valid codes and open slots"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "appoint_position",
+		Description: "Appoint (or replace the holder of) one administrative/noble position by DFHack position code — fills an EXISTING vacant assignment slot, or replaces the current holder, following the same mutation DFHack's own make-monarch.lua script uses. Fails truthfully if the position hasn't unlocked yet (population/market requirement unmet, no assignment slot exists) or the code doesn't match any position on the fort or civilization entity — check position_vacancies first. Elected positions (e.g. MAYOR) are not directly appointable and will fail. Justice-mechanic consequences of Sheriff/Captain of the Guard (jailing, patrols) are not modeled here — this only performs the appointment.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in appointPositionIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		if in.PositionCode == "" {
+			return withDash(b, ctx, "appoint_position requires a non-empty position_code"), nil, nil
+		}
+		res, err := b.Exec.SendAppointPosition(int32(in.UnitID), in.PositionCode)
+		what := fmt.Sprintf("appoint unit#%d to %s", in.UnitID, in.PositionCode)
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
+	})
+
+	type setBookkeeperPrecisionIn struct {
+		Precision string `json:"precision" jsonschema:"nearest_10|nearest_100|nearest_1000|nearest_10000|all_accurate — goal precision for the Bookkeeper's record-keeping"`
+	}
+	bookkeeperPrecisions := map[string]uint8{
+		"nearest_10":    protocol.BookkeeperPrecisionNearest10,
+		"nearest_100":   protocol.BookkeeperPrecisionNearest100,
+		"nearest_1000":  protocol.BookkeeperPrecisionNearest1000,
+		"nearest_10000": protocol.BookkeeperPrecisionNearest10000,
+		"all_accurate":  protocol.BookkeeperPrecisionAllAccurate,
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "set_bookkeeper_precision",
+		Description: "Set the Bookkeeper's goal record-keeping precision (plotinfo->nobles.bookkeeper_settings) — the same setting the Nobles screen exposes. UNVERIFIED whether DF clamps/ignores a precision beyond what the current Bookkeeper's Appraisal skill supports (the in-game UI grays out unearned options; this writes directly).",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in setBookkeeperPrecisionIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		precision, ok := bookkeeperPrecisions[strings.ToLower(in.Precision)]
+		if !ok {
+			return withDash(b, ctx, fmt.Sprintf("unknown precision %q (nearest_10|nearest_100|nearest_1000|nearest_10000|all_accurate)", in.Precision)), nil, nil
+		}
+		res, err := b.Exec.SendSetBookkeeperPrecision(precision)
+		what := fmt.Sprintf("set bookkeeper precision to %s", in.Precision)
 		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 }

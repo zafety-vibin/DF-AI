@@ -508,6 +508,76 @@ func TestQueueJobMaterialRoundTrip(t *testing.T) {
 	}
 }
 
+// TestQueueJobSubtypeRoundTrip covers the item-SUBTYPE pinning wave's
+// Subtype field (a bare raws itemdef token, e.g. "ITEM_WEAPON_PICK") —
+// travels unconditionally after Material, alongside the by-name path, the
+// same way TestQueueJobMaterialRoundTrip above covers Material.
+func TestQueueJobSubtypeRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   26,
+		CommandType: CommandTypeQueueJob,
+		QueueJob: QueueJobDesignation{
+			X: 50, Y: 50, Z: 139,
+			OrderType:   OrderTypeByName,
+			JobTypeName: "MakeWeapon",
+			Subtype:     "ITEM_WEAPON_PICK",
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 26 || got.CommandType != CommandTypeQueueJob || got.QueueJob != orig.QueueJob {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+	if got.QueueJob.Subtype != "ITEM_WEAPON_PICK" {
+		t.Fatalf("subtype lost in round-trip: %+v", got.QueueJob)
+	}
+}
+
+// TestWorkOrderSubtypeRoundTrip covers the item-SUBTYPE pinning wave's
+// Subtype field on WorkOrderDesignation — travels unconditionally after
+// Frequency, alongside the byte-vocabulary path (mirrors
+// TestWorkOrderMaterialFrequencyRoundTrip above).
+func TestWorkOrderSubtypeRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   27,
+		CommandType: CommandTypeWorkOrder,
+		Order: WorkOrderDesignation{
+			OrderType:   OrderTypeByName,
+			Quantity:    2,
+			JobTypeName: "MakeArmor",
+			Subtype:     "ITEM_ARMOR_MAIL_SHIRT",
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 27 || got.CommandType != CommandTypeWorkOrder || got.Order != orig.Order {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+	if got.Order.Subtype != "ITEM_ARMOR_MAIL_SHIRT" {
+		t.Fatalf("subtype lost in round-trip: %+v", got.Order)
+	}
+}
+
 func TestSetLaborRoundTrip(t *testing.T) {
 	orig := &CommandMessage{
 		CommandID:   9,
@@ -1268,5 +1338,390 @@ func TestBringGoodsToDepotMaxCountZeroRejected(t *testing.T) {
 	}
 	if _, err := SerializeMessage(orig); err == nil {
 		t.Fatal("MaxCount == 0 must fail validation")
+	}
+}
+
+func TestAppointPositionRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   19,
+		CommandType: CommandTypeAppointPosition,
+		AppointPosition: AppointPositionDesignation{
+			UnitID:       42,
+			PositionCode: "BOOKKEEPER",
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 19 || got.CommandType != CommandTypeAppointPosition ||
+		got.AppointPosition != orig.AppointPosition {
+		t.Fatalf("round-trip mismatch: %+v", got.AppointPosition)
+	}
+}
+
+func TestAppointPositionEmptyCodeRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:       19,
+		CommandType:     CommandTypeAppointPosition,
+		AppointPosition: AppointPositionDesignation{UnitID: 42, PositionCode: ""},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("empty PositionCode must fail validation")
+	}
+}
+
+func TestSetBookkeeperPrecisionRoundTrip(t *testing.T) {
+	for _, precision := range []uint8{
+		BookkeeperPrecisionNearest10, BookkeeperPrecisionNearest100,
+		BookkeeperPrecisionNearest1000, BookkeeperPrecisionNearest10000,
+		BookkeeperPrecisionAllAccurate,
+	} {
+		orig := &CommandMessage{
+			CommandID:              20,
+			CommandType:            CommandTypeSetBookkeeperPrecision,
+			SetBookkeeperPrecision: SetBookkeeperPrecisionDesignation{Precision: precision},
+		}
+		data, err := SerializeMessage(orig)
+		if err != nil {
+			t.Fatalf("precision %d encode: %v", precision, err)
+		}
+		decoded, err := DeserializeMessage(data)
+		if err != nil {
+			t.Fatalf("precision %d decode: %v", precision, err)
+		}
+		got, ok := decoded.(*CommandMessage)
+		if !ok {
+			t.Fatalf("decoded wrong type %T", decoded)
+		}
+		if got.CommandID != 20 || got.CommandType != CommandTypeSetBookkeeperPrecision ||
+			got.SetBookkeeperPrecision != orig.SetBookkeeperPrecision {
+			t.Fatalf("precision %d round-trip mismatch: %+v", precision, got.SetBookkeeperPrecision)
+		}
+	}
+}
+
+func TestSetBookkeeperPrecisionInvalidRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:              20,
+		CommandType:            CommandTypeSetBookkeeperPrecision,
+		SetBookkeeperPrecision: SetBookkeeperPrecisionDesignation{Precision: BookkeeperPrecisionAllAccurate + 1},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("precision out of range must fail validation")
+	}
+}
+
+func TestCreateSquadRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   21,
+		CommandType: CommandTypeCreateSquad,
+		CreateSquad: CreateSquadDesignation{PositionCode: "MILITIA_CAPTAIN"},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 21 || got.CommandType != CommandTypeCreateSquad || got.CreateSquad != orig.CreateSquad {
+		t.Fatalf("round-trip mismatch: %+v", got.CreateSquad)
+	}
+}
+
+func TestCreateSquadEmptyCodeRoundTrip(t *testing.T) {
+	// PositionCode == "" is legal (the plugin defaults it to
+	// "MILITIA_CAPTAIN") -- must round-trip as a zero-length string, not
+	// panic on a nil-length read.
+	orig := &CommandMessage{
+		CommandID:   22,
+		CommandType: CommandTypeCreateSquad,
+		CreateSquad: CreateSquadDesignation{PositionCode: ""},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CreateSquad.PositionCode != "" {
+		t.Fatalf("expected empty position code, got: %+v", got.CreateSquad)
+	}
+}
+
+func TestAssignSquadRoundTrip(t *testing.T) {
+	for _, add := range []bool{true, false} {
+		orig := &CommandMessage{
+			CommandID:   23,
+			CommandType: CommandTypeAssignSquad,
+			AssignSquad: AssignSquadDesignation{SquadID: 3, UnitID: 42, Add: add},
+		}
+		data, err := SerializeMessage(orig)
+		if err != nil {
+			t.Fatalf("add=%v encode: %v", add, err)
+		}
+		decoded, err := DeserializeMessage(data)
+		if err != nil {
+			t.Fatalf("add=%v decode: %v", add, err)
+		}
+		got, ok := decoded.(*CommandMessage)
+		if !ok {
+			t.Fatalf("decoded wrong type %T", decoded)
+		}
+		if got.CommandID != 23 || got.CommandType != CommandTypeAssignSquad || got.AssignSquad != orig.AssignSquad {
+			t.Fatalf("add=%v round-trip mismatch: %+v", add, got.AssignSquad)
+		}
+	}
+}
+
+func TestSquadOrderStationRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   24,
+		CommandType: CommandTypeSquadOrder,
+		SquadOrder:  SquadOrderDesignation{SquadID: 3, Type: SquadOrderStation, X: 10, Y: 20, Z: 90},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 24 || got.CommandType != CommandTypeSquadOrder || got.SquadOrder != orig.SquadOrder {
+		t.Fatalf("round-trip mismatch: %+v", got.SquadOrder)
+	}
+}
+
+func TestSquadOrderDefendBurrowRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   25,
+		CommandType: CommandTypeSquadOrder,
+		SquadOrder:  SquadOrderDesignation{SquadID: 3, Type: SquadOrderDefendBurrow, BurrowName: "chokepoint"},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 25 || got.CommandType != CommandTypeSquadOrder || got.SquadOrder != orig.SquadOrder {
+		t.Fatalf("round-trip mismatch: %+v", got.SquadOrder)
+	}
+}
+
+func TestSquadOrderCancelRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   26,
+		CommandType: CommandTypeSquadOrder,
+		SquadOrder:  SquadOrderDesignation{SquadID: 3, Type: SquadOrderCancel},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 26 || got.CommandType != CommandTypeSquadOrder || got.SquadOrder != orig.SquadOrder {
+		t.Fatalf("round-trip mismatch: %+v", got.SquadOrder)
+	}
+}
+
+func TestSquadOrderInvalidTypeRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   27,
+		CommandType: CommandTypeSquadOrder,
+		SquadOrder:  SquadOrderDesignation{SquadID: 3, Type: SquadOrderCancel + 1},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("squad order type out of range must fail validation")
+	}
+}
+
+func TestSquadOrderDefendBurrowEmptyNameRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   28,
+		CommandType: CommandTypeSquadOrder,
+		SquadOrder:  SquadOrderDesignation{SquadID: 3, Type: SquadOrderDefendBurrow, BurrowName: ""},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("defend_burrow with an empty burrow name must fail validation")
+	}
+}
+
+func TestCancelOrderRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   29,
+		CommandType: CommandTypeCancelOrder,
+		CancelOrder: CancelOrderDesignation{OrderID: 7},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 29 || got.CommandType != CommandTypeCancelOrder || got.CancelOrder != orig.CancelOrder {
+		t.Fatalf("round-trip mismatch: %+v", got.CancelOrder)
+	}
+}
+
+func TestCancelOrderNegativeIDRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   30,
+		CommandType: CommandTypeCancelOrder,
+		CancelOrder: CancelOrderDesignation{OrderID: -1},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("negative order id must fail validation")
+	}
+}
+
+func TestEditOrderAmountOnlyRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   31,
+		CommandType: CommandTypeEditOrder,
+		EditOrder:   EditOrderDesignation{OrderID: 7, HasAmount: true, Amount: 10},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 31 || got.CommandType != CommandTypeEditOrder || got.EditOrder != orig.EditOrder {
+		t.Fatalf("round-trip mismatch: %+v", got.EditOrder)
+	}
+}
+
+func TestEditOrderFrequencyOnlyRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   32,
+		CommandType: CommandTypeEditOrder,
+		EditOrder:   EditOrderDesignation{OrderID: 7, HasFrequency: true, Frequency: WorkOrderFrequencyMonthly},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 32 || got.CommandType != CommandTypeEditOrder || got.EditOrder != orig.EditOrder {
+		t.Fatalf("round-trip mismatch: %+v", got.EditOrder)
+	}
+}
+
+func TestEditOrderBothFieldsRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   33,
+		CommandType: CommandTypeEditOrder,
+		EditOrder: EditOrderDesignation{
+			OrderID: 7, HasAmount: true, Amount: 25,
+			HasFrequency: true, Frequency: WorkOrderFrequencyYearly,
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 33 || got.CommandType != CommandTypeEditOrder || got.EditOrder != orig.EditOrder {
+		t.Fatalf("round-trip mismatch: %+v", got.EditOrder)
+	}
+}
+
+func TestEditOrderNeitherFieldRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   34,
+		CommandType: CommandTypeEditOrder,
+		EditOrder:   EditOrderDesignation{OrderID: 7},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("edit_order with neither amount nor frequency set must fail validation")
+	}
+}
+
+func TestEditOrderAmountOutOfRangeRejected(t *testing.T) {
+	for _, amount := range []uint16{0, 101} {
+		orig := &CommandMessage{
+			CommandID:   35,
+			CommandType: CommandTypeEditOrder,
+			EditOrder:   EditOrderDesignation{OrderID: 7, HasAmount: true, Amount: amount},
+		}
+		if _, err := SerializeMessage(orig); err == nil {
+			t.Fatalf("amount=%d out of range must fail validation", amount)
+		}
+	}
+}
+
+func TestEditOrderInvalidFrequencyRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   36,
+		CommandType: CommandTypeEditOrder,
+		EditOrder:   EditOrderDesignation{OrderID: 7, HasFrequency: true, Frequency: WorkOrderFrequencyYearly + 1},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("frequency out of range must fail validation")
 	}
 }

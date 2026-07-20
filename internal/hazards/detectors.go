@@ -54,9 +54,9 @@ func IsWater(tileType uint16) (bool, uint8, uint8) {
 		} else if tileType >= 100 && tileType < 110 {
 			depth = 7 // Deep water
 		} else if tileType >= 110 && tileType < 120 {
-			depth = 5          // Flowing water (medium depth)
-			flowFlags = 0x08   // Set flowing bit
-			flowFlags |= 0x01  // Default flow direction (North as placeholder)
+			depth = 5         // Flowing water (medium depth)
+			flowFlags = 0x08  // Set flowing bit
+			flowFlags |= 0x01 // Default flow direction (North as placeholder)
 		}
 
 		return true, depth, flowFlags
@@ -88,9 +88,9 @@ func IsLava(tileType uint16) (bool, uint8, uint8) {
 		} else if tileType >= 130 && tileType < 140 {
 			depth = 7 // Deep magma
 		} else if tileType >= 140 && tileType < 150 {
-			depth = 5          // Flowing magma (medium depth)
-			flowFlags = 0x08   // Set flowing bit
-			flowFlags |= 0x01  // Default flow direction (North as placeholder)
+			depth = 5         // Flowing magma (medium depth)
+			flowFlags = 0x08  // Set flowing bit
+			flowFlags |= 0x01 // Default flow direction (North as placeholder)
 		}
 
 		return true, depth, flowFlags

@@ -9,7 +9,7 @@ import (
 // BenchmarkTileMemory tests memory usage for tile storage
 func BenchmarkTileMemory(b *testing.B) {
 	testCases := []struct {
-		name                string
+		name                 string
 		width, height, depth uint16
 	}{
 		{"Small_48x48x20", 48, 48, 20},

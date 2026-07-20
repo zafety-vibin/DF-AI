@@ -20,12 +20,12 @@ type HazardMetrics struct {
 
 // ModificationMetrics captures modification overlay statistics
 type ModificationMetrics struct {
-	TotalCount  int    `json:"total_count"`
-	ChamberCount int   `json:"chamber_count"`
-	BoundsX     string `json:"bounds_x,omitempty"`
-	BoundsY     string `json:"bounds_y,omitempty"`
-	BoundsZ     string `json:"bounds_z,omitempty"`
-	MemoryKB    uint64 `json:"memory_kb"`
+	TotalCount   int    `json:"total_count"`
+	ChamberCount int    `json:"chamber_count"`
+	BoundsX      string `json:"bounds_x,omitempty"`
+	BoundsY      string `json:"bounds_y,omitempty"`
+	BoundsZ      string `json:"bounds_z,omitempty"`
+	MemoryKB     uint64 `json:"memory_kb"`
 }
 
 // ContextMetrics captures context assembly statistics
@@ -37,36 +37,36 @@ type ContextMetrics struct {
 
 // LLMMetrics captures LLM interaction statistics
 type LLMMetrics struct {
-	TotalTurns       int     `json:"total_turns"`
-	TotalTokensPrompt int    `json:"total_tokens_prompt"`
-	TotalTokensCompletion int `json:"total_tokens_completion"`
-	AverageLatencyMS float64 `json:"average_latency_ms"`
-	ProviderType     string  `json:"provider_type"`
-	ModelName        string  `json:"model_name"`
+	TotalTurns            int     `json:"total_turns"`
+	TotalTokensPrompt     int     `json:"total_tokens_prompt"`
+	TotalTokensCompletion int     `json:"total_tokens_completion"`
+	AverageLatencyMS      float64 `json:"average_latency_ms"`
+	ProviderType          string  `json:"provider_type"`
+	ModelName             string  `json:"model_name"`
 }
 
 // CommandMetrics captures command execution statistics
 type CommandMetrics struct {
-	TotalCommands    int     `json:"total_commands"`
-	PendingCommands  int     `json:"pending_commands"`
-	CompletedCommands int    `json:"completed_commands"`
-	FailedCommands   int     `json:"failed_commands"`
-	AverageAckMS     float64 `json:"average_ack_ms"`
+	TotalCommands     int     `json:"total_commands"`
+	PendingCommands   int     `json:"pending_commands"`
+	CompletedCommands int     `json:"completed_commands"`
+	FailedCommands    int     `json:"failed_commands"`
+	AverageAckMS      float64 `json:"average_ack_ms"`
 }
 
 // MetricsSnapshot aggregates operational metrics
 type MetricsSnapshot struct {
-	ServerUptimeSeconds int64                   `json:"server_uptime_seconds"`
-	DFHackConnected     bool                    `json:"dfhack_connected"`
-	Session             *dfhack.SessionMetrics  `json:"session,omitempty"`
-	Hazards             *HazardMetrics          `json:"hazards,omitempty"`
-	Modifications       *ModificationMetrics    `json:"modifications,omitempty"`
-	Context             *ContextMetrics         `json:"context,omitempty"`
-	LLM                 *LLMMetrics             `json:"llm,omitempty"`
-	Commands            *CommandMetrics         `json:"commands,omitempty"`
-	ConfigReloads       uint64                  `json:"config_reloads"`
-	HttpRequests        uint64                  `json:"http_requests"`
-	Timestamp           time.Time               `json:"timestamp"`
+	ServerUptimeSeconds int64                  `json:"server_uptime_seconds"`
+	DFHackConnected     bool                   `json:"dfhack_connected"`
+	Session             *dfhack.SessionMetrics `json:"session,omitempty"`
+	Hazards             *HazardMetrics         `json:"hazards,omitempty"`
+	Modifications       *ModificationMetrics   `json:"modifications,omitempty"`
+	Context             *ContextMetrics        `json:"context,omitempty"`
+	LLM                 *LLMMetrics            `json:"llm,omitempty"`
+	Commands            *CommandMetrics        `json:"commands,omitempty"`
+	ConfigReloads       uint64                 `json:"config_reloads"`
+	HttpRequests        uint64                 `json:"http_requests"`
+	Timestamp           time.Time              `json:"timestamp"`
 }
 
 // metricsHandler implements GET /metrics endpoint

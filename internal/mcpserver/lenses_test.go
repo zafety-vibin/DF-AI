@@ -44,7 +44,7 @@ func TestBuildingCategoryGlyph(t *testing.T) {
 		"ScrewPump": 'M', "Well": 'M', "Bridge": 'M',
 		"Trap": 'P', "Cage": 'P',
 		"Construction": 'C',
-		"TradeDepot": 'O', "Wagon": 'O',
+		"TradeDepot":   'O', "Wagon": 'O',
 	}
 	for buildingType, want := range cases {
 		got := buildingCategoryGlyph(buildingType)
@@ -110,17 +110,18 @@ func TestGatherMineralsLens_NoMinerals(t *testing.T) {
 }
 
 // TestMineralLetterAlphabet_SkipsReservedGlyphs pins the exact reason
-// minerals can't just use a-z in order: 't' (sapling/shrub) and 'u'
-// (pending-building) are already reserved base-terrain/always-on glyphs —
-// TestLensGlyphsDisjointFromBaseSet enforces this for every lens, but this
-// test names the specific letters so a future edit that reintroduces them
-// fails with a direct message instead of a generic disjointness error.
+// minerals can't just use a-z in order: 'd' (dig designation, always-on),
+// 't' (sapling/shrub), and 'u' (pending-building) are already reserved
+// base-terrain/always-on glyphs — TestLensGlyphsDisjointFromBaseSet
+// enforces this for every lens, but this test names the specific letters
+// so a future edit that reintroduces them fails with a direct message
+// instead of a generic disjointness error.
 func TestMineralLetterAlphabet_SkipsReservedGlyphs(t *testing.T) {
-	if len(mineralLetterAlphabet) != 24 {
-		t.Fatalf("expected 24 letters (26 minus t/u), got %d: %v", len(mineralLetterAlphabet), mineralLetterAlphabet)
+	if len(mineralLetterAlphabet) != 23 {
+		t.Fatalf("expected 23 letters (26 minus d/t/u), got %d: %v", len(mineralLetterAlphabet), mineralLetterAlphabet)
 	}
 	for _, r := range mineralLetterAlphabet {
-		if r == 't' || r == 'u' {
+		if r == 'd' || r == 't' || r == 'u' {
 			t.Fatalf("mineralLetterAlphabet must not contain reserved glyph %q", string(r))
 		}
 	}
@@ -137,7 +138,7 @@ func TestZoneCategoryGlyph(t *testing.T) {
 	cases := map[string]rune{
 		"Bedroom": 'H', "Office": 'H', "Tomb": 'H', "DiningHall": 'H', "MeetingHall": 'H', "Dormitory": 'H',
 		"Barracks": 'K',
-		"Pen": 'A', "Pond": 'A', "AnimalTraining": 'A', "ArcheryRange": 'A',
+		"Pen":      'A', "Pond": 'A', "AnimalTraining": 'A', "ArcheryRange": 'A',
 		"WaterSource": 'R', "Dump": 'R', "SandCollection": 'R', "FishingArea": 'R', "ClayCollection": 'R', "PlantGathering": 'R',
 		"Dungeon": 'J',
 	}

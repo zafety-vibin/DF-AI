@@ -86,6 +86,10 @@ func TestActionToolsNilBridge(t *testing.T) {
 		{"gather", map[string]any{"x1": 10, "y1": 10, "z": 110, "x2": 30, "y2": 30}},
 		{"cancel_designation", map[string]any{"x1": 10, "y1": 10, "z": 110, "x2": 30, "y2": 30}},
 		{"bring_goods_to_depot", map[string]any{"x": 28, "y": 52, "z": 110, "max_count": 10}},
+		{"appoint_position", map[string]any{"unit_id": 12, "position_code": "MANAGER"}},
+		{"set_bookkeeper_precision", map[string]any{"precision": "nearest_100"}},
+		{"cancel_order", map[string]any{"id": 5}},
+		{"edit_order", map[string]any{"id": 5, "amount": 10}},
 	}
 	for _, call := range calls {
 		res, err := clientSession.CallTool(ctx, &mcp.CallToolParams{

@@ -9,8 +9,8 @@ import (
 
 // DefenseAgent monitors enemy presence and threats
 type DefenseAgent struct {
-	enabled       bool
-	priorityBase  int
+	enabled        bool
+	priorityBase   int
 	priorityThreat int
 }
 

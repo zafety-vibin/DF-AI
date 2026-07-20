@@ -42,16 +42,16 @@ func (ra *RoomAnalyzer) chamberToRoom(chamber *modifications.Chamber, index int)
 	d := bounds.ZMax - bounds.ZMin + 1
 
 	room := &Room{
-		ID:              fmt.Sprintf("room_%d", index),
-		Type:            ra.inferRoomType(w, h, d, tileCount),
-		Bounds:          bounds,
-		Tiles:           chamber.Tiles,
-		Entrances:       []modifications.Coordinate{}, // TODO: Detect entrances
-		ConnectedRooms:  []string{},
-		Purpose:         "",
-		CreatedTurn:     0,
-		LastUsed:        0,
-		Metadata:        make(map[string]interface{}),
+		ID:             fmt.Sprintf("room_%d", index),
+		Type:           ra.inferRoomType(w, h, d, tileCount),
+		Bounds:         bounds,
+		Tiles:          chamber.Tiles,
+		Entrances:      []modifications.Coordinate{}, // TODO: Detect entrances
+		ConnectedRooms: []string{},
+		Purpose:        "",
+		CreatedTurn:    0,
+		LastUsed:       0,
+		Metadata:       make(map[string]interface{}),
 	}
 
 	return room

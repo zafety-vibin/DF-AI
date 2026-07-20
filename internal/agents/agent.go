@@ -44,16 +44,16 @@ type FortMetrics struct {
 	EnemyCount int
 
 	// Fort State
-	FortAge int          // Days elapsed
+	FortAge int              // Days elapsed
 	Phase   phases.FortPhase // Embark/Establish/Expand/Fortify
 
 	// Feature 007: Zone Counts (real data from DF)
-	BedroomZoneCount     int // Actual bedroom zones extracted from DF
-	DiningZoneCount      int // Dining hall zones
-	DormitoryZoneCount   int // Dormitory zones
-	OfficeZoneCount      int // Office zones
+	BedroomZoneCount       int // Actual bedroom zones extracted from DF
+	DiningZoneCount        int // Dining hall zones
+	DormitoryZoneCount     int // Dormitory zones
+	OfficeZoneCount        int // Office zones
 	UnassignedBedroomCount int // Bedrooms without owners
-	HousingDeficit       int // DwarfCount - BedroomZoneCount
+	HousingDeficit         int // DwarfCount - BedroomZoneCount
 
 	// Feature 007: SVP Designations
 	SVPHousingZ  int   // SVP-designated housing Z-level

@@ -178,6 +178,62 @@ func TestRenderStocksInUse(t *testing.T) {
 	}
 }
 
+// TestRenderStocksUnits covers the stack-unit total (Q3): a stackable item
+// type (drink/food) reports far more real servings than its struct count
+// alone suggests, and both views must show the extra number without
+// disturbing a non-stacking type's plain "x%d" rendering.
+func TestRenderStocksUnits(t *testing.T) {
+	raw := []byte(`{"items":[
+		{"item_type":"DRINK","material":"dwarven wine","count":8,"units":187,"in_use":0,"in_use_units":0},
+		{"item_type":"BOULDER","material":"shale","count":5,"units":5}
+	]}`)
+
+	detailed := renderStocks(raw, true, 0)
+	if !strings.Contains(detailed, "- DRINK: dwarven wine x8 (187 units)\n") {
+		t.Fatalf("detailed stack-unit note wrong:\n%s", detailed)
+	}
+	if !strings.Contains(detailed, "- BOULDER: shale x5\n") {
+		t.Fatalf("a non-stacking type (units==count) must not print a redundant units note:\n%s", detailed)
+	}
+
+	agg := renderStocks(raw, false, 0)
+	if !strings.Contains(agg, "- DRINK: 8 total = 187 units across 1 material;") {
+		t.Fatalf("aggregated stack-unit note wrong:\n%s", agg)
+	}
+	if !strings.Contains(agg, "- BOULDER: 5 total across 1 material;") {
+		t.Fatalf("a non-stacking type must render without a units note in aggregate view:\n%s", agg)
+	}
+
+	// An older-plugin payload (or any fixture) that omits "units"/
+	// "in_use_units" entirely must decode as "no unit data" (see the ">"
+	// comparison in renderStocks), never a fabricated "0 units" note.
+	noUnits := []byte(`{"items":[{"item_type":"DRINK","material":"ale","count":4}]}`)
+	if out := renderStocks(noUnits, true, 0); strings.Contains(out, "units") {
+		t.Fatalf("a payload with no units data must not print a units note:\n%s", out)
+	}
+	if out := renderStocks(noUnits, false, 0); strings.Contains(out, "units") {
+		t.Fatalf("a payload with no units data must not print a units note in aggregate view either:\n%s", out)
+	}
+}
+
+// TestRenderStocksUnitsInUse covers the built-in half of the same feature:
+// a built (in-use) stackable item's unit total should show alongside the
+// existing "+N built-in" note, the same "> not !=" backward-compatible
+// comparison as the free-stock side.
+func TestRenderStocksUnitsInUse(t *testing.T) {
+	raw := []byte(`{"items":[
+		{"item_type":"FOOD","material":"roast","count":0,"units":0,"in_use":2,"in_use_units":40}
+	]}`)
+	detailed := renderStocks(raw, true, 0)
+	if !strings.Contains(detailed, "- FOOD: roast x0 (+2 built-in = 40 units)\n") {
+		t.Fatalf("detailed built-in units note wrong:\n%s", detailed)
+	}
+	agg := renderStocks(raw, false, 0)
+	if !strings.Contains(agg, "(+2 built-in = 40 units)") {
+		t.Fatalf("aggregated built-in units note wrong:\n%s", agg)
+	}
+}
+
 func TestRenderStocksMinCount(t *testing.T) {
 	raw := []byte(`{"items":[
 		{"item_type":"BOULDER","material":"shale","count":20},
@@ -552,6 +608,70 @@ func TestRenderNobleDemands(t *testing.T) {
 		t.Fatalf("empty nobles rendering wrong: %q", out)
 	}
 	if out := renderNobleDemands([]byte(`not json`)); !strings.Contains(out, "unparseable noble_demands response") {
+		t.Fatalf("malformed response should report unparseable, got: %q", out)
+	}
+}
+
+func TestRenderPositionVacancies(t *testing.T) {
+	raw := []byte(`{"entities":[
+		{"entity_id":3,"role":"group","positions":[
+			{"code":"MANAGER","name":"Manager","precedence":10,"active":true,"elected":false,
+			 "requires_market":false,"has_met_market_req":false,"requires_population":0,"has_met_pop_req":true,
+			 "responsibilities":[],"required_office":0,"required_bedroom":0,"required_dining":0,"required_tomb":0,
+			 "required_boxes":0,"required_cabinets":0,"required_racks":0,"required_stands":0,
+			 "assignments":[{"assignment_id":1,"vacant":true,"appointable":true,"in_possible_elected":false,
+			                 "holder_hist_figure_id":-1,"holder_unit_id":-1,"holder_name":""}]},
+			{"code":"BOOKKEEPER","name":"Bookkeeper","precedence":5,"active":true,"elected":false,
+			 "requires_market":false,"has_met_market_req":false,"requires_population":0,"has_met_pop_req":true,
+			 "responsibilities":["ACCOUNTING"],"required_office":0,"required_bedroom":0,"required_dining":0,"required_tomb":0,
+			 "required_boxes":0,"required_cabinets":0,"required_racks":0,"required_stands":0,
+			 "assignments":[{"assignment_id":2,"vacant":false,"appointable":true,"in_possible_elected":false,
+			                 "holder_hist_figure_id":55,"holder_unit_id":12,"holder_name":"Urist"}]},
+			{"code":"BROKER","name":"Broker","precedence":20,"active":false,"elected":false,
+			 "requires_market":true,"has_met_market_req":false,"requires_population":0,"has_met_pop_req":true,
+			 "responsibilities":[],"required_office":0,"required_bedroom":0,"required_dining":0,"required_tomb":0,
+			 "required_boxes":0,"required_cabinets":0,"required_racks":0,"required_stands":0,
+			 "assignments":[]}
+		]},
+		{"entity_id":1,"role":"civ","positions":[
+			{"code":"MAYOR","name":"Mayor","precedence":1,"active":true,"elected":true,
+			 "requires_market":false,"has_met_market_req":false,"requires_population":50,"has_met_pop_req":true,
+			 "responsibilities":["LAW_MAKING"],"required_office":150,"required_bedroom":100,"required_dining":0,"required_tomb":0,
+			 "required_boxes":0,"required_cabinets":0,"required_racks":0,"required_stands":0,
+			 "assignments":[{"assignment_id":3,"vacant":true,"appointable":false,"in_possible_elected":true,
+			                 "holder_hist_figure_id":-1,"holder_unit_id":-1,"holder_name":""}]}
+		]}
+	]}`)
+	out := renderPositionVacancies(raw)
+	if !strings.Contains(out, "group entity (id=3):") {
+		t.Fatalf("missing group entity header:\n%s", out)
+	}
+	if !strings.Contains(out, "civ entity (id=1):") {
+		t.Fatalf("missing civ entity header:\n%s", out)
+	}
+	if !strings.Contains(out, "VACANT (assignment#1) — appointable") {
+		t.Fatalf("vacant+appointable slot rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "held by Urist (unit#12)") {
+		t.Fatalf("filled slot with resolved unit rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "no assignment slot yet (not unlocked)") {
+		t.Fatalf("position with no assignment record must say so:\n%s", out)
+	}
+	if !strings.Contains(out, "market requirement unmet") {
+		t.Fatalf("unmet market requirement flag missing:\n%s", out)
+	}
+	if !strings.Contains(out, "VACANT (assignment#3) — NOT directly appointable, elected") {
+		t.Fatalf("elected-only vacant slot (MAYOR) rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "ELECTED") {
+		t.Fatalf("MAYOR's ELECTED position flag missing:\n%s", out)
+	}
+
+	if out := renderPositionVacancies([]byte(`{"entities":[]}`)); !strings.Contains(out, "No entities found") {
+		t.Fatalf("empty entities rendering wrong: %q", out)
+	}
+	if out := renderPositionVacancies([]byte(`not json`)); !strings.Contains(out, "unparseable position_vacancies response") {
 		t.Fatalf("malformed response should report unparseable, got: %q", out)
 	}
 }

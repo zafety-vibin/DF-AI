@@ -147,7 +147,7 @@ func (t *TopologyOverlay) Compress(config CompressionConfig) (*CompressedTopolog
 // Returns concatenated byte slices for included levels
 func (t *TopologyOverlay) extractZLevels(zLevels []uint16) []byte {
 	// Calculate bytes per Z-level
-	bytesPerLevel := (uint32(t.width) * uint32(t.height) + 7) / 8
+	bytesPerLevel := (uint32(t.width)*uint32(t.height) + 7) / 8
 
 	// Allocate output buffer
 	output := make([]byte, 0, uint32(len(zLevels))*bytesPerLevel)
@@ -209,12 +209,12 @@ func writeVarint(buf *bytes.Buffer, count uint32) error {
 		buf.WriteByte(byte(count))
 	} else if count < 16384 {
 		// 2 bytes
-		buf.WriteByte(byte((count>>7)|0x80)) // MSB=1
+		buf.WriteByte(byte((count >> 7) | 0x80)) // MSB=1
 		buf.WriteByte(byte(count & 0x7F))
 	} else {
 		// 3 bytes
-		buf.WriteByte(byte((count>>14)|0x80)) // MSB=1
-		buf.WriteByte(byte((count>>7)|0x80))  // MSB=1
+		buf.WriteByte(byte((count >> 14) | 0x80)) // MSB=1
+		buf.WriteByte(byte((count >> 7) | 0x80))  // MSB=1
 		buf.WriteByte(byte(count & 0x7F))
 	}
 	return nil
@@ -233,7 +233,7 @@ func (c *CompressedTopology) Decompress() ([]byte, error) {
 	reader := bytes.NewReader(c.Data[12:])
 
 	// Calculate expected output size
-	bytesNeeded := (uint32(c.OriginalWidth) * uint32(c.OriginalHeight) * uint32(c.OriginalDepth) + 7) / 8
+	bytesNeeded := (uint32(c.OriginalWidth)*uint32(c.OriginalHeight)*uint32(c.OriginalDepth) + 7) / 8
 	output := make([]byte, bytesNeeded)
 	outPos := 0
 

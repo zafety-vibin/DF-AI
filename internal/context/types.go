@@ -58,12 +58,12 @@ type ViewportContext struct {
 
 	// Level 1+ (structured data)
 	EmbarkPoint   *modifications.Coordinate `json:"embark_point,omitempty"` // Cached starting position (set once, never updated)
-	Chambers      []ChamberFeature      `json:"chambers,omitempty"`
-	Hazards       HazardData            `json:"hazards,omitempty"`
-	Dwarves       []EntityPosition      `json:"dwarves,omitempty"`
-	ActiveRegion  *modifications.Region `json:"active_region,omitempty"`
-	TopologySlice *TopologySliceData    `json:"topology_slice,omitempty"` // Terrain map showing walls (diggable) vs open tiles (already dug)
-	Blueprints    []BlueprintInfo       `json:"blueprints,omitempty"`     // Available blueprint templates
+	Chambers      []ChamberFeature          `json:"chambers,omitempty"`
+	Hazards       HazardData                `json:"hazards,omitempty"`
+	Dwarves       []EntityPosition          `json:"dwarves,omitempty"`
+	ActiveRegion  *modifications.Region     `json:"active_region,omitempty"`
+	TopologySlice *TopologySliceData        `json:"topology_slice,omitempty"` // Terrain map showing walls (diggable) vs open tiles (already dug)
+	Blueprints    []BlueprintInfo           `json:"blueprints,omitempty"`     // Available blueprint templates
 
 	// Level 2+ (expanded data)
 	CavernData   *CavernData      `json:"cavern_data,omitempty"`
@@ -79,18 +79,18 @@ type ChamberFeature struct {
 	ID          uint32 `json:"id"`
 	Description string `json:"description"`
 	RoomType    string `json:"room_type,omitempty"` // "bedroom", "corridor", "workshop", etc.
-	BoundsMin   string `json:"bounds_min"` // "(x,y,z)"
-	BoundsMax   string `json:"bounds_max"` // "(x,y,z)"
-	Dimensions  string `json:"dimensions"` // "WxHxD"
+	BoundsMin   string `json:"bounds_min"`          // "(x,y,z)"
+	BoundsMax   string `json:"bounds_max"`          // "(x,y,z)"
+	Dimensions  string `json:"dimensions"`          // "WxHxD"
 	TileCount   uint32 `json:"tile_count"`
 }
 
 // BlueprintInfo describes an available blueprint template
 type BlueprintInfo struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Dimensions  string `json:"dimensions"` // "10x10x1"
-	TileCount   int    `json:"tile_count"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Dimensions  string   `json:"dimensions"` // "10x10x1"
+	TileCount   int      `json:"tile_count"`
 	Tags        []string `json:"tags,omitempty"`
 }
 
@@ -139,15 +139,15 @@ type TopologyData struct {
 
 // TopologySliceData contains terrain map for a single Z-level region
 type TopologySliceData struct {
-	Z          int16    `json:"z"`           // Z-level
-	XMin       int16    `json:"x_min"`       // Region bounds
-	YMin       int16    `json:"y_min"`
-	XMax       int16    `json:"x_max"`
-	YMax       int16    `json:"y_max"`
-	Width      int16    `json:"width"`       // Dimensions
-	Height     int16    `json:"height"`
-	OpenTiles  []string `json:"open_tiles"`  // Array of "X,Y" for open tiles
-	Description string  `json:"description"` // Human-readable terrain summary
+	Z           int16    `json:"z"`     // Z-level
+	XMin        int16    `json:"x_min"` // Region bounds
+	YMin        int16    `json:"y_min"`
+	XMax        int16    `json:"x_max"`
+	YMax        int16    `json:"y_max"`
+	Width       int16    `json:"width"` // Dimensions
+	Height      int16    `json:"height"`
+	OpenTiles   []string `json:"open_tiles"`  // Array of "X,Y" for open tiles
+	Description string   `json:"description"` // Human-readable terrain summary
 }
 
 // QueryType represents the type of query to execute
