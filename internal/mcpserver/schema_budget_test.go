@@ -12,15 +12,26 @@ import (
 
 // Schema-size budget for the whole MCP tool surface.
 //
-// Every tool's name/description/inputSchema is serialized into the
-// tools/list response, which loads into EVERY session's context at start —
-// unconditionally, whether or not that tool is ever called. Schema bloat
-// (verbose per-value prose, long enums) is a direct, permanent tax on every
-// conversation this server is used in. See the "TOOL-SCHEMA HOUSE RULE" in
-// this project's planning notes: enum parameters should list only a short
-// curated common-case vocabulary plus a name-passthrough for full
-// generality; per-value facts belong in an on-demand discovery tool, not
-// baked into the schema description.
+// COST MODEL (revised 2026-07-19 per scaling report #2): harnesses with
+// client-side tool deferral (Claude Code's tool search, on by default)
+// load only TOOL NAMES at session start; a tool's description+schema is
+// paid per-load, only when a session actually fetches that tool. Three
+// budgets follow:
+//   1. per-tool bytes — the real recurring cost, paid on every load of
+//      that tool in every session. This is the ceiling that bites.
+//   2. total bytes — paid in full only by NON-deferring harnesses (raw
+//      SDK integrations without defer_loading, proxied deployments,
+//      ENABLE_TOOL_SEARCH=false). Kept as a generous backstop so such a
+//      harness degrades to "large but sane," not unbounded.
+//   3. names bytes — the true always-loaded tax under deferral (~30
+//      bytes/tool in the listing). Small today; this metric is the one
+//      that grows monotonically with tool COUNT.
+// Schema bloat (verbose per-value prose, long enums) remains wrong at any
+// budget: under deferral, descriptions are ToolSearch's discovery
+// metadata, and the "TOOL-SCHEMA HOUSE RULE" still applies — enum
+// parameters list a short curated vocabulary plus a name-passthrough;
+// per-value facts belong in an on-demand discovery tool, not baked into
+// the schema description.
 //
 // Baseline measured 2026-07-18 (post tool-schema-scaling wave, which added
 // Well/MakeChain and a batch of other tools/enum values): tools/list
@@ -45,9 +56,18 @@ import (
 const perToolCeilingBytes = 3072 // 3KB
 
 // totalCeilingBytes is the maximum summed serialized size across every
-// registered tool, in bytes. Measured total at write time was 43657 bytes
-// across 65 tools; this leaves ~17.7KB (~40%) of headroom.
-const totalCeilingBytes = 61440 // 60KB
+// registered tool, in bytes — the non-deferring-harness backstop (see the
+// cost model above). Measured 57,443 bytes across 81 tools on 2026-07-19;
+// raised from 60KB to 80KB per scaling report #2 rather than fought,
+// because deferring harnesses never pay this sum.
+const totalCeilingBytes = 81920 // 80KB
+
+// namesCeilingBytes caps the summed tool-NAME bytes — the always-loaded
+// tax under client-side deferral. Measured 932 bytes across 81 tools on
+// 2026-07-19 (~2.4KB with the mcp__server__ prefixes a client adds).
+// Hitting this ceiling (~140 tools at current naming) is the signal to
+// consider CRUD-mirror consolidation for tool-count reasons.
+const namesCeilingBytes = 1600
 
 // perToolExceptions lists tools explicitly allowed to exceed
 // perToolCeilingBytes, with the reason why. Adding a name here should be
@@ -102,11 +122,13 @@ func TestToolSchemaBudget(t *testing.T) {
 	sizes := make([]toolSize, 0, len(list.Tools))
 
 	total := 0
+	namesTotal := 0
 	maxTool := toolSize{}
 	var overBudget []string
 	for _, tool := range list.Tools {
 		size := toolSchemaSize(t, tool)
 		total += size
+		namesTotal += len(tool.Name)
 		sizes = append(sizes, toolSize{tool.Name, size})
 		if size > maxTool.size {
 			maxTool = toolSize{tool.Name, size}
@@ -143,8 +165,14 @@ func TestToolSchemaBudget(t *testing.T) {
 			total, totalCeilingBytes, len(list.Tools), joinLines(lines))
 	}
 
-	t.Logf("tool schema budget: %d tools, %d bytes total (ceiling %d), largest tool %q at %d bytes",
-		len(list.Tools), total, totalCeilingBytes, maxTool.name, maxTool.size)
+	if namesTotal > namesCeilingBytes {
+		t.Errorf("summed tool-name bytes = %d, exceeding the %d byte always-loaded ceiling across %d tools — "+
+			"tool COUNT is now the scaling concern; consider CRUD-mirror consolidation (see scaling report #2)",
+			namesTotal, namesCeilingBytes, len(list.Tools))
+	}
+
+	t.Logf("tool schema budget: %d tools, %d bytes total (ceiling %d), names %d bytes (ceiling %d), largest tool %q at %d bytes",
+		len(list.Tools), total, totalCeilingBytes, namesTotal, namesCeilingBytes, maxTool.name, maxTool.size)
 }
 
 // toolSize pairs a tool name with its serialized schema size, for sorting

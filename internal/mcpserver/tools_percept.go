@@ -267,6 +267,7 @@ func registerPerceptTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "look",
+		Meta:        mcp.Meta{"anthropic/alwaysLoad": true},
 		Description: "Render an annotated map view of one z-level. Glyph grid with legend; dwarves marked @, dig designations marked d, queued-but-unfinished buildings (any type, including a wall/floor Construction) marked u. Pass lens=buildings or lens=designations for detail overlays. '?' tiles are hidden fog — solid undug ground you CAN designate digging into. Default scope=local is a small crop around (x,y); use find_dig_site for choosing dig locations. scope=overview/elevation/fort give whole-map or whole-footprint views instead — see the scope parameter for the cost/fidelity tradeoffs of each.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in lookIn) (*mcp.CallToolResult, any, error) {
 		switch in.Scope {

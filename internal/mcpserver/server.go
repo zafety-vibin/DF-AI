@@ -19,7 +19,14 @@ func TextResult(s string) *mcp.CallToolResult {
 // New builds the MCP server and registers every tool. bridge may be nil
 // during scaffolding (tools then report the missing connection).
 func New(bridge *Bridge) *mcp.Server {
-	srv := mcp.NewServer(&mcp.Implementation{Name: "df-fortress", Version: Version}, nil)
+	// Instructions load unconditionally into every session (unlike deferred
+	// tool schemas) — keep this under ~300 bytes; it exists to steer tool
+	// discovery, not to teach gameplay (skills own that).
+	srv := mcp.NewServer(&mcp.Implementation{Name: "df-fortress", Version: Version}, &mcp.ServerOptions{
+		Instructions: "Turn-based Dwarf Fortress control. Core loop: status/pause -> observe (look, alerts) -> act -> step. " +
+			"Discovery tools carry per-value facts: building_types (build), job_types (queue_job/order), list_reactions, list_crops. " +
+			"Every response's first line is the live ground-truth dashboard — never act on remembered state.",
+	})
 	registerStateTools(srv, bridge)
 	registerPerceptTools(srv, bridge)
 	registerActionTools(srv, bridge)

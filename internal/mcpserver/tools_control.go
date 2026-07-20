@@ -143,6 +143,7 @@ func stepReport(ticks int, beforeFrame, afterFrame int64, pushed bool, before, a
 func registerControlTools(srv *mcp.Server, b *Bridge) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "pause",
+		Meta:        mcp.Meta{"anthropic/alwaysLoad": true},
 		Description: "Pause the DF simulation. Think while paused; nothing moves.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
@@ -154,6 +155,7 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "unpause",
+		Meta:        mcp.Meta{"anthropic/alwaysLoad": true},
 		Description: "Unpause DF and let it run free (prefer step for turn-based play).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
@@ -168,6 +170,7 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "step",
+		Meta:        mcp.Meta{"anthropic/alwaysLoad": true},
 		Description: "Run the simulation for N ticks then auto-pause, and report what happened (new alerts, arrivals). The plugin may trip an early auto-pause (a tripwire: e.g. a threat or flooding) — the report says so and why. This is your end-of-turn: act, then step, then observe.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in stepIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {

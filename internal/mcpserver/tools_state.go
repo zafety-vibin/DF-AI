@@ -2027,6 +2027,7 @@ func renderAlerts(alerts []worldmodel.Alert, activeCount int) string {
 func registerStateTools(srv *mcp.Server, b *Bridge) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "status",
+		Meta:        mcp.Meta{"anthropic/alwaysLoad": true},
 		Description: "Connection and simulation status: is the DFHack plugin connected, is DF paused, current tick. Call this first if anything seems wrong.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 		if b == nil || !b.Connected() {
@@ -2037,6 +2038,7 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "alerts",
+		Meta:        mcp.Meta{"anthropic/alwaysLoad": true},
 		Description: "DF's own announcement stream (job cancellations with reasons, sieges, moods, migrants). READ THIS when work isn't progressing — DF usually says exactly why. Once you've read and acted on one, call dismiss_alerts so it stops repeating in every future call — nothing here auto-clears.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 		snap := b.Snapshot()
