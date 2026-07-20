@@ -218,10 +218,15 @@ real tooling status — don't promise a stage the tooling can't back yet.
    stair-top (door-defensible), with a floored, parapeted deck built
    one level above it as an elevated firing position over the
    approach. The STRUCTURE is buildable today (walls, floor-over,
-   door); what gates its full function is military tooling (no squads
-   yet) and fortification-carving (no carve-fortification tool exists
-   — check before promising arrow slits). It is the fighting-answer
-   counterpart to the civilian-alert hole-up doctrine below.
+   door); squad tooling now EXISTS compile-only (`create_squad` /
+   `assign_squad` / `squad_order` with station|defend_burrow|cancel;
+   kill-orders, training schedules, and uniforms deliberately not
+   wired) — its first live use is its own verification act, and the
+   squad-creation mint path + station order carry explicit UNVERIFIED
+   flags in their own ACKs until then. Fortification-carving still has
+   no tool — check before promising arrow slits. It is the
+   fighting-answer counterpart to the civilian-alert hole-up doctrine
+   below.
 6. **Barbican/moat.** Far future; no current tooling story.
 
 **Shared upstream for stages 3-4**: every lever, plate, trap, and linked
@@ -330,9 +335,14 @@ applied to industry. The demand signals are now directly queryable:
   placing a workshop, so building the missing shop reactively is a real
   strategy, not a panic response.
 
-(Caravans are deliberately NOT on this list: a depot is buildable, but
-no trade-interaction tool exists yet, so "goods for the caravan" can't
-close its loop — don't stage industry around trading until it can.)
+(Caravans are now a PARTIAL demand signal: `caravan_status` reports
+who's here and how long they'll stay, `depot_goods` shows what's
+staged, and `bring_goods_to_depot` marks goods for hauling — but the
+trade EXCHANGE itself has no safe headless path and stays a
+human-in-the-client action, and none of the three has survived a live
+caravan yet. Stage goods when a caravan is present; don't build an
+industry purely around trading until a live caravan has verified the
+loop end-to-end.)
 
 Supply-push still exists as the secondary signal: `stocks` accumulating
 a raw good with no consumer (hides, fiber, sand, gems) is the site
@@ -363,11 +373,16 @@ only after `survey_site`/`cross_section` has actually shown magma.
 The framing decision, made deliberately: **respond to observed demand;
 do not build value ahead of need.** Three reasons:
 
-1. `noble_demands` reports only positions actually HELD, and nothing in
-   this project deliberately appoints nobles yet — early on the answer
-   is an automatic leadership position at most. Furnishing for a noble
-   who doesn't exist is spending against a hypothesis when the query to
-   check the fact costs one call.
+1. `noble_demands` reports only positions actually HELD; appointment
+   tooling now exists (`position_vacancies` to discover appointable
+   slots — squad-leader positions show "leads squad of N" —
+   `appoint_position` to fill one, `set_bookkeeper_precision` for the
+   bookkeeper; elected positions are refused truthfully). Compile-only
+   until a live session verifies. Appoint deliberately when a role's
+   function is wanted (manager→work orders, bookkeeper→stock
+   precision, broker→trading); furnishing for a noble who doesn't
+   exist is still spending against a hypothesis when the query costs
+   one call.
 2. Wealth is a thermostat, not a score. Migration waves scale with fort
    wealth, uncapped — and the confirmed soft population cap (60-80)
    means deliberately pumping wealth works AGAINST standing policy.
