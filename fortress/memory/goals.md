@@ -106,6 +106,34 @@
   (overseer cleared the stale orders by hand this time).
 - Automation: use RECURRING work orders (wave-4 frequency param) so
   drink/meals/fuel/blocks run without per-workshop tool calls.
+## WAVE 5 SHIPPED (2026-07-19, committed b1b27a8, NOT yet deployed —
+## deploy the fresh DLL from the checkout when DF next closes)
+- Military (compile-only, mint/station paths flagged UNVERIFIED in own
+  ACKs): create_squad / assign_squad / squad_order (station|
+  defend_burrow|cancel) / list_squads. Kill/training/uniforms/patrol
+  scoped out honestly.
+- Nobles: appoint_position, position_vacancies (incl. squad_size),
+  set_bookkeeper_precision. Elected positions refused truthfully.
+- cancel_order + edit_order (amount/frequency). Item SUBTYPE pinning
+  in queue_job/order + job_types subtype_of discovery — "forge an iron
+  PICK" is now sayable.
+- Safety: smooth warns on carved stairs/ramps in rect;
+  cancel_designation clears smooth/engrave marks.
+- Perception: stocks stack-unit totals; scope=fort from MAP STATE
+  (old-save digs visible); world-switch entity-cache flush; minerals
+  lens 'd' reserved; zone_value component scan fixed.
+- 81 tools / 57,443B vs 61,440 ceiling. All gates green; military lane
+  re-reviewed standalone (PASS) after its reviewer died to a network
+  reset; one doc-overclaim (squad_size missing from vacancies) fixed
+  pre-commit.
+- NEXT SESSION (Fort #5, agreed plan): deploy DLL → live-verify wave 5
+  where the population is (appoint bookkeeper+sheriff, first squad
+  stationed at the checkpoint, forge picks BY SUBTYPE, cancel/edit a
+  live order, stack-unit stocks, scope=fort) → catch the SPRING
+  CARAVAN (trade tools' only near-term live test) → queen's suite
+  capstone → THEN found Fort #6 proactively (strata plan, street
+  grids, terrain-read) per the updated fort-planning skill.
+
 ## Checkpoint architecture (2026-07-17, NEW — built this session)
 Layout, surface to protected fort: 2x2 spine shaft (45-46,44-45) surface
 z=134 → aquifer-sealed z=131-130 → guard room z=126 (42-48,41-47, first
