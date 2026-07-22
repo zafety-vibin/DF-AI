@@ -2,6 +2,80 @@
 
 (newest entries on top)
 
+## 2026-07-19 — Fort #5, session 3 (Winter y100 day 304 → Spring y101 day 33, PAUSED mid-tavern)
+
+WAVE-5 LIVE-VERIFICATION + the overseer's tavern challenge, ending with
+the fort's SECOND AQUIFER PIERCED. Session closed deliberately (late
+night); Fort #5 paused with the tavern stratum half-built. NEXT FORT:
+#6, fresh embark, played by a new session with the proactive doctrine.
+
+**Wave-5 verify scoreboard:** ~13 VERIFIED live — world-identity
+dashboard field (caught DF's own seasonal autosave as a switch),
+position_vacancies (squad_size renders), appoint_position (methkat =
+first tool-made Bookkeeper; overseer then downshifted my nearest_100
+precision — canon: precision follows the holder's skill),
+set_bookkeeper_precision, create_squad (squad #18 client-visible),
+edit_order (frequency AND amount in place), job_types subtype
+discovery (30 weapon + 191 tool tokens), SUBTYPE-PINNED FORGING (a
+FinelyCrafted iron pick by name — the gap that capped miners for two
+forts is closed), caravan_status, map-state scope=fort (old-save digs
+visible, honest cave caveat), orders freq rendering, smooth
+stairs-warning, dig-over-stairs warning (SAVED THE SHAFT, see below).
+THREE FINDINGS: assign_squad fails SYSTEMICALLY (founding dwarf +
+migrants alike; squad healthy; overseer sees the squad in client —
+client-staffing discriminator still untested), list_squads renders all
+19 WORLD squads (needs fort-entity filter; overseer caught it), stocks
+stack-units absent in every view despite shipping. Also: mugs are
+GOBLETS (no ITEM_TOOL_MUG — MakeGoblet is the job; 10 rock mugs
+ordered via material-pinned order path).
+
+**The tavern challenge (overseer): a tavern below the queen's floor,
+all-stockpile-sized (~12x14), street-grid planned, still+kitchen
+adjacent, food/drink stockpile inside.** Geology: z=123-121 is the
+deep stone aquifer, PATCHY — bore fan found 1-3 wet levels per column
+(a single representative bore would have lied; auto-bore is now spec'd
+in 011). Overseer: don't build IN the aquifer — pierce it. SECOND
+PIERCE at the spine (61-62,43-44), stone-aquifer variant of the
+protocol: stairs z=123→119 through 3 wet levels (loud damp cancel
+once, then silent-cancel rounds surfaced by the repeat-aggregation —
+the protocol's blindest phase is now countable), SMOOTH-seal strips
+(no boulders needed, stone branch), catch basin at z=119 drained by
+the overseer's spread-the-water trick (dig the landing room wide → 1/7
+sheet → evaporation). STRUCK IN THE WET BAND: MAGNETITE (richest iron
+ore), bauxite, carnelian, more hematite+tetrahedrite — the descent
+pays for itself.
+
+**Two incidents, both instructive:** (1) my drainage rect covered the
+z=119 landing stairs — the NEW dig-over-stairs warning fired at
+designation time ("4 will remove existing stairs: vertical connection
+lost"), I tried to cancel but the jobs were already CLAIMED
+(cancel_designation cannot reach in-flight jobs — new gap, logged),
+stairs flattened, repaired with constructed block up-stairs at 1/7
+water. (2) Shorter-steps-near-water coaching from the overseer
+adopted mid-pierce (900-tick cycles with looks between).
+
+**State at PAUSE (spring y101 day 33):** z=119 tavern stratum: 10x8
+hall DUG (vein-walled: hematite+tetrahedrite), constructed stairs in,
+water down to scattered 1/7 evaporating; DESIGNATED and being dug:
+hall extensions to full 12x14-ish (67-70,40-47 + 57-70,48-51), north
+service block (58-65,34-38) + doorways (60,39),(64,39) for
+still+kitchen, west street (52-56,43-45), east street (71-74,43-45).
+Seal state: smooth strips designated at z=123/122/121 and being
+worked per overseer's client view — §9 SEAL VERIFICATION (dry shaft
+bottom) NOT YET DONE. IF RESUMING FORT #5 FIRST ACTS: (1) verify seal
+per aquifer-piercing §9 (cross_section the shaft columns, basin must
+be dry), (2) finish tavern: furniture from the standing seasonal
+orders (tables/chairs/thrones x10 cycling), food+drink stockpile in
+the hall, meeting_hall zone → create_location tavern → NAME IT,
+still+kitchen builds in the north block, 10 rock goblets en route,
+(3) squad #18 staffing still broken — engineering, (4) spring caravan
+never arrived by day 33 — watch caravan_status.
+
+Fort #5 totals at pause: 17 living + döbar entombed, year 2, all
+make-mandates ever issued fulfilled, iron industry + governance +
+standing furniture orders running, queen's floor smoothed + first
+masterpiece engraving, 81-tool surface with wave-5 verified.
+
 ## 2026-07-18 — Fort #5, session 2 (Autumn y100, day 178 → day 232, ongoing)
 
 LIVE-VERIFICATION SESSION for all three 2026-07-17/18 fix waves, then

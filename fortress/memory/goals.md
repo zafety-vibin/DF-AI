@@ -1,3 +1,11 @@
+# Goals — Fort #5 (PAUSED spring y101 day 33, mid-tavern; Fort #6 embark
+# is the NEXT session — see journal session-3 entry for Fort #5's exact
+# resume script: seal-verify §9 FIRST, then finish the z=119 tavern)
+# WAVE 6 = the PLANNING LAYER: specs/011-planning-layer/brief.md
+# (plan ledger/lens/diff, geometry critic, provisional names, auto-bore,
+# layout metrics) + the carry-over gaps listed in the session-3 queue.
+
+# ---- session-2 header below (historical) ----
 # Goals — Fort #5 (double-aquifer map; day 232 autumn y100, PAUSED, 17 living)
 
 ## OVERSEER DIRECTION (2026-07-18, session 2): human co-playing live.
@@ -126,6 +134,37 @@
   re-reviewed standalone (PASS) after its reviewer died to a network
   reset; one doc-overclaim (squad_size missing from vacancies) fixed
   pre-commit.
+- WAVE 5 LIVE-VERIFY (in progress, 2026-07-19 session 3, day 304+):
+  VERIFIED: world=<name> switches=N dashboard field (fingerprinted on
+  first reconnect); position_vacancies (full governance map, squad_size
+  renders); appoint_position (methkat→BOOKKEEPER, first tool-made
+  appointment); set_bookkeeper_precision (nearest_100); create_squad
+  via existing MILITIA_COMMANDER slot (squad client-visible per
+  overseer); edit_order (blocks seasonally→monthly); job_types
+  subtype_of (30 weapon tokens); queue_job MakeWeapon
+  subtype=ITEM_WEAPON_PICK accepted; orders renders freq; caravan_status
+  (empty-state + depot report); scope=fort works on old-save digs
+  (honest cave caveat). FINDINGS: (1) assign_squad FAILS SYSTEMICALLY
+  (founding dwarf + migrants alike, Military::addToSquad returns false;
+  squad healthy, 10 vacant slots) — awaiting overseer client-staffing
+  discriminator, then source-debug; (2) list_squads reads ALL world
+  squads (19 incl. foreign civ armies) instead of filtering
+  fort->squads — client shows only ours; needs entity filter;
+  (3) stocks category=drink still shows stack count only (x8), no unit
+  total — stack-units render not appearing in the filtered view,
+  re-check aggregate then debug. SHERIFF is NOT directly appointable
+  per DF's own cache (skipped honestly). ALSO VERIFIED LIVE: edit_order
+  amount AND frequency in-place; standing furnish-ahead orders set
+  (bed/chair/table/door/cabinet x10 seasonally — overseer doctrine:
+  counts ~10 because migrant waves scale with wealth; bookkeeper
+  precision follows the holder's skill, overseer downshifted mine).
+- ENGINEERING QUEUE ADDITIONS (2026-07-19 session 3): (1) order
+  CONDITIONS — DF-native restock-below-threshold conditions (the
+  overseer's standard practice; seasonal recurrence is the stopgap);
+  (2) look lens=items/stockpiles — stockpile extents + loose-item
+  detail (overseer perception ask); (3) assign_squad systemic-failure
+  root-cause; (4) list_squads fort-entity filter; (5) stocks
+  stack-units render not appearing in any view despite shipping.
 - NEXT SESSION (Fort #5, agreed plan): deploy DLL → live-verify wave 5
   where the population is (appoint bookkeeper+sheriff, first squad
   stationed at the checkpoint, forge picks BY SUBTYPE, cancel/edit a
