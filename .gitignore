@@ -44,3 +44,6 @@ Thumbs.db
 
 # Feature 007: SVP and zone persistence
 /saves/
+
+# the overseer's private art (per overseer, 2026-07-24 — un-ignore to publish)
+fortress/art/
