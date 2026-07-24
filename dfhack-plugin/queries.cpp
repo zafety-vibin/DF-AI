@@ -1980,6 +1980,37 @@ std::string handleListBurrows(const std::string &args, uint8_t &status);
 // elsewhere pattern as handleListBurrows above).
 std::string handleListSquads(const std::string &args, uint8_t &status);
 
+// Forward declaration -- implemented in narrative.cpp (Feature 013 wave
+// 013-A: dwarf_portrait's psyche/social/history struct reads live behind
+// their own dedicated includes there rather than adding another dozen
+// df/*.h includes to this already-large file; same forward-declared-
+// elsewhere pattern as handleListSquads above).
+std::string handleDwarfPortrait(const std::string &args, uint8_t &status);
+
+// Forward declarations -- implemented in narrative.cpp (Feature 013 wave
+// 013-A / Lane 2: combat narrator). combat_summary/combat_log read the
+// rolling combat-report buffer ingest_combat_reports() (also narrative.cpp)
+// maintains; that ingest is called from push_state_refresh
+// (df_ai_protocol.cpp), NOT from here -- these two are read-only query
+// handlers over already-ingested state, same division of labor as
+// checkWildlifeTripwire (state-updater) vs handleListWildlife (reader).
+std::string handleCombatSummary(const std::string &args, uint8_t &status);
+std::string handleCombatLog(const std::string &args, uint8_t &status);
+
+// Forward declarations -- implemented in narrative.cpp (Feature 013 wave
+// 013-B / Lane 3: story pulse + social graph). story_pulse maintains its
+// own (year,year_tick) cursor + remembered-set; social_graph is a pure
+// per-call struct read with no state of its own. Same forward-declared-
+// elsewhere pattern as dwarf_portrait/combat_summary above.
+std::string handleStoryPulse(const std::string &args, uint8_t &status);
+std::string handleSocialGraph(const std::string &args, uint8_t &status);
+
+// Forward declaration -- implemented in narrative.cpp (Feature 013 wave
+// 013-C / Lane 4: the fort's own art). fort_art maintains its own
+// (world.history.events max-id) cursor + composed-here id cache, same
+// forward-declared-elsewhere pattern as story_pulse/social_graph above.
+std::string handleFortArt(const std::string &args, uint8_t &status);
+
 static std::string handleListLocations(const std::string &args, uint8_t &status) {
     if (!df::global::world || !df::global::plotinfo) {
         status = QUERY_STATUS_ERROR;
@@ -3825,6 +3856,18 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = handleWellbeing(args, status);
         } else if (name == "dwarf_detail") {
             data = handleDwarfDetail(args, status);
+        } else if (name == "dwarf_portrait") {
+            data = handleDwarfPortrait(args, status);
+        } else if (name == "combat_summary") {
+            data = handleCombatSummary(args, status);
+        } else if (name == "combat_log") {
+            data = handleCombatLog(args, status);
+        } else if (name == "story_pulse") {
+            data = handleStoryPulse(args, status);
+        } else if (name == "social_graph") {
+            data = handleSocialGraph(args, status);
+        } else if (name == "fort_art") {
+            data = handleFortArt(args, status);
         } else if (name == "building_status") {
             data = handleBuildingStatus(args, status);
         } else if (name == "workshop_jobs") {

@@ -124,6 +124,26 @@ bool applySetAlert(const std::string &name, bool active, std::string &error);
 void executeQuery(uint32_t queryID, const std::string &name, const std::string &args);
 void reset_wildlife_tripwire_tracking();  // B11: dangerous-wildlife tripwire
 
+// Forward declaration from narrative.cpp (Feature 013 wave 013-A / Lane 2:
+// combat narrator). Ingests world.status.reports into the rolling
+// combat-report buffer + wound watermarks combat_summary/combat_log read.
+// No reset-on-reconnect counterpart (unlike reset_announcement_cursor/
+// reset_wildlife_tripwire_tracking below): this state is this plugin's OWN
+// cache of already-observed combat, not "what has been sent to the
+// currently-connected peer", so a reconnecting client should see the
+// current accumulated state rather than replay it.
+void ingest_combat_reports();
+
+// Forward declaration from narrative.cpp (Feature 013 wave 013-B / Lane 3:
+// story pulse). UNLIKE ingest_combat_reports just above, this cursor DOES
+// reset on reconnect -- emotions aren't an append-only id-cursored log the
+// way reports are, so there is no cheap way to answer "what has this peer
+// already seen" after a reconnect other than starting over; see
+// reset_story_pulse_cursor's own doc comment (narrative.cpp) for how the
+// bounded reconnect re-window keeps that restart from replaying the fort's
+// entire emotional history.
+void reset_story_pulse_cursor();
+
 // Forward declarations from announcements.cpp
 size_t poll_and_send_announcements();
 void reset_announcement_cursor();
@@ -614,6 +634,13 @@ static void push_state_refresh()
 
     // Announcements since the last poll.
     poll_and_send_announcements();
+
+    // Combat narrator ingest (Feature 013 wave 013-A / Lane 2): same
+    // step-boundary cadence as the announcement poll just above, so wound
+    // watermarks snapshot/expire at the same turn boundaries the model
+    // actually observes from. Wire-silent -- combat_summary/combat_log are
+    // pull queries, not pushed here.
+    ingest_combat_reports();
 }
 
 // get_step_tripwire_reason returns a copy of the last tripwire trigger
@@ -2151,6 +2178,9 @@ static void close_socket_and_reset()
     // reconnect-tolerance precedent as reset_announcement_cursor just above
     // (the reconnected peer has no memory of it either).
     reset_wildlife_tripwire_tracking();
+    // Feature 013 wave 013-B: story_pulse's cursor resets the same way --
+    // see reset_story_pulse_cursor's own doc comment (narrative.cpp).
+    reset_story_pulse_cursor();
 }
 
 // Teardown path for the SOCKET THREAD ONLY (heartbeat timeout, server-sent

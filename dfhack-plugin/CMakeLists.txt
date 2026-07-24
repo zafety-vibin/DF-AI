@@ -50,6 +50,7 @@ DFHACK_PLUGIN(df_ai_protocol
     trade.cpp
     nobles.cpp
     military.cpp
+    narrative.cpp
     queries.cpp
     announcements.cpp
     LINK_LIBRARIES clsocket lua

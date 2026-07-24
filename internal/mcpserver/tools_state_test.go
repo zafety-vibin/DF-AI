@@ -1263,6 +1263,612 @@ func TestRenderDwarfDetailPsyche(t *testing.T) {
 	}
 }
 
+// TestRenderDwarfPortraitRich covers a densely-populated dwarf_portrait
+// response: every section has something to say, and every tier-banding
+// helper (facet/value 7-tier, need fulfillment/strength, stress category)
+// gets exercised on an in-range value.
+func TestRenderDwarfPortraitRich(t *testing.T) {
+	raw := []byte(`{
+		"id":11,"name":"Edóm Ustuthätan","caste_description":"A short, sturdy creature fond of drink and industry.",
+		"size_band":"average","stress_category":3,
+		"facets":[{"facet":"GREED","value":96},{"facet":"DISCORD","value":84}],
+		"values":[{"value_type":"LAW","strength":45}],
+		"needs_starved":[
+			{"need_type":"Socialize","focus_level":-1200,"need_level":2},
+			{"need_type":"Excitement","focus_level":-15000,"need_level":5}
+		],
+		"need_best_fed":{"need_type":"DrinkAlcohol","focus_level":350,"need_level":10},
+		"emotion":{"emotion":"AMUSEMENT","strength":300,"divider":-4,"thought":"Spar","thought_caption":"after a sparring session","subthought":0,"subthought_resolved":false,"subthought_text":""},
+		"preferences":[
+			{"type":"LikeMaterial","label":"steel"},
+			{"type":"LikeFood","label":"roasted kea"},
+			{"type":"LikeColor","label":"mauve"}
+		],
+		"deity":{"name":"Vand the Platinum Coin","link_strength":45},
+		"spouse":{"name":"Olon"},
+		"lover":null,
+		"children":[{"name":"Zefonchild"}],
+		"best_friend":{"name":"Zefon","love":82,"meet_count":31},
+		"worst_grudge":{"name":"Deduk","love":-60,"meet_count":5},
+		"memberships":[{"entity":"The Reformed Hammers","entity_type":"Guild","status":"current"}],
+		"known_poetic_forms":4,"known_musical_forms":2,"known_dance_forms":0,"known_written_contents":2,
+		"masterpieces":1,"kills":0
+	}`)
+
+	out := renderDwarfPortrait(raw)
+
+	checks := []string{
+		"Edóm Ustuthätan (id=11)",
+		"average size",
+		"A short, sturdy creature fond of drink and industry.",
+		"Mood: Content",
+		"Personality: Highest GREED (96), Very High DISCORD (84)",
+		"Beliefs: Highest LAW (45)",
+		"Socialize (Unfocused, focus -1200) -- driven by high GREGARIOUSNESS",
+		"Excitement (Distracted, focus -15000) -- driven by high EXCITEMENT_SEEKING",
+		"Best-fed need: DrinkAlcohol (Unfettered, focus 350, Intense strength)",
+		"Strongest emotion: AMUSEMENT (strength 300) -- after a sparring session",
+		"steel (drives strange moods)",
+		"roasted kea",
+		"mauve",
+		"Deity: worships Vand the Platinum Coin (devotion 45, scale unverified",
+		"Family: spouse Olon; 1 child(ren) (Zefonchild)",
+		"best friend Zefon (love 82, met 31×)",
+		"grudge against Deduk (love -60, met 5×)",
+		"Affiliations: The Reformed Hammers (Guild, current)",
+		"Knows 4 poetic, 2 musical, 0 dance forms; carries 2 written work(s)",
+		"Masterpieces: 1 (creation-event linkage unverified -- may undercount); kills recorded: 0",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing expected substring %q in rendered portrait:\n%s", want, out)
+		}
+	}
+	// LikeMaterial's mood-insurance note must not leak onto sibling
+	// preferences that have no such proven mechanical link.
+	if strings.Contains(out, "roasted kea (drives strange moods)") {
+		t.Fatalf("only LikeMaterial gets the drives-strange-moods note:\n%s", out)
+	}
+	// Lover was null in the wire response -- must not fabricate a line.
+	if strings.Contains(out, "lover") {
+		t.Fatalf("null lover must not render any lover text:\n%s", out)
+	}
+}
+
+// TestRenderDwarfPortraitSparse covers the opposite extreme: a citizen
+// with nothing salient anywhere. Every section must still print an
+// explicit, truthful "none"/"nothing" line rather than being silently
+// dropped -- a sparse portrait should read as complete, not truncated.
+func TestRenderDwarfPortraitSparse(t *testing.T) {
+	raw := []byte(`{
+		"id":9,"name":"Sarvesh","caste_description":"","size_band":"average","stress_category":3,
+		"facets":[],"values":[],"needs_starved":[],"need_best_fed":null,
+		"emotion":null,"preferences":[],
+		"deity":null,"spouse":null,"lover":null,"children":[],
+		"best_friend":null,"worst_grudge":null,"memberships":[],
+		"known_poetic_forms":0,"known_musical_forms":0,"known_dance_forms":0,"known_written_contents":0,
+		"masterpieces":0,"kills":0
+	}`)
+
+	out := renderDwarfPortrait(raw)
+
+	checks := []string{
+		"Sarvesh (id=9)",
+		"Personality: nothing stands out (all facets near neutral)",
+		"Beliefs: none stand out",
+		"Starved needs: none",
+		"Best-fed need: none (no needs recorded)",
+		"Strongest emotion: none recorded",
+		"Preferences: none visible",
+		"Deity: worships nothing in particular",
+		"Family: none known",
+		"Social: no standout friendships or grudges among fellow citizens",
+		"Affiliations: none",
+		"Knows 0 poetic, 0 musical, 0 dance forms; carries 0 written work(s)",
+		"Masterpieces: 0 (creation-event linkage unverified -- may undercount); kills recorded: 0",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing expected substring %q in sparse portrait:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderDwarfPortraitBadJSON(t *testing.T) {
+	out := renderDwarfPortrait([]byte(`not json`))
+	if !strings.Contains(out, "unparseable") {
+		t.Fatalf("bad JSON must be reported, got: %q", out)
+	}
+}
+
+// TestRenderCombatSummaryFortWinning covers momentum favoring the fort
+// side: the "other" side takes the wounds/casualty, the fort side lands
+// the hits. Exercises sides-by-name, severity tally ordering
+// (severed_part before bruise regardless of map iteration order),
+// hits_landed attribution, casualties, and telling lines.
+func TestRenderCombatSummaryFortWinning(t *testing.T) {
+	raw := []byte(`{
+		"engagements":[{
+			"engagement_id":501,"first_report_id":501,"last_report_id":519,
+			"start_year":101,"start_time":4000,"end_year":101,"end_time":4050,
+			"sides":[
+				{"label":"fort","units":[{"id":1,"name":"Edóm"}],
+				 "new_wounds":{},"hits_landed":[{"attacker_id":1,"attacker_name":"Edóm","count":3}],
+				 "knocked_out":0,"bleeding":0,"casualties":[]},
+				{"label":"other","units":[{"id":77,"name":"a giant cave spider"}],
+				 "new_wounds":{"bruise":2,"severed_part":1},
+				 "hits_landed":[],"knocked_out":1,"bleeding":1,
+				 "casualties":[{"id":77,"name":"a giant cave spider","death_cause":"STRUCK_DOWN","killer":"Edóm"}]}
+			],
+			"telling_lines":["Edóm severs the giant cave spider's leg with a silver war hammer!"]
+		}],
+		"total_tracked":1,
+		"momentum_note":"wound counts reflect activity since first observed fighting"
+	}`)
+
+	out := renderCombatSummary(raw)
+
+	checks := []string{
+		"1 engagement(s) tracked",
+		"[engagement 501] reports #501-#519",
+		"fort side: Edóm",
+		"other side: a giant cave spider",
+		"hits landed: Edóm x3",
+		"severed_part x1, bruise x2", // severity order, not map iteration order
+		"knocked out: 1",
+		"bleeding: 1",
+		"CASUALTIES: a giant cave spider (STRUCK_DOWN, by Edóm)",
+		`"Edóm severs the giant cave spider's leg with a silver war hammer!"`,
+		"wound counts reflect activity since first observed fighting",
+		"combat_report mode=log",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing expected substring %q in rendered combat summary:\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderCombatSummaryFortLosing covers the opposite momentum direction:
+// the fort side takes wounds/a casualty from an unresolved attacker, so the
+// killer must render as an honest "unknown killer" rather than a blank.
+func TestRenderCombatSummaryFortLosing(t *testing.T) {
+	raw := []byte(`{
+		"engagements":[{
+			"engagement_id":900,"first_report_id":900,"last_report_id":905,
+			"start_year":101,"start_time":100,"end_year":101,"end_time":110,
+			"sides":[
+				{"label":"fort","units":[{"id":2,"name":"Olon"}],
+				 "new_wounds":{"artery":1,"fracture":1},
+				 "hits_landed":[],"knocked_out":1,"bleeding":1,
+				 "casualties":[{"id":2,"name":"Olon","death_cause":"BLEED","killer":""}]},
+				{"label":"other","units":[{"id":88,"name":"a troll"}],
+				 "new_wounds":{},"hits_landed":[{"attacker_id":88,"attacker_name":"a troll","count":5}],
+				 "knocked_out":0,"bleeding":0,"casualties":[]}
+			],
+			"telling_lines":[]
+		}],
+		"total_tracked":1
+	}`)
+
+	out := renderCombatSummary(raw)
+
+	checks := []string{
+		"fort side: Olon",
+		"other side: a troll",
+		"artery x1, fracture x1",
+		"hits landed: a troll x5",
+		"CASUALTIES: Olon (BLEED, by unknown killer)",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing expected substring %q in rendered combat summary:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "telling lines:") {
+		t.Fatalf("empty telling_lines must not print a header:\n%s", out)
+	}
+}
+
+// TestRenderCombatSummaryEmpty covers the truthful empty state: no
+// engagements at all (no fight has happened since the cursor).
+func TestRenderCombatSummaryEmpty(t *testing.T) {
+	raw := []byte(`{"engagements":[],"total_tracked":0,"note":"no combat reports since cursor"}`)
+	out := renderCombatSummary(raw)
+	if !strings.Contains(out, "no combat reports since cursor") {
+		t.Fatalf("empty state must surface the plugin's own note, got: %q", out)
+	}
+}
+
+func TestRenderCombatSummaryBadJSON(t *testing.T) {
+	out := renderCombatSummary([]byte(`not json`))
+	if !strings.Contains(out, "unparseable") {
+		t.Fatalf("bad JSON must be reported, got: %q", out)
+	}
+}
+
+// TestRenderCombatLog covers the raw windowed transcript, including the
+// clamp note when the plugin reports one.
+func TestRenderCombatLog(t *testing.T) {
+	raw := []byte(`{
+		"lines":[
+			{"id":501,"year":101,"time":4000,"text":"Edóm has struck the giant cave spider!"},
+			{"id":502,"year":101,"time":4001,"text":"The giant cave spider has been struck down."}
+		],
+		"clamp_note":"12 earlier line(s) omitted"
+	}`)
+	out := renderCombatLog(raw)
+
+	checks := []string{
+		"2 combat report line(s)",
+		"[y101 t4000 #501] Edóm has struck the giant cave spider!",
+		"[y101 t4001 #502] The giant cave spider has been struck down.",
+		"12 earlier line(s) omitted",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing expected substring %q in rendered combat log:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderCombatLogEmpty(t *testing.T) {
+	raw := []byte(`{"lines":[],"note":"no matching combat reports"}`)
+	out := renderCombatLog(raw)
+	if !strings.Contains(out, "no matching combat reports") {
+		t.Fatalf("empty log state must surface the plugin's own note, got: %q", out)
+	}
+}
+
+func TestRenderCombatLogBadJSON(t *testing.T) {
+	out := renderCombatLog([]byte(`not json`))
+	if !strings.Contains(out, "unparseable") {
+		t.Fatalf("bad JSON must be reported, got: %q", out)
+	}
+}
+
+// TestRenderStoryPulseMixedSalience covers a realistic mixed pulse: one
+// facet/value-change-flagged entry, one MadeFriend entry with a resolved
+// other_party, and one plain-strength entry, plus a rewindow note and a
+// clamp note. The plugin's own order (most salient first) is trusted, not
+// re-sorted here -- the fixture is deliberately already in that order.
+func TestRenderStoryPulseMixedSalience(t *testing.T) {
+	raw := []byte(`{
+		"entries":[
+			{"unit_id":1,"unit_name":"Edóm","emotion":"AGONY","strength":220,"divider":1,
+			 "thought":"Death","thought_caption":"at the unexpected death of","subthought":9,
+			 "subthought_resolved":true,"subthought_text":"Zefonchild","salience":"facet_or_value_change",
+			 "other_party":null,"year":101,"year_tick":4000},
+			{"unit_id":2,"unit_name":"Olon","emotion":"AFFECTION","strength":80,"divider":-2,
+			 "thought":"MadeFriend","thought_caption":"after making a friend","subthought":9,
+			 "subthought_resolved":false,"subthought_text":"","salience":"made_friend_or_grudge",
+			 "other_party":{"name":"Zefon"},"year":101,"year_tick":4010},
+			{"unit_id":3,"unit_name":"Deduk","emotion":"AGITATION","strength":60,"divider":4,
+			 "thought":"None","thought_caption":"","subthought":0,
+			 "subthought_resolved":false,"subthought_text":"","salience":"strength",
+			 "other_party":null,"year":101,"year_tick":4020}
+		],
+		"total_candidates":40,"shown":3,
+		"clamp_note":"37 below threshold",
+		"rewindow_note":"cursor was unset (first call, or a reconnect) -- showing only the last 12000 ticks"
+	}`)
+
+	out := renderStoryPulse(raw)
+
+	checks := []string{
+		"cursor was unset (first call, or a reconnect)",
+		"3 notable feeling(s) since the last pulse",
+		"Edóm: AGONY (strength 220) -- at the unexpected death of (Zefonchild) [personality-altering]",
+		"Olon: AFFECTION (strength 80) with Zefon -- after making a friend [new bond]",
+		"Deduk: AGITATION (strength 60) -- None [strong feeling]",
+		"37 below threshold",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing expected substring %q in rendered story pulse:\n%s", want, out)
+		}
+	}
+	// The rewindow note must appear before the count line (context first).
+	if strings.Index(out, "cursor was unset") > strings.Index(out, "3 notable feeling(s)") {
+		t.Fatalf("rewindow note must render before the count line:\n%s", out)
+	}
+}
+
+// TestRenderStoryPulseCapVsThresholdNote covers the fix for the clamp_note
+// conflation defect: a busy window where some omissions are genuinely
+// below-threshold (tier-0) noise and others are salient (tier>=1) entries
+// cut only by the display cap must render as two distinct, separately
+// worded clauses -- never merged into one count that mislabels real news as
+// noise.
+func TestRenderStoryPulseCapVsThresholdNote(t *testing.T) {
+	raw := []byte(`{"entries":[],"total_candidates":40,"shown":15,
+		"clamp_note":"20 below threshold; 5 more salient not shown (raise max)"}`)
+	out := renderStoryPulse(raw)
+	if !strings.Contains(out, "20 below threshold") {
+		t.Fatalf("missing below-threshold clause in rendered story pulse:\n%s", out)
+	}
+	if !strings.Contains(out, "5 more salient not shown (raise max)") {
+		t.Fatalf("missing capped-by-limit clause in rendered story pulse:\n%s", out)
+	}
+}
+
+// TestRenderStoryPulseEmpty covers the truthful empty state: nothing felt
+// since the cursor.
+func TestRenderStoryPulseEmpty(t *testing.T) {
+	raw := []byte(`{"entries":[],"total_candidates":0,"shown":0}`)
+	out := renderStoryPulse(raw)
+	if !strings.Contains(out, "no notable emotions felt since the last pulse") {
+		t.Fatalf("empty pulse must say so plainly, got: %q", out)
+	}
+}
+
+func TestRenderStoryPulseBadJSON(t *testing.T) {
+	out := renderStoryPulse([]byte(`not json`))
+	if !strings.Contains(out, "unparseable") {
+		t.Fatalf("bad JSON must be reported, got: %q", out)
+	}
+}
+
+// TestSocialLoveBandBounds exercises every boundary of DF's own documented
+// core.love banding (df.history_figure.xml:486), verbatim.
+func TestSocialLoveBandBounds(t *testing.T) {
+	cases := []struct {
+		love int
+		want string
+	}{
+		{-100, "Pure Hate"},
+		{-99, "Hated"},
+		{-75, "Hated"},
+		{-74, "Disliked"},
+		{-50, "Disliked"},
+		{-49, "Acquaintance"},
+		{49, "Acquaintance"},
+		{50, "Friend"},
+		{74, "Friend"},
+		{75, "Close Friend"},
+		{99, "Close Friend"},
+		{100, "Kindred Spirit"},
+	}
+	for _, c := range cases {
+		if got := socialLoveBand(c.love); got != c.want {
+			t.Errorf("socialLoveBand(%d) = %q, want %q", c.love, got, c.want)
+		}
+	}
+}
+
+// TestRenderSocialGraphKinds covers one edge of each of the four kinds,
+// checking each kind's own detail formatting (love band + counts for
+// friend/grudge, devotion for worship, relation label for family).
+func TestRenderSocialGraphKinds(t *testing.T) {
+	raw := []byte(`{
+		"edges":[
+			{"a_id":1,"a_name":"Edóm","b_id":2,"b_name":"Olon","kind":"family","relation":"spouse","love":null,"meet_count":null,"link_strength":null},
+			{"a_id":1,"a_name":"Edóm","b_id":3,"b_name":"Zefon","kind":"friend","relation":"war_buddy","love":82,"meet_count":31,"link_strength":null},
+			{"a_id":1,"a_name":"Edóm","b_id":4,"b_name":"Deduk","kind":"grudge","relation":"","love":-60,"meet_count":5,"link_strength":null},
+			{"a_id":1,"a_name":"Edóm","b_id":5,"b_name":"Vand the Platinum Coin","kind":"worship","relation":"deity","love":null,"meet_count":null,"link_strength":45}
+		],
+		"total_edges":4
+	}`)
+
+	out := renderSocialGraph(raw)
+
+	checks := []string{
+		"4 social edge(s):",
+		"Edóm -- Olon: Family (Spouse)",
+		"Edóm -- Zefon: Friend (Close Friend; love 82, met 31×)",
+		"Edóm -- Deduk: Grudge (Disliked; love -60, met 5×)",
+		"Edóm -- Vand the Platinum Coin: Worship (devotion 45, scale unverified)",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing expected substring %q in rendered social graph:\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderSocialGraphSamePairDifferentKinds documents the "dedup A<B"
+// contract from the render side: the plugin's dedup key is scoped per-kind
+// (narrative.cpp's addSocialEdge, SocialEdgeKey), so the SAME pair can
+// legitimately carry both a family edge and a friend edge (e.g. a married
+// couple who also rate each other as a Close Friend) -- these must render
+// as two distinct lines, never collapsed. The actual A<B numeric dedup
+// itself lives in the plugin and is exercised by compile + live play (this
+// repo has no C++ unit-test harness); this test locks the Go-side
+// rendering contract for the case that behavior produces.
+func TestRenderSocialGraphSamePairDifferentKinds(t *testing.T) {
+	raw := []byte(`{
+		"edges":[
+			{"a_id":1,"a_name":"Edóm","b_id":2,"b_name":"Olon","kind":"family","relation":"spouse","love":null,"meet_count":null,"link_strength":null},
+			{"a_id":1,"a_name":"Edóm","b_id":2,"b_name":"Olon","kind":"friend","relation":"","love":90,"meet_count":50,"link_strength":null}
+		],
+		"total_edges":2
+	}`)
+
+	out := renderSocialGraph(raw)
+
+	checks := []string{
+		"2 social edge(s):",
+		"Edóm -- Olon: Family (Spouse)",
+		"Edóm -- Olon: Friend (Close Friend; love 90, met 50×)",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing expected substring %q in rendered social graph:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "Edóm -- Olon:") != 2 {
+		t.Fatalf("same pair under different kinds must render as two distinct lines, got:\n%s", out)
+	}
+}
+
+// TestRenderSocialGraphClampNote covers the truthful cap note.
+func TestRenderSocialGraphClampNote(t *testing.T) {
+	raw := []byte(`{
+		"edges":[{"a_id":1,"a_name":"Edóm","b_id":2,"b_name":"Olon","kind":"family","relation":"spouse","love":null,"meet_count":null,"link_strength":null}],
+		"total_edges":41,
+		"clamp_note":"1 more edge(s) not shown (narrow with kind or unit)"
+	}`)
+	out := renderSocialGraph(raw)
+	if !strings.Contains(out, "1 more edge(s) not shown (narrow with kind or unit)") {
+		t.Fatalf("clamp note must be surfaced, got: %q", out)
+	}
+}
+
+// TestRenderSocialGraphEmpty covers the truthful empty state.
+func TestRenderSocialGraphEmpty(t *testing.T) {
+	raw := []byte(`{"edges":[],"total_edges":0}`)
+	out := renderSocialGraph(raw)
+	if !strings.Contains(out, "no social edges found") {
+		t.Fatalf("empty graph must say so plainly, got: %q", out)
+	}
+}
+
+func TestRenderSocialGraphBadJSON(t *testing.T) {
+	out := renderSocialGraph([]byte(`not json`))
+	if !strings.Contains(out, "unparseable") {
+		t.Fatalf("bad JSON must be reported, got: %q", out)
+	}
+}
+
+// TestRenderFortArtProvenance covers the two labeled provenance paths
+// research 2.5 specifies: a composed_here work (with its joined year) and a
+// brought_here work (a current citizen's pre-fort composition, or a fort
+// composition the event join missed) -- the render must distinguish them
+// and never fabricate a year for the brought-here case.
+func TestRenderFortArtProvenance(t *testing.T) {
+	raw := []byte(`{
+		"works":[
+			{"kind":"poetic_form","id":1,"title":"The Cavern of Mirth","creator":"Edóm",
+			 "provenance":"composed_here","composed_year":101,
+			 "mood":"Solemn","subject":"AlcoholicBeverages","subject_detail":"","action":"Praise","worship_target":""},
+			{"kind":"written_content","id":2,"title":"A Wanderer's Account","creator":"Olon",
+			 "provenance":"brought_here","composed_year":null,
+			 "written_type":"Autobiography","styles":["Cheerful","Witty"]}
+		],
+		"census":{"known_in_fort":2,"composed_in_fort":1,"brought_here":1}
+	}`)
+
+	out := renderFortArt(raw)
+
+	checks := []string{
+		"2 work(s) of fort art:",
+		`"The Cavern of Mirth" -- a poem by Edóm (solemn, alcoholic beverages, praise) [composed here, y101]`,
+		`"A Wanderer's Account" -- autobiography by Olon (cheerful, witty) [brought here]`,
+		"census: 2 known in fort (1 composed here, 1 brought here)",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing expected substring %q in rendered fort art:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "y<nil>") || strings.Contains(out, "brought here, y") {
+		t.Fatalf("brought-here work must never carry a fabricated year, got:\n%s", out)
+	}
+}
+
+// TestRenderFortArtDanceFields covers dance_form's "narrative gold" fields
+// (research 2.5): the event acted out, the character whose story it tells,
+// and the creature whose movements are imitated.
+func TestRenderFortArtDanceFields(t *testing.T) {
+	raw := []byte(`{
+		"works":[
+			{"kind":"dance_form","id":9,"title":"The Carnotaur's Stomp","creator":"Zefon",
+			 "provenance":"composed_here","composed_year":99,
+			 "context":"Celebration","character":"Deduk","creature_imitated":"carnotaurus","event":555}
+		],
+		"census":{"known_in_fort":1,"composed_in_fort":1,"brought_here":0}
+	}`)
+
+	out := renderFortArt(raw)
+
+	checks := []string{
+		`"The Carnotaur's Stomp" -- a dance by Zefon (celebration, acts out Deduk's story, imitates a carnotaurus, re-enacts historical event #555) [composed here, y99]`,
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing expected substring %q in rendered fort art:\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderFortArtEmpty covers the truthful empty state: nothing composed
+// here or brought by a current citizen yet, still surfacing the (zeroed)
+// census rather than an error.
+func TestRenderFortArtEmpty(t *testing.T) {
+	raw := []byte(`{"works":[],"census":{"known_in_fort":0,"composed_in_fort":0,"brought_here":0}}`)
+	out := renderFortArt(raw)
+	if !strings.Contains(out, "no fort art yet") {
+		t.Fatalf("empty fort art must say so plainly, got: %q", out)
+	}
+	if !strings.Contains(out, "census: 0 known in fort (0 composed here, 0 brought here)") {
+		t.Fatalf("empty fort art must still surface the zeroed census, got: %q", out)
+	}
+}
+
+// TestRenderFortArtScanAndClampNotes covers the first-scan timing note
+// (live probe #10) and the truthful cap note, both of which must survive
+// into the rendered text unmodified.
+func TestRenderFortArtScanAndClampNotes(t *testing.T) {
+	raw := []byte(`{
+		"works":[{"kind":"poetic_form","id":1,"title":"A Song","creator":"Edóm","provenance":"composed_here","composed_year":101}],
+		"census":{"known_in_fort":11,"composed_in_fort":11,"brought_here":0},
+		"clamp_note":"1 more work(s) not shown",
+		"scan_note":"first fort_art call scanned the world's full history-event log (83ms) -- later calls are incremental"
+	}`)
+	out := renderFortArt(raw)
+	checks := []string{
+		"first fort_art call scanned the world's full history-event log (83ms)",
+		"1 more work(s) not shown",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing expected substring %q in rendered fort art:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderFortArtBadJSON(t *testing.T) {
+	out := renderFortArt([]byte(`not json`))
+	if !strings.Contains(out, "unparseable") {
+		t.Fatalf("bad JSON must be reported, got: %q", out)
+	}
+}
+
+// TestPersonalityTierLabelBounds exercises both the facet (0-100) and
+// value (-50..50) tier tables at their boundaries, plus the honest
+// fallback for a value outside either table (a real DF value strength
+// CAN exceed 50 in principle -- research 2.1a's tier table only documents
+// -50..50 as the display band boundaries, not a hard storage limit).
+func TestPersonalityTierLabelBounds(t *testing.T) {
+	if got := personalityTierLabel(0, false); got != "Lowest" {
+		t.Fatalf("facet 0 = Lowest, got %q", got)
+	}
+	if got := personalityTierLabel(50, false); got != "Neutral" {
+		t.Fatalf("facet 50 = Neutral, got %q", got)
+	}
+	if got := personalityTierLabel(100, false); got != "Highest" {
+		t.Fatalf("facet 100 = Highest, got %q", got)
+	}
+	if got := personalityTierLabel(-50, true); got != "Lowest" {
+		t.Fatalf("value -50 = Lowest, got %q", got)
+	}
+	if got := personalityTierLabel(0, true); got != "Neutral" {
+		t.Fatalf("value 0 = Neutral, got %q", got)
+	}
+	if got := personalityTierLabel(60, true); !strings.Contains(got, "tier unknown") {
+		t.Fatalf("out-of-table value must fall back honestly, got %q", got)
+	}
+}
+
+func TestStressCategoryLabelOutOfRange(t *testing.T) {
+	if got := stressCategoryLabel(3); got != "Content" {
+		t.Fatalf("category 3 = Content, got %q", got)
+	}
+	if got := stressCategoryLabel(9); got != "category 9" {
+		t.Fatalf("out-of-range category must fall back to the raw number, got %q", got)
+	}
+}
+
 func TestDwarfSummaryLine(t *testing.T) {
 	d, err := parseDwarfDetail([]byte(`{
 		"id":5,"position":{"x":1,"y":1,"z":1},"first_name":"Urist",

@@ -54,7 +54,21 @@
 ## tripwire (a dangerous wild spawn auto-pauses the step), (10) build
 ## Instrument now refuses truthfully (handheld in stock), (11)
 ## check_goals shelter count spans all fort z-levels, (12) connector
-## hint self-heals via live recheck. Everything below this line is
+## hint self-heals via live recheck.
+## WAVE 013 (NARRATIVE LAYER) ALSO SHIPPED + DEPLOYED 2026-07-24 —
+## same restart covers it; add to the live-verify pass: (13)
+## dwarf_detail id=1199 portrait=true — ADIL FIRST (the chair
+## question: what does his portrait say about paperwork, soil,
+## crowds?), then melbil (1287) and one musician (484); (14)
+## fort_story mode=pulse twice (cursor advance + dedup), mode=social
+## (expect spouse/friend edges among founders after a year together),
+## mode=art (probably empty of fort works — band hasn't composed yet;
+## 'brought here by' lines are the win; first call pays the
+## world-event scan, timing note in ACK); (15) combat_report — expect
+## truthful 'no combat reports since cursor' empty state (a real
+## fight verifies momentum later — do NOT seek one); (16) step still
+## clean (combat ingest hooked at push_state_refresh — watch for any
+## new step-latency or tripwire noise). Everything below this line is
 ## the ORIGINAL findings list, kept for context:
 ## TRADE/DIPLOMACY GAPS (first live caravan, 2026-07-22 — overseer
 ## wants this wired next; findings from attempting the trade solo):

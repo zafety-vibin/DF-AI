@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -2159,6 +2160,1082 @@ func renderDwarfDetail(raw []byte, includeLabors bool, includePsyche bool) strin
 	return sb.String()
 }
 
+// ---------------------------------------------------------------------------
+// dwarf_portrait (dwarf_detail's portrait=true param) -- Feature 013 wave
+// 013-A. Wire shape matches the plugin's dwarf_portrait query
+// (dfhack-plugin/narrative.cpp handleDwarfPortrait): raw facts only (facet/
+// value/need numbers, resolved names, counts) with NO tier labels or prose
+// composed plugin-side -- that phrasing lives here per the project's house
+// rule that tool schemas/plugin payloads stay factual and Go composes text.
+// ---------------------------------------------------------------------------
+
+type portraitFacetEntry struct {
+	Facet string `json:"facet"`
+	Value int    `json:"value"`
+}
+
+type portraitValueEntry struct {
+	ValueType string `json:"value_type"`
+	Strength  int    `json:"strength"`
+}
+
+type portraitNeedEntry struct {
+	NeedType   string `json:"need_type"`
+	FocusLevel int    `json:"focus_level"`
+	NeedLevel  int    `json:"need_level"`
+}
+
+// portraitEmotion mirrors dwarf_detail's emotion entry shape plus the two
+// subthought-resolution fields the plugin's curated resolver adds:
+// SubthoughtResolved gates whether SubthoughtText is a real name/detail or
+// an empty placeholder -- never render SubthoughtText without checking it.
+type portraitEmotion struct {
+	Emotion            string `json:"emotion"`
+	Strength           int    `json:"strength"`
+	Divider            int    `json:"divider"`
+	Thought            string `json:"thought"`
+	ThoughtCaption     string `json:"thought_caption"`
+	Subthought         int    `json:"subthought"`
+	SubthoughtResolved bool   `json:"subthought_resolved"`
+	SubthoughtText     string `json:"subthought_text"`
+}
+
+type portraitPreference struct {
+	Type  string `json:"type"`
+	Label string `json:"label"`
+}
+
+type portraitDeity struct {
+	Name         string `json:"name"`
+	LinkStrength int    `json:"link_strength"`
+}
+
+type portraitPerson struct {
+	Name string `json:"name"`
+}
+
+// portraitRelation is one hf_visual-derived social edge (best friend or
+// worst grudge) -- Love is DF's own core.love -100..100 scale (the XML's
+// own documented banding: <=-75 Hated, <=-50 Disliked, <=49 Acquaintance,
+// <=74 Friend, <=99 Close Friend, 100 Kindred Spirit), MeetCount how many
+// times DF has recorded them meeting.
+type portraitRelation struct {
+	Name      string `json:"name"`
+	Love      int    `json:"love"`
+	MeetCount int    `json:"meet_count"`
+}
+
+type portraitMembership struct {
+	Entity     string `json:"entity"`
+	EntityType string `json:"entity_type"`
+	Status     string `json:"status"`
+}
+
+// dwarfPortraitResp is the full wire shape of the plugin's dwarf_portrait
+// query response. Every pointer field is nil (never a zero-value struct)
+// when the underlying section has nothing to report -- rendered as an
+// explicit "none"/"unknown" line rather than silently omitted, so a sparse
+// dwarf's portrait still reads as complete rather than truncated.
+type dwarfPortraitResp struct {
+	ID                   int                  `json:"id"`
+	Name                 string               `json:"name"`
+	CasteDescription     string               `json:"caste_description"`
+	SizeBand             string               `json:"size_band"`
+	StressCategory       int                  `json:"stress_category"`
+	Facets               []portraitFacetEntry `json:"facets"`
+	Values               []portraitValueEntry `json:"values"`
+	NeedsStarved         []portraitNeedEntry  `json:"needs_starved"`
+	NeedBestFed          *portraitNeedEntry   `json:"need_best_fed"`
+	Emotion              *portraitEmotion     `json:"emotion"`
+	Preferences          []portraitPreference `json:"preferences"`
+	Deity                *portraitDeity       `json:"deity"`
+	Spouse               *portraitPerson      `json:"spouse"`
+	Lover                *portraitPerson      `json:"lover"`
+	Children             []portraitPerson     `json:"children"`
+	BestFriend           *portraitRelation    `json:"best_friend"`
+	WorstGrudge          *portraitRelation    `json:"worst_grudge"`
+	Memberships          []portraitMembership `json:"memberships"`
+	KnownPoeticForms     int                  `json:"known_poetic_forms"`
+	KnownMusicalForms    int                  `json:"known_musical_forms"`
+	KnownDanceForms      int                  `json:"known_dance_forms"`
+	KnownWrittenContents int                  `json:"known_written_contents"`
+	Masterpieces         int                  `json:"masterpieces"`
+	Kills                int                  `json:"kills"`
+}
+
+func parseDwarfPortrait(raw []byte) (dwarfPortraitResp, error) {
+	var d dwarfPortraitResp
+	err := json.Unmarshal(raw, &d)
+	return d, err
+}
+
+// personalityTierLabel bands a facet value (0-100) or a belief/value
+// strength (-50..50) into DF's own 7-tier label — both use the identical
+// label set at different bounds (research: scripts/modtools/
+// set-personality.lua's tierRanges / assign-facets.lua's labels for
+// facets; scripts/modtools/set-belief.lua's tierRanges/getBeliefTier for
+// values). isValue selects the -50..50 bound table; otherwise the 0..100
+// facet bound table is used.
+func personalityTierLabel(v int, isValue bool) string {
+	labels := []string{"Lowest", "Very Low", "Low", "Neutral", "High", "Very High", "Highest"}
+	var bounds [7][2]int
+	if isValue {
+		bounds = [7][2]int{{-50, -41}, {-40, -26}, {-25, -11}, {-10, 10}, {11, 25}, {26, 40}, {41, 50}}
+	} else {
+		bounds = [7][2]int{{0, 9}, {10, 24}, {25, 39}, {40, 60}, {61, 75}, {76, 90}, {91, 100}}
+	}
+	for i, b := range bounds {
+		if v >= b[0] && v <= b[1] {
+			return labels[i]
+		}
+	}
+	// Out-of-table value (should not happen for real DF data) -- report
+	// the raw number rather than a wrong label.
+	return fmt.Sprintf("(tier unknown for %d)", v)
+}
+
+// needFulfillmentLabel bands a need's focus_level into DF's own 7-tier
+// fulfillment label (research: scripts/modtools/set-need.lua's
+// getFulfillmentTier/getFulfillmentString — exact bounds transcribed
+// verbatim).
+func needFulfillmentLabel(focus int) string {
+	switch {
+	case focus <= -100000:
+		return "Badly distracted"
+	case focus <= -10000:
+		return "Distracted"
+	case focus <= -1000:
+		return "Unfocused"
+	case focus <= 99:
+		return "Not distracted"
+	case focus <= 199:
+		return "Untroubled"
+	case focus <= 299:
+		return "Level-headed"
+	default:
+		return "Unfettered"
+	}
+}
+
+// needStrengthLabel bands a need's need_level into DF's own 4-tier
+// strength label (set-need.lua's getNeedLevelTier/needLevelStrings; vanilla
+// only ever uses 1/2/5/10 but the ranges cover any modded value).
+func needStrengthLabel(level int) string {
+	switch {
+	case level <= 1:
+		return "Slight"
+	case level < 5:
+		return "Moderate"
+	case level < 10:
+		return "Strong"
+	default:
+		return "Intense"
+	}
+}
+
+// stressCategoryLabel bands DF's own 0-6 stress category (Units::
+// getStressCategory, already surfaced numerically elsewhere in this file)
+// into its own UI label (plugins/lua/spectate.lua's tooltip-stress-levels
+// table). Falls back to the raw number for a category outside 0-6, which
+// should never happen since the plugin reports DF's own computed value.
+func stressCategoryLabel(cat int) string {
+	labels := []string{"Miserable", "Unhappy", "Displeased", "Content", "Pleased", "Happy", "Ecstatic"}
+	if cat < 0 || cat >= len(labels) {
+		return fmt.Sprintf("category %d", cat)
+	}
+	return labels[cat]
+}
+
+// needTraitHint composes the short "driven by ..." explanation
+// scripts/modtools/set-need.lua's needDefaultsInfo table encodes — the
+// mechanics behind e.g. "needs alcohol to get through the working day"
+// being IMMODERATION, not a guess. Covers every entry in that table;
+// returns "" for a need_type not in it (PrayOrMeditate/SeeGreatBeast are
+// deliberately absent -- set-need.lua marks both `special = true` and
+// derives them from deity devotion / a trait+belief combo this table
+// doesn't capture, so no single-trait hint would be truthful).
+func needTraitHint(needType string) string {
+	hints := map[string]string{
+		"Socialize":       "high GREGARIOUSNESS",
+		"DrinkAlcohol":    "high IMMODERATION",
+		"StayOccupied":    "high ACTIVITY_LEVEL / value on HARD_WORK",
+		"BeCreative":      "high ART_INCLINED",
+		"Excitement":      "high EXCITEMENT_SEEKING",
+		"LearnSomething":  "high CURIOUS / value on KNOWLEDGE",
+		"BeWithFamily":    "value on FAMILY",
+		"BeWithFriends":   "value on FRIENDSHIP",
+		"HearEloquence":   "value on ELOQUENCE",
+		"UpholdTradition": "value on TRADITION",
+		"SelfExamination": "value on INTROSPECTION",
+		"MakeMerry":       "value on MERRIMENT",
+		"CraftObject":     "value on CRAFTSMANSHIP",
+		"MartialTraining": "value on MARTIAL_PROWESS",
+		"PracticeSkill":   "value on SKILL",
+		"TakeItEasy":      "value on LEISURE_TIME",
+		"MakeRomance":     "value on ROMANCE",
+		"SeeAnimal":       "value on NATURE",
+		"AcquireObject":   "high GREED",
+		"EatGoodMeal":     "high IMMODERATION",
+		"Fight":           "high VIOLENT",
+		"CauseTrouble":    "high DISCORD / low HARMONY",
+		"Argue":           "low FRIENDLINESS",
+		"BeExtravagant":   "high IMMODESTY",
+		"Wander":          "value on NATURE",
+		"HelpSomebody":    "high ALTRUISM",
+		"ThinkAbstractly": "high ABSTRACT_INCLINED",
+		"AdmireArt":       "value on ARTWORK",
+	}
+	return hints[needType]
+}
+
+// renderDwarfPortrait turns one dwarf_portrait response into 15-25
+// prose-ish lines within a ~250-450 token budget, entirely from the
+// salience caps/selection the plugin already applied — this function only
+// bands raw numbers into DF's own tier labels and composes sentences, it
+// never re-filters or re-ranks (house rule: prose lives in Go, salience
+// selection lives in the plugin next to the data it's selecting over).
+func renderDwarfPortrait(raw []byte) string {
+	d, err := parseDwarfPortrait(raw)
+	if err != nil {
+		return fmt.Sprintf("unparseable dwarf_portrait response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s (id=%d) -- %s size.\n", d.Name, d.ID, d.SizeBand)
+	if d.CasteDescription != "" {
+		fmt.Fprintf(&sb, "%s\n", d.CasteDescription)
+	}
+	fmt.Fprintf(&sb, "Mood: %s\n", stressCategoryLabel(d.StressCategory))
+
+	if len(d.Facets) == 0 {
+		sb.WriteString("Personality: nothing stands out (all facets near neutral)\n")
+	} else {
+		parts := make([]string, 0, len(d.Facets))
+		for _, f := range d.Facets {
+			parts = append(parts, fmt.Sprintf("%s %s (%d)", personalityTierLabel(f.Value, false), f.Facet, f.Value))
+		}
+		fmt.Fprintf(&sb, "Personality: %s\n", strings.Join(parts, ", "))
+	}
+
+	if len(d.Values) == 0 {
+		sb.WriteString("Beliefs: none stand out\n")
+	} else {
+		parts := make([]string, 0, len(d.Values))
+		for _, v := range d.Values {
+			parts = append(parts, fmt.Sprintf("%s %s (%d)", personalityTierLabel(v.Strength, true), v.ValueType, v.Strength))
+		}
+		fmt.Fprintf(&sb, "Beliefs: %s\n", strings.Join(parts, ", "))
+	}
+
+	if len(d.NeedsStarved) == 0 {
+		sb.WriteString("Starved needs: none\n")
+	} else {
+		parts := make([]string, 0, len(d.NeedsStarved))
+		for _, n := range d.NeedsStarved {
+			hint := needTraitHint(n.NeedType)
+			if hint == "" {
+				parts = append(parts, fmt.Sprintf("%s (%s, focus %d)", n.NeedType, needFulfillmentLabel(n.FocusLevel), n.FocusLevel))
+			} else {
+				parts = append(parts, fmt.Sprintf("%s (%s, focus %d) -- driven by %s", n.NeedType, needFulfillmentLabel(n.FocusLevel), n.FocusLevel, hint))
+			}
+		}
+		fmt.Fprintf(&sb, "Starved needs: %s\n", strings.Join(parts, "; "))
+	}
+	if d.NeedBestFed == nil {
+		sb.WriteString("Best-fed need: none (no needs recorded)\n")
+	} else {
+		fmt.Fprintf(&sb, "Best-fed need: %s (%s, focus %d, %s strength)\n",
+			d.NeedBestFed.NeedType, needFulfillmentLabel(d.NeedBestFed.FocusLevel), d.NeedBestFed.FocusLevel, needStrengthLabel(d.NeedBestFed.NeedLevel))
+	}
+
+	if d.Emotion == nil {
+		sb.WriteString("Strongest emotion: none recorded\n")
+	} else {
+		e := d.Emotion
+		cause := e.ThoughtCaption
+		if cause == "" {
+			cause = e.Thought
+		}
+		if e.SubthoughtResolved && e.SubthoughtText != "" {
+			cause = fmt.Sprintf("%s (%s)", cause, e.SubthoughtText)
+		}
+		fmt.Fprintf(&sb, "Strongest emotion: %s (strength %d) -- %s\n", e.Emotion, e.Strength, cause)
+	}
+
+	if len(d.Preferences) == 0 {
+		sb.WriteString("Preferences: none visible\n")
+	} else {
+		parts := make([]string, 0, len(d.Preferences))
+		for _, p := range d.Preferences {
+			if p.Type == "LikeMaterial" {
+				parts = append(parts, fmt.Sprintf("%s (drives strange moods)", p.Label))
+			} else {
+				parts = append(parts, p.Label)
+			}
+		}
+		fmt.Fprintf(&sb, "Preferences: %s\n", strings.Join(parts, ", "))
+	}
+
+	if d.Deity == nil {
+		sb.WriteString("Deity: worships nothing in particular\n")
+	} else {
+		fmt.Fprintf(&sb, "Deity: worships %s (devotion %d, scale unverified -- see docs/decisions.md)\n", d.Deity.Name, d.Deity.LinkStrength)
+	}
+
+	familyParts := make([]string, 0, 3)
+	if d.Spouse != nil {
+		familyParts = append(familyParts, "spouse "+d.Spouse.Name)
+	}
+	if d.Lover != nil {
+		familyParts = append(familyParts, "lover "+d.Lover.Name)
+	}
+	if len(d.Children) > 0 {
+		names := make([]string, 0, len(d.Children))
+		for _, c := range d.Children {
+			names = append(names, c.Name)
+		}
+		familyParts = append(familyParts, fmt.Sprintf("%d child(ren) (%s)", len(d.Children), strings.Join(names, ", ")))
+	}
+	if len(familyParts) == 0 {
+		sb.WriteString("Family: none known\n")
+	} else {
+		fmt.Fprintf(&sb, "Family: %s\n", strings.Join(familyParts, "; "))
+	}
+
+	socialParts := make([]string, 0, 2)
+	if d.BestFriend != nil {
+		socialParts = append(socialParts, fmt.Sprintf("best friend %s (love %d, met %d×)", d.BestFriend.Name, d.BestFriend.Love, d.BestFriend.MeetCount))
+	}
+	if d.WorstGrudge != nil {
+		socialParts = append(socialParts, fmt.Sprintf("grudge against %s (love %d, met %d×)", d.WorstGrudge.Name, d.WorstGrudge.Love, d.WorstGrudge.MeetCount))
+	}
+	if len(socialParts) == 0 {
+		sb.WriteString("Social: no standout friendships or grudges among fellow citizens\n")
+	} else {
+		fmt.Fprintf(&sb, "Social: %s\n", strings.Join(socialParts, "; "))
+	}
+
+	if len(d.Memberships) == 0 {
+		sb.WriteString("Affiliations: none\n")
+	} else {
+		parts := make([]string, 0, len(d.Memberships))
+		for _, m := range d.Memberships {
+			parts = append(parts, fmt.Sprintf("%s (%s, %s)", m.Entity, m.EntityType, m.Status))
+		}
+		fmt.Fprintf(&sb, "Affiliations: %s\n", strings.Join(parts, ", "))
+	}
+
+	fmt.Fprintf(&sb, "Knows %d poetic, %d musical, %d dance forms; carries %d written work(s)\n",
+		d.KnownPoeticForms, d.KnownMusicalForms, d.KnownDanceForms, d.KnownWrittenContents)
+	fmt.Fprintf(&sb, "Masterpieces: %d (creation-event linkage unverified -- may undercount); kills recorded: %d\n",
+		d.Masterpieces, d.Kills)
+
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// combat_report -- Feature 013 wave 013-A / Lane 2 (combat narrator, research
+// 2.3 + 3.3). Wire shape matches the plugin's combat_summary/combat_log
+// queries (dfhack-plugin/narrative.cpp handleCombatSummary/handleCombatLog):
+// raw structured facts only (unit ids/names, severity tallies, counts) with
+// no prose composed plugin-side -- phrasing lives here per the same house
+// rule dwarf_portrait follows.
+// ---------------------------------------------------------------------------
+
+type combatSideUnit struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type combatHitLanded struct {
+	AttackerID   int    `json:"attacker_id"`
+	AttackerName string `json:"attacker_name"`
+	Count        int    `json:"count"`
+}
+
+// combatCasualty's Killer is "" (not null) when the plugin couldn't resolve
+// an attacker -- render as "unknown killer" rather than silently omitting.
+type combatCasualty struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	DeathCause string `json:"death_cause"`
+	Killer     string `json:"killer"`
+}
+
+type combatSide struct {
+	Label      string            `json:"label"`
+	Units      []combatSideUnit  `json:"units"`
+	NewWounds  map[string]int    `json:"new_wounds"`
+	HitsLanded []combatHitLanded `json:"hits_landed"`
+	KnockedOut int               `json:"knocked_out"`
+	Bleeding   int               `json:"bleeding"`
+	Casualties []combatCasualty  `json:"casualties"`
+}
+
+type combatEngagement struct {
+	EngagementID  int          `json:"engagement_id"`
+	FirstReportID int          `json:"first_report_id"`
+	LastReportID  int          `json:"last_report_id"`
+	StartYear     int          `json:"start_year"`
+	StartTime     int          `json:"start_time"`
+	EndYear       int          `json:"end_year"`
+	EndTime       int          `json:"end_time"`
+	Sides         []combatSide `json:"sides"`
+	TellingLines  []string     `json:"telling_lines"`
+}
+
+type combatSummaryResp struct {
+	Engagements  []combatEngagement `json:"engagements"`
+	TotalTracked int                `json:"total_tracked"`
+	MomentumNote string             `json:"momentum_note"`
+	ClampNote    string             `json:"clamp_note"`
+	Note         string             `json:"note"` // truthful empty state, e.g. "no combat reports since cursor"
+}
+
+type combatLogLine struct {
+	ID   int    `json:"id"`
+	Year int    `json:"year"`
+	Time int    `json:"time"`
+	Text string `json:"text"`
+}
+
+type combatLogResp struct {
+	Lines     []combatLogLine `json:"lines"`
+	ClampNote string          `json:"clamp_note"`
+	Note      string          `json:"note"`
+}
+
+func parseCombatSummary(raw []byte) (combatSummaryResp, error) {
+	var r combatSummaryResp
+	err := json.Unmarshal(raw, &r)
+	return r, err
+}
+
+func parseCombatLog(raw []byte) (combatLogResp, error) {
+	var r combatLogResp
+	err := json.Unmarshal(raw, &r)
+	return r, err
+}
+
+// combatWoundSeverityOrder is the display order for the new_wounds severity
+// tally -- matches the plugin's own severity ladder (classifyWoundSeverity,
+// narrative.cpp), worst first, so a reader sees the most serious damage
+// before the routine bruises.
+var combatWoundSeverityOrder = []string{"severed_part", "artery", "fracture", "guts_spilled", "bruise"}
+
+// renderCombatSide renders one side's momentum facts as a few indented
+// lines -- only the sections with something to report are printed, so a
+// side with no wounds/casualties this call doesn't pad the output.
+func renderCombatSide(s combatSide) string {
+	var sb strings.Builder
+	names := make([]string, 0, len(s.Units))
+	for _, u := range s.Units {
+		if u.Name != "" {
+			names = append(names, u.Name)
+		} else {
+			names = append(names, fmt.Sprintf("unit#%d", u.ID))
+		}
+	}
+	unitDesc := "(none)"
+	if len(names) > 0 {
+		unitDesc = strings.Join(names, ", ")
+	}
+	fmt.Fprintf(&sb, "  %s side: %s\n", s.Label, unitDesc)
+
+	if len(s.NewWounds) > 0 {
+		parts := make([]string, 0, len(s.NewWounds))
+		for _, k := range combatWoundSeverityOrder {
+			if n, ok := s.NewWounds[k]; ok && n > 0 {
+				parts = append(parts, fmt.Sprintf("%s x%d", k, n))
+			}
+		}
+		if len(parts) > 0 {
+			fmt.Fprintf(&sb, "    new wounds: %s\n", strings.Join(parts, ", "))
+		}
+	}
+	if len(s.HitsLanded) > 0 {
+		parts := make([]string, 0, len(s.HitsLanded))
+		for _, h := range s.HitsLanded {
+			name := h.AttackerName
+			if name == "" {
+				name = fmt.Sprintf("unit#%d", h.AttackerID)
+			}
+			parts = append(parts, fmt.Sprintf("%s x%d", name, h.Count))
+		}
+		fmt.Fprintf(&sb, "    hits landed: %s\n", strings.Join(parts, ", "))
+	}
+	if s.KnockedOut > 0 {
+		fmt.Fprintf(&sb, "    knocked out: %d\n", s.KnockedOut)
+	}
+	if s.Bleeding > 0 {
+		fmt.Fprintf(&sb, "    bleeding: %d\n", s.Bleeding)
+	}
+	if len(s.Casualties) > 0 {
+		parts := make([]string, 0, len(s.Casualties))
+		for _, c := range s.Casualties {
+			killer := c.Killer
+			if killer == "" {
+				killer = "unknown killer"
+			}
+			parts = append(parts, fmt.Sprintf("%s (%s, by %s)", c.Name, c.DeathCause, killer))
+		}
+		fmt.Fprintf(&sb, "    CASUALTIES: %s\n", strings.Join(parts, "; "))
+	}
+	return sb.String()
+}
+
+// renderCombatSummary turns a combat_summary response into engagement-by-
+// engagement prose: sides by name, momentum in words, casualties called
+// out, and the 2-3 quoted telling lines verbatim (never paraphrased --
+// they're DF's own report text). Degrades truthfully to the plugin's own
+// empty-state note before any fight has happened.
+func renderCombatSummary(raw []byte) string {
+	r, err := parseCombatSummary(raw)
+	if err != nil {
+		return fmt.Sprintf("unparseable combat_summary response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	if len(r.Engagements) == 0 {
+		if r.Note != "" {
+			return r.Note + "\n"
+		}
+		return "no combat reports since cursor\n"
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d engagement(s) tracked", r.TotalTracked)
+	if r.ClampNote != "" {
+		fmt.Fprintf(&sb, " (%s)", r.ClampNote)
+	}
+	sb.WriteString(":\n")
+
+	for _, e := range r.Engagements {
+		fmt.Fprintf(&sb, "\n[engagement %d] reports #%d-#%d, year %d tick %d through year %d tick %d\n",
+			e.EngagementID, e.FirstReportID, e.LastReportID, e.StartYear, e.StartTime, e.EndYear, e.EndTime)
+		for _, side := range e.Sides {
+			sb.WriteString(renderCombatSide(side))
+		}
+		if len(e.TellingLines) > 0 {
+			sb.WriteString("  telling lines:\n")
+			for _, line := range e.TellingLines {
+				fmt.Fprintf(&sb, "    \"%s\"\n", line)
+			}
+		}
+	}
+	if r.MomentumNote != "" {
+		fmt.Fprintf(&sb, "\n(%s)\n", r.MomentumNote)
+	}
+	sb.WriteString("Use combat_report mode=log with an engagement id (or a unit id) for the raw transcript.\n")
+	return sb.String()
+}
+
+// renderCombatLog renders a combat_log windowed slice as a chronological
+// transcript, oldest-shown-first, one DF report line per line.
+func renderCombatLog(raw []byte) string {
+	r, err := parseCombatLog(raw)
+	if err != nil {
+		return fmt.Sprintf("unparseable combat_log response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	if len(r.Lines) == 0 {
+		if r.Note != "" {
+			return r.Note + "\n"
+		}
+		return "no matching combat reports\n"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d combat report line(s):\n", len(r.Lines))
+	for _, l := range r.Lines {
+		fmt.Fprintf(&sb, "[y%d t%d #%d] %s\n", l.Year, l.Time, l.ID, l.Text)
+	}
+	if r.ClampNote != "" {
+		fmt.Fprintf(&sb, "(%s)\n", r.ClampNote)
+	}
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// fort_story mode=pulse -- Feature 013 wave 013-B (Lane 3, research 2.2 +
+// 3.2). Wire shape matches the plugin's story_pulse query
+// (dfhack-plugin/narrative.cpp handleStoryPulse): raw structured facts only
+// (unit ids/names, resolved captions, salience tag, raw year/tick), no
+// prose composed plugin-side -- phrasing lives here per the house rule
+// dwarf_portrait/combat_report both already follow.
+// ---------------------------------------------------------------------------
+
+type storyPulseOtherParty struct {
+	Name string `json:"name"`
+}
+
+// storyPulseEntry mirrors one story_pulse entry. OtherParty is non-nil only
+// for a resolve-and-verify MadeFriend/FormedGrudge match (probe #9, research
+// §5.9) -- an unresolved probe is nil, never a guessed name.
+type storyPulseEntry struct {
+	UnitID             int                   `json:"unit_id"`
+	UnitName           string                `json:"unit_name"`
+	Emotion            string                `json:"emotion"`
+	Strength           int                   `json:"strength"`
+	Divider            int                   `json:"divider"`
+	Thought            string                `json:"thought"`
+	ThoughtCaption     string                `json:"thought_caption"`
+	Subthought         int                   `json:"subthought"`
+	SubthoughtResolved bool                  `json:"subthought_resolved"`
+	SubthoughtText     string                `json:"subthought_text"`
+	Salience           string                `json:"salience"`
+	OtherParty         *storyPulseOtherParty `json:"other_party"`
+	Year               int                   `json:"year"`
+	YearTick           int                   `json:"year_tick"`
+}
+
+type storyPulseResp struct {
+	Entries         []storyPulseEntry `json:"entries"`
+	TotalCandidates int               `json:"total_candidates"`
+	Shown           int               `json:"shown"`
+	ClampNote       string            `json:"clamp_note"`
+	RewindowNote    string            `json:"rewindow_note"`
+}
+
+func parseStoryPulse(raw []byte) (storyPulseResp, error) {
+	var r storyPulseResp
+	err := json.Unmarshal(raw, &r)
+	return r, err
+}
+
+// storySalienceLabel renders the plugin's raw salience tier tag
+// (handleStoryPulse's own tierName values) into a short human label -- the
+// plugin's ranking, never re-derived or re-ordered here.
+func storySalienceLabel(raw string) string {
+	switch raw {
+	case "facet_or_value_change":
+		return "personality-altering"
+	case "made_friend_or_grudge":
+		return "new bond"
+	default:
+		return "strong feeling"
+	}
+}
+
+// renderStoryPulse turns a story_pulse response into "who felt what, why"
+// lines, in the plugin's own most-salient-first order. Degrades truthfully
+// to a "nothing notable" line (never an error) when entries is empty, and
+// surfaces the plugin's own rewindow_note up front when a reconnect/cold
+// start bounded the scan.
+func renderStoryPulse(raw []byte) string {
+	r, err := parseStoryPulse(raw)
+	if err != nil {
+		return fmt.Sprintf("unparseable story_pulse response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+
+	var sb strings.Builder
+	if r.RewindowNote != "" {
+		fmt.Fprintf(&sb, "(%s)\n", r.RewindowNote)
+	}
+	if len(r.Entries) == 0 {
+		sb.WriteString("no notable emotions felt since the last pulse\n")
+		if r.ClampNote != "" {
+			fmt.Fprintf(&sb, "(%s)\n", r.ClampNote)
+		}
+		return sb.String()
+	}
+
+	fmt.Fprintf(&sb, "%d notable feeling(s) since the last pulse:\n", r.Shown)
+	for _, e := range r.Entries {
+		cause := e.ThoughtCaption
+		if cause == "" {
+			cause = e.Thought
+		}
+		if e.SubthoughtResolved && e.SubthoughtText != "" {
+			cause = fmt.Sprintf("%s (%s)", cause, e.SubthoughtText)
+		}
+		other := ""
+		if e.OtherParty != nil && e.OtherParty.Name != "" {
+			other = fmt.Sprintf(" with %s", e.OtherParty.Name)
+		}
+		fmt.Fprintf(&sb, "- %s: %s (strength %d)%s -- %s [%s] (y%d t%d)\n",
+			e.UnitName, e.Emotion, e.Strength, other, cause, storySalienceLabel(e.Salience), e.Year, e.YearTick)
+	}
+	if r.ClampNote != "" {
+		fmt.Fprintf(&sb, "(%s)\n", r.ClampNote)
+	}
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// fort_story mode=social -- Feature 013 wave 013-B (Lane 3, research 2.4 +
+// 3.2). Wire shape matches the plugin's social_graph query
+// (dfhack-plugin/narrative.cpp handleSocialGraph): raw edge facts only.
+// ---------------------------------------------------------------------------
+
+// socialEdge mirrors one social_graph edge. Love/MeetCount (tier 3,
+// hf_visual) and LinkStrength (tier 2, histfig_links) are each
+// independently optional -- nil, not zero, when the source tier that would
+// have populated them didn't produce this edge.
+type socialEdge struct {
+	AID          int    `json:"a_id"`
+	AName        string `json:"a_name"`
+	BID          int    `json:"b_id"`
+	BName        string `json:"b_name"`
+	Kind         string `json:"kind"`
+	Relation     string `json:"relation"`
+	Love         *int   `json:"love"`
+	MeetCount    *int   `json:"meet_count"`
+	LinkStrength *int   `json:"link_strength"`
+}
+
+type socialGraphResp struct {
+	Edges      []socialEdge `json:"edges"`
+	TotalEdges int          `json:"total_edges"`
+	ClampNote  string       `json:"clamp_note"`
+}
+
+func parseSocialGraph(raw []byte) (socialGraphResp, error) {
+	var r socialGraphResp
+	err := json.Unmarshal(raw, &r)
+	return r, err
+}
+
+// socialLoveBand bands DF's own core.love -100..100 scale into its
+// documented banding, transcribed verbatim from df.history_figure.xml:486
+// (the same string dwarf_portrait's own best_friend/worst_grudge rendering
+// relies on): "-100: Pure Hate, LE -75: Hated, LE -50: Disliked, LE 49:
+// Acquaintance, LE 74: Friend, LE 99: Close Friend, 100: Kindred Spirit".
+func socialLoveBand(love int) string {
+	switch {
+	case love <= -100:
+		return "Pure Hate"
+	case love <= -75:
+		return "Hated"
+	case love <= -50:
+		return "Disliked"
+	case love <= 49:
+		return "Acquaintance"
+	case love <= 74:
+		return "Friend"
+	case love <= 99:
+		return "Close Friend"
+	default:
+		return "Kindred Spirit"
+	}
+}
+
+// socialKindLabel title-cases the fixed four-value kind vocabulary
+// (family/friend/grudge/worship) the plugin's kind filter also uses.
+func socialKindLabel(kind string) string {
+	switch kind {
+	case "family":
+		return "Family"
+	case "friend":
+		return "Friend"
+	case "grudge":
+		return "Grudge"
+	case "worship":
+		return "Worship"
+	default:
+		return kind
+	}
+}
+
+// socialRelationLabel turns the plugin's raw relation string -- a fixed
+// tier-1/2 label (spouse, deity, master...) or a raw vague_relationship_type
+// enum key from tier 3 (war_buddy, childhood_friend...) -- into readable
+// words. Both sources already use plain-English snake_case identifiers, so
+// this is just underscore-to-space plus capitalizing each word's first
+// letter, never a lookup table.
+func socialRelationLabel(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	words := strings.Split(raw, "_")
+	for i, w := range words {
+		if w == "" {
+			continue
+		}
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
+}
+
+// renderSocialEdge renders one edge as a single line, e.g.:
+//
+//   - Edóm -- Olon: Family (Spouse)
+//   - Edóm -- Zefon: Friend (Close Friend; love 82, met 31×)
+//   - Edóm -- Vand the Platinum Coin: Worship (devotion 45, scale unverified)
+func renderSocialEdge(e socialEdge) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "- %s -- %s: %s", e.AName, e.BName, socialKindLabel(e.Kind))
+
+	switch e.Kind {
+	case "friend", "grudge":
+		details := make([]string, 0, 2)
+		if e.Love != nil {
+			details = append(details, socialLoveBand(*e.Love))
+		} else if rel := socialRelationLabel(e.Relation); rel != "" {
+			details = append(details, rel)
+		}
+		extra := make([]string, 0, 2)
+		if e.Love != nil {
+			extra = append(extra, fmt.Sprintf("love %d", *e.Love))
+		}
+		if e.MeetCount != nil {
+			extra = append(extra, fmt.Sprintf("met %d×", *e.MeetCount))
+		}
+		if len(details) > 0 || len(extra) > 0 {
+			fmt.Fprintf(&sb, " (%s", strings.Join(details, ", "))
+			if len(extra) > 0 {
+				if len(details) > 0 {
+					sb.WriteString("; ")
+				}
+				sb.WriteString(strings.Join(extra, ", "))
+			}
+			sb.WriteString(")")
+		}
+	case "worship":
+		if e.LinkStrength != nil {
+			fmt.Fprintf(&sb, " (devotion %d, scale unverified)", *e.LinkStrength)
+		}
+	default: // family
+		if rel := socialRelationLabel(e.Relation); rel != "" {
+			fmt.Fprintf(&sb, " (%s)", rel)
+		}
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// renderSocialGraph turns a social_graph response into one line per edge.
+// Degrades truthfully to a "no edges" line (never an error) rather than an
+// empty blob.
+func renderSocialGraph(raw []byte) string {
+	r, err := parseSocialGraph(raw)
+	if err != nil {
+		return fmt.Sprintf("unparseable social_graph response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	if len(r.Edges) == 0 {
+		return "no social edges found (narrow filters, or nobody's formed a notable bond yet)\n"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d social edge(s):\n", len(r.Edges))
+	for _, e := range r.Edges {
+		sb.WriteString(renderSocialEdge(e))
+	}
+	if r.ClampNote != "" {
+		fmt.Fprintf(&sb, "(%s)\n", r.ClampNote)
+	}
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// fort_story mode=art -- Feature 013 wave 013-C (Lane 4, research 2.5 + 3.2
+// mode=art). Wire shape matches the plugin's fort_art query
+// (dfhack-plugin/narrative.cpp handleFortArt): raw structured per-work
+// facts only, each labeled with one of the two provenance paths research
+// 2.5 specifies ("composed_here" from the history-event join, "brought_here"
+// for a current citizen's pre-fort work or a fort composition the event
+// join missed) -- phrasing lives here per the house rule dwarf_portrait/
+// story_pulse/social_graph all already follow.
+// ---------------------------------------------------------------------------
+
+// artWork mirrors one fort_art work entry. Only the fields relevant to Kind
+// are ever non-empty/non-nil -- the plugin emits the full fixed shape for
+// every kind (writeArtWorkJson's own doc comment), so this struct parses
+// any of the four kinds without a kind-specific type.
+type artWork struct {
+	Kind             string   `json:"kind"`
+	ID               int      `json:"id"`
+	Title            string   `json:"title"`
+	Creator          string   `json:"creator"`
+	Provenance       string   `json:"provenance"`
+	ComposedYear     *int     `json:"composed_year"`
+	Mood             string   `json:"mood"`
+	Subject          string   `json:"subject"`
+	SubjectDetail    string   `json:"subject_detail"`
+	Action           string   `json:"action"`
+	WorshipTarget    string   `json:"worship_target"`
+	Purpose          string   `json:"purpose"`
+	DevotionTarget   string   `json:"devotion_target"`
+	Context          string   `json:"context"`
+	Character        string   `json:"character"`
+	CreatureImitated string   `json:"creature_imitated"`
+	Event            *int     `json:"event"`
+	WrittenType      string   `json:"written_type"`
+	Styles           []string `json:"styles"`
+}
+
+type fortArtCensus struct {
+	KnownInFort    int `json:"known_in_fort"`
+	ComposedInFort int `json:"composed_in_fort"`
+	BroughtHere    int `json:"brought_here"`
+}
+
+type fortArtResp struct {
+	Works     []artWork     `json:"works"`
+	Census    fortArtCensus `json:"census"`
+	ClampNote string        `json:"clamp_note"`
+	ScanNote  string        `json:"scan_note"`
+}
+
+func parseFortArt(raw []byte) (fortArtResp, error) {
+	var r fortArtResp
+	err := json.Unmarshal(raw, &r)
+	return r, err
+}
+
+// humanizeArtEnum turns a CamelCase enum key -- poetic_form_subject/_mood/
+// _action, musical_form_purpose, dance_form_context, written_content_type/
+// _style are all written as CamelCase identifiers in this checkout's XML,
+// unlike vague_relationship_type's snake_case socialRelationLabel already
+// handles -- into lowercase, space-separated words:
+// "AlcoholicBeverages" -> "alcoholic beverages". A plain rune-classification
+// split, never a lookup table.
+func humanizeArtEnum(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var sb strings.Builder
+	for i, r := range raw {
+		if i > 0 && unicode.IsUpper(r) {
+			sb.WriteByte(' ')
+		}
+		sb.WriteRune(r)
+	}
+	return strings.ToLower(sb.String())
+}
+
+// artWorkProvenanceLabel renders the plugin's own composed_here/
+// brought_here tag plus (when composed here) the year -- the plugin never
+// guesses a year for a brought-here work (research: these have no
+// timestamp at all), so that half stays silent rather than fabricated.
+func artWorkProvenanceLabel(w artWork) string {
+	if w.Provenance == "composed_here" {
+		if w.ComposedYear != nil {
+			return fmt.Sprintf("composed here, y%d", *w.ComposedYear)
+		}
+		return "composed here"
+	}
+	return "brought here"
+}
+
+// renderArtWork renders one fort_art work as a single line, dispatching on
+// Kind for its own narrative-relevant fields (research 2.5's per-kind field
+// list, including dance_form's "narrative gold": event/character/creature
+// imitated). Creator is deliberately embedded in each kind's own detail
+// clause (rather than duplicated into the provenance label) so a
+// brought-here line reads as "a poem by <name> ... [brought here]" instead
+// of repeating the name twice.
+func renderArtWork(w artWork) string {
+	creator := w.Creator
+	if creator == "" {
+		creator = "unknown"
+	}
+	title := w.Title
+	if title == "" {
+		title = "(untitled)"
+	}
+
+	var detail string
+	switch w.Kind {
+	case "poetic_form":
+		var parts []string
+		if w.Mood != "" {
+			parts = append(parts, humanizeArtEnum(w.Mood))
+		}
+		if w.Subject != "" {
+			s := humanizeArtEnum(w.Subject)
+			if w.SubjectDetail != "" {
+				s = fmt.Sprintf("%s: %s", s, w.SubjectDetail)
+			}
+			parts = append(parts, s)
+		}
+		if w.Action != "" {
+			parts = append(parts, humanizeArtEnum(w.Action))
+		}
+		if w.WorshipTarget != "" {
+			parts = append(parts, "worships "+w.WorshipTarget)
+		}
+		detail = fmt.Sprintf("a poem by %s", creator)
+		if len(parts) > 0 {
+			detail += " (" + strings.Join(parts, ", ") + ")"
+		}
+	case "musical_form":
+		var parts []string
+		if w.Purpose != "" {
+			parts = append(parts, humanizeArtEnum(w.Purpose))
+		}
+		if w.DevotionTarget != "" {
+			parts = append(parts, "devoted to "+w.DevotionTarget)
+		}
+		detail = fmt.Sprintf("a musical composition by %s", creator)
+		if len(parts) > 0 {
+			detail += " (" + strings.Join(parts, ", ") + ")"
+		}
+	case "dance_form":
+		var parts []string
+		if w.Context != "" {
+			parts = append(parts, humanizeArtEnum(w.Context))
+		}
+		if w.Character != "" {
+			parts = append(parts, "acts out "+w.Character+"'s story")
+		}
+		if w.CreatureImitated != "" {
+			parts = append(parts, "imitates a "+w.CreatureImitated)
+		}
+		if w.Event != nil {
+			parts = append(parts, fmt.Sprintf("re-enacts historical event #%d", *w.Event))
+		}
+		detail = fmt.Sprintf("a dance by %s", creator)
+		if len(parts) > 0 {
+			detail += " (" + strings.Join(parts, ", ") + ")"
+		}
+	default: // written_content
+		wt := "written work"
+		if w.WrittenType != "" {
+			wt = humanizeArtEnum(w.WrittenType)
+		}
+		detail = fmt.Sprintf("%s by %s", wt, creator)
+		if len(w.Styles) > 0 {
+			styles := make([]string, len(w.Styles))
+			for i, s := range w.Styles {
+				styles[i] = humanizeArtEnum(s)
+			}
+			detail += " (" + strings.Join(styles, ", ") + ")"
+		}
+	}
+
+	return fmt.Sprintf("- %q -- %s [%s]\n", title, detail, artWorkProvenanceLabel(w))
+}
+
+// renderFortArt turns a fort_art response into one line per work plus a
+// one-line census (research 3.2: "known in fort vs composed in fort").
+// Degrades truthfully to a "no fort art yet" line (never an error) when
+// nothing has been composed here or brought by a current citizen, still
+// surfacing the (zeroed) census so the gap reads as confirmed-empty rather
+// than a missing feature. Surfaces the plugin's own scan_note up front on
+// whatever call happened to pay the one-time history-event scan (live
+// probe #10) — most often the very first fort_art call this session.
+func renderFortArt(raw []byte) string {
+	r, err := parseFortArt(raw)
+	if err != nil {
+		return fmt.Sprintf("unparseable fort_art response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+
+	var sb strings.Builder
+	if r.ScanNote != "" {
+		fmt.Fprintf(&sb, "(%s)\n", r.ScanNote)
+	}
+	if len(r.Works) == 0 {
+		sb.WriteString("no fort art yet -- nothing composed here or brought by a current citizen\n")
+	} else {
+		fmt.Fprintf(&sb, "%d work(s) of fort art:\n", len(r.Works))
+		for _, w := range r.Works {
+			sb.WriteString(renderArtWork(w))
+		}
+	}
+	fmt.Fprintf(&sb, "census: %d known in fort (%d composed here, %d brought here)\n",
+		r.Census.KnownInFort, r.Census.ComposedInFort, r.Census.BroughtHere)
+	if r.ClampNote != "" {
+		fmt.Fprintf(&sb, "(%s)\n", r.ClampNote)
+	}
+	return sb.String()
+}
+
 // dwarfSummaryLine renders one dwarf_detail response as a single census
 // line: name | current job | top skill Lvl | labor count. A dead dwarf is
 // tagged [DEAD] up front rather than silently rendered as an idle citizen.
@@ -2353,11 +3430,19 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 		ID            int  `json:"id" jsonschema:"the dwarf's id from the dwarves tool"`
 		IncludeLabors bool `json:"include_labors,omitempty" jsonschema:"true to list every currently-enabled labor by name; default just shows the count (pass true when you actually need to check/change labors)"`
 		IncludePsyche bool `json:"include_psyche,omitempty" jsonschema:"true to list full needs/emotions/facets/values/dreams detail; default just shows stress category and item counts (pass true when actually reasoning about this dwarf's mental state)"`
+		Portrait      bool `json:"portrait,omitempty" jsonschema:"true to render a salient WHO-IS-THIS-DWARF snapshot instead (personality, needs, strongest emotion, preferences, deity, family/friends/grudges, history hook) — a different query and view from the mechanical fields above; ignores include_labors/include_psyche when set"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "dwarf_detail",
-		Description: "One dwarf's full record: dead/alive status, skills, mood, current job, labor count, and a psyche summary (stress category, needs/emotions/facets/values/dreams counts). A dead dwarf's unit stays queryable at its last position reporting mundane idle-looking fields — always check status before trusting the rest. Pass include_labors=true for enabled labor names and/or include_psyche=true for the full psyche breakdown (both omitted by default — boilerplate most calls don't need).",
+		Description: "One dwarf's full record: dead/alive status, skills, mood, current job, labor count, and a psyche summary (stress category, needs/emotions/facets/values/dreams counts). A dead dwarf's unit stays queryable at its last position reporting mundane idle-looking fields — always check status before trusting the rest. Pass include_labors=true for enabled labor names and/or include_psyche=true for the full psyche breakdown (both omitted by default — boilerplate most calls don't need). Pass portrait=true for a narrative snapshot instead of the mechanical view.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in dwarfDetailIn) (*mcp.CallToolResult, any, error) {
+		if in.Portrait {
+			raw, err := b.Query(ctx, "dwarf_portrait", fmt.Sprintf(`{"id":%d}`, in.ID))
+			if err != nil {
+				return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+			}
+			return withDash(b, ctx, renderDwarfPortrait(raw)), nil, nil
+		}
 		raw, err := b.Query(ctx, "dwarf_detail", fmt.Sprintf(`{"id":%d}`, in.ID))
 		if err != nil {
 			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
@@ -2625,5 +3710,87 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
 		}
 		return withDash(b, ctx, renderCrops(raw, in.Filter != "")), nil, nil
+	})
+
+	type combatReportIn struct {
+		Mode       string `json:"mode,omitempty" jsonschema:"summary (default) or log"`
+		Engagement *int   `json:"engagement,omitempty" jsonschema:"log mode only: an engagement_id from a prior summary call, for that engagement's raw transcript"`
+		Unit       *int   `json:"unit,omitempty" jsonschema:"log mode only: filter to reports involving this dwarf/unit id instead of an engagement"`
+		Last       int    `json:"last,omitempty" jsonschema:"log mode only: max lines to return, most recent (default and hard cap 30)"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "combat_report",
+		Description: "The fort's combat narrator. mode=summary (default): recent engagements (cap 3, most recent first) with sides by name, momentum computed with zero text parsing (new wounds by severity, hits landed, knocked-out/bleeding counts, casualties), and 2-3 telling lines quoted verbatim. mode=log: a raw drill-down transcript filtered by engagement (its engagement_id from a summary call) or unit id, capped at 30 lines. Degrades truthfully to 'no combat reports since cursor' before any fight has happened.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in combatReportIn) (*mcp.CallToolResult, any, error) {
+		if in.Mode == "log" {
+			args := map[string]any{}
+			if in.Engagement != nil {
+				args["engagement"] = *in.Engagement
+			}
+			if in.Unit != nil {
+				args["unit"] = *in.Unit
+			}
+			if in.Last > 0 {
+				args["last"] = in.Last
+			}
+			argBytes, _ := json.Marshal(args)
+			raw, err := b.Query(ctx, "combat_log", string(argBytes))
+			if err != nil {
+				return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+			}
+			return withDash(b, ctx, renderCombatLog(raw)), nil, nil
+		}
+		raw, err := b.Query(ctx, "combat_summary", "{}")
+		if err != nil {
+			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+		}
+		return withDash(b, ctx, renderCombatSummary(raw)), nil, nil
+	})
+
+	type fortStoryIn struct {
+		Mode string `json:"mode,omitempty" jsonschema:"pulse (default): who felt what since the last call, most salient first. social: the fort's relationship graph (family/friend/grudge/worship edges). art: poems/songs/dances/writings composed here or brought by a current citizen"`
+		Max  int    `json:"max,omitempty" jsonschema:"pulse only: max feelings to return, most salient first (default and hard cap 15)"`
+		Unit *int   `json:"unit,omitempty" jsonschema:"social only: filter edges to only those touching this dwarf's id"`
+		Kind string `json:"kind,omitempty" jsonschema:"social only: family, friend, grudge, or worship — narrows the edge list to one kind"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "fort_story",
+		Description: "The fort's narrative layer beyond one dwarf's portrait. mode=pulse (default): fort-wide emotional weather since the last call — who felt what and why, most salient first (personality-altering moments and new bonds/grudges outrank plain strong feelings), capped at 15 with a truthful count of what fell below threshold. mode=social: the relationship graph — family (spouse/mother/father/lover/master/apprentice/companion), friend, grudge, and worship (deity devotion) edges between citizens, capped ~40, narrowable with unit/kind. mode=art: the fort's own poems/songs/dances/writings — each labeled composed here or brought here by a named citizen, with a known-in-fort/composed-in-fort census, capped ~10.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in fortStoryIn) (*mcp.CallToolResult, any, error) {
+		switch in.Mode {
+		case "", "pulse":
+			args := "{}"
+			if in.Max > 0 {
+				argBytes, _ := json.Marshal(map[string]any{"max": in.Max})
+				args = string(argBytes)
+			}
+			raw, err := b.Query(ctx, "story_pulse", args)
+			if err != nil {
+				return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+			}
+			return withDash(b, ctx, renderStoryPulse(raw)), nil, nil
+		case "social":
+			args := map[string]any{}
+			if in.Unit != nil {
+				args["unit"] = *in.Unit
+			}
+			if in.Kind != "" {
+				args["kind"] = in.Kind
+			}
+			argBytes, _ := json.Marshal(args)
+			raw, err := b.Query(ctx, "social_graph", string(argBytes))
+			if err != nil {
+				return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+			}
+			return withDash(b, ctx, renderSocialGraph(raw)), nil, nil
+		case "art":
+			raw, err := b.Query(ctx, "fort_art", "{}")
+			if err != nil {
+				return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+			}
+			return withDash(b, ctx, renderFortArt(raw)), nil, nil
+		default:
+			return withDash(b, ctx, fmt.Sprintf("unknown fort_story mode %q (valid: pulse, social, art)", in.Mode)), nil, nil
+		}
 	})
 }

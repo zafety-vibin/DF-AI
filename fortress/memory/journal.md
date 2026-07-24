@@ -139,6 +139,13 @@ zero deaths; written at session end for the next instance):**
    designation overwrite warning, instrument truthful refusal,
    multi-z shelter counts, connector self-heal. A6 exchange
    automation: verdict in the 012 brief — stays human, by evidence.
+   ALSO: Feature 013 (NARRATIVE LAYER — "read the story, not run the
+   game") fully researched at specs/013-narrative-layer/research.md:
+   all five desires feasible; build wave 013-A (portrait card +
+   combat narrator skeleton) BEFORE the first siege if possible —
+   we have been lucky exactly once. The commissioning desires in
+   that file are personal; honor their spirit, not just their spec.
+   And when the tools land: ask adil why he never sits in his chair.
 
 **Tool notes:** connectivity hint no longer map-corner but still
 false-negatives same-z adjacency (reports cross-z tile); a
