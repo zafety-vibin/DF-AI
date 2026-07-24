@@ -701,6 +701,15 @@ static bool jobTypeAllowedAtFurnace(df::job_type jobType, df::furnace_type fType
     }
 }
 
+// kWorkshopJobQueueCap is DF's own per-building job-queue ceiling -- the
+// same limit Job::assignToWorkshop enforces (modules/Job.cpp:529-541 in the
+// DFHack 53.15-r1 checkout). Shared by assignJobToBuilding's own gate below,
+// the two early "would this even fit" pre-checks in applyQueueReactionJob/
+// applyQueueJob, and queueOccupancyNote's success-path message, so all four
+// sites stay in lockstep against ONE literal instead of four independent
+// copies of "10" silently drifting apart on some future DF version bump.
+static constexpr size_t kWorkshopJobQueueCap = 10;
+
 // Job::assignToWorkshop (modules/Job.cpp:529-541 in the DFHack 53.15-r1
 // checkout) is hardcoded to take df::building_workshopst* even though its
 // entire body only touches fields that live on the common df::building
@@ -717,13 +726,28 @@ static bool jobTypeAllowedAtFurnace(df::job_type jobType, df::furnace_type fType
 // directly.
 static bool assignJobToBuilding(df::job *job, df::building *bld)
 {
-    if (bld->jobs.size() >= 10) {
+    if (bld->jobs.size() >= kWorkshopJobQueueCap) {
         return false;
     }
     job->pos = df::coord(bld->centerx, bld->centery, bld->z);
     Job::addGeneralRef(job, df::general_ref_type::BUILDING_HOLDER, bld->id);
     bld->jobs.push_back(job);
     return true;
+}
+
+// queueOccupancyNote formats the truthful post-add occupancy for a
+// queue_job SUCCESS ack, e.g. "(queue now 7/10)" -- bld->jobs.size() is read
+// AFTER assignJobToBuilding's push_back, so this always reports the real
+// count the job just landed at, not a stale pre-add count. Live friction
+// this answers: queue_job's only prior occupancy signal was the FAILURE
+// text once the 10th job already got rejected, after the call was wasted;
+// every SUCCESS ack now carries the count so a caller queuing several jobs
+// in a row can see the workshop filling up ahead of that failure.
+static std::string queueOccupancyNote(const df::building *bld)
+{
+    std::ostringstream os;
+    os << "(queue now " << bld->jobs.size() << "/" << kWorkshopJobQueueCap << ")";
+    return os.str();
 }
 
 // isReactionPermittedForCiv reports whether reactionCode is in this fort's
@@ -884,7 +908,7 @@ static bool applyQueueReactionJob(int16_t x, int16_t y, int16_t z, const std::st
         return false;
     }
 
-    if (bld->jobs.size() >= 10) {
+    if (bld->jobs.size() >= kWorkshopJobQueueCap) {
         error = "workshop/furnace job queue is full (10 jobs)";
         return false;
     }
@@ -973,6 +997,7 @@ static bool applyQueueReactionJob(int16_t x, int16_t y, int16_t z, const std::st
         return false;
     }
 
+    error = queueOccupancyNote(bld);
     return true;
 }
 
@@ -1161,7 +1186,7 @@ bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std
         return false;
     }
 
-    if (bld->jobs.size() >= 10) {
+    if (bld->jobs.size() >= kWorkshopJobQueueCap) {
         error = "workshop/furnace job queue is full (10 jobs)";
         return false;
     }
@@ -1389,6 +1414,7 @@ bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std
                 error = "failed to attach job to workshop (queue full or invalid building)";
                 return false;
             }
+            error = queueOccupancyNote(bld);
             return true;
         }
     }
@@ -1435,6 +1461,7 @@ bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std
             error = "failed to attach job to workshop (queue full or invalid building)";
             return false;
         }
+        error = queueOccupancyNote(bld);
         return true;
     }
 
@@ -1494,6 +1521,7 @@ bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std
             error = "failed to attach job to furnace (queue full or invalid building)";
             return false;
         }
+        error = queueOccupancyNote(bld);
         return true;
     }
 
@@ -1585,6 +1613,7 @@ bool applyQueueJob(int16_t x, int16_t y, int16_t z, uint8_t orderType, const std
         return false;
     }
 
+    error = queueOccupancyNote(bld);
     return true;
 }
 

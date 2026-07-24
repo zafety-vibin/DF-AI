@@ -396,3 +396,39 @@ func TestOnEntityUpdate_WorldIdentity_NilPreservesPriorKnowledge(t *testing.T) {
 		t.Fatalf("a message with no World data must not clobber previously known identity, got %+v", snap.World)
 	}
 }
+
+// TestOnTileUpdate_AdvancesTileDeltaCount is the G3 tile-stream-observability
+// regression guard: OnTileUpdate must advance WorldModel's tile-delta
+// counter by the number of tiles actually processed. This is a NEW counter,
+// independent of eventSeq (which only ever reflects ENTITY_UPDATE pushes --
+// see OnEntityUpdate) -- previously a dead TILE_UPDATE stream advanced
+// nothing the step tool could see, which is why the delivery failure this
+// counter is meant to surface went unnoticed for years.
+func TestOnTileUpdate_AdvancesTileDeltaCount(t *testing.T) {
+	wm := New(nil, nil, nil, nil)
+	pop := NewPopulator(wm, nil, nil)
+
+	if got := wm.Snapshot().TileDeltaCount; got != 0 {
+		t.Fatalf("expected TileDeltaCount=0 before any update, got %d", got)
+	}
+
+	tiles := digRoomTiles(0, 0, 0, 3, 3, protocol.FlagDiscovered|protocol.FlagFloor) // 9 tiles
+	pop.OnTileUpdate(&protocol.TileUpdateMessage{Count: uint32(len(tiles)), Tiles: tiles})
+
+	if got := wm.Snapshot().TileDeltaCount; got != 9 {
+		t.Fatalf("expected TileDeltaCount=9 after a 9-tile update, got %d", got)
+	}
+
+	// A second update accumulates rather than replacing.
+	more := digRoomTiles(10, 10, 0, 2, 2, protocol.FlagDiscovered|protocol.FlagFloor) // 4 tiles
+	pop.OnTileUpdate(&protocol.TileUpdateMessage{Count: uint32(len(more)), Tiles: more})
+	if got := wm.Snapshot().TileDeltaCount; got != 13 {
+		t.Fatalf("expected TileDeltaCount=13 after accumulating a second update, got %d", got)
+	}
+
+	// A zero-tile update must NOT advance the counter.
+	pop.OnTileUpdate(&protocol.TileUpdateMessage{Count: 0})
+	if got := wm.Snapshot().TileDeltaCount; got != 13 {
+		t.Fatalf("expected TileDeltaCount unchanged (13) after a zero-tile update, got %d", got)
+	}
+}

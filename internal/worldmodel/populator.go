@@ -139,7 +139,10 @@ func (p *Populator) OnFullState(msg *protocol.FullStateMessage) {
 }
 
 // OnTileUpdate fans an incremental tile update out into the topology
-// overlay, hazard overlays, and modification detector. Bumps the tick.
+// overlay, hazard overlays, and modification detector. Bumps the tick and
+// the tile-delta counter (a separate counter from eventSeq -- see
+// WorldModel.tileDeltaCount) so callers can see whether TILE_UPDATE ever
+// delivers anything, independent of ENTITY_UPDATE pushes.
 func (p *Populator) OnTileUpdate(msg *protocol.TileUpdateMessage) {
 	if p == nil || p.wm == nil || msg == nil {
 		return
@@ -155,6 +158,9 @@ func (p *Populator) OnTileUpdate(msg *protocol.TileUpdateMessage) {
 	}
 	if p.modDetector != nil && msg.Count > 0 {
 		p.modDetector.DetectModifications(msg.Tiles)
+	}
+	if msg.Count > 0 {
+		p.wm.AdvanceTileDeltaCount(uint64(len(msg.Tiles)))
 	}
 
 	tick := p.wm.AdvanceTick()

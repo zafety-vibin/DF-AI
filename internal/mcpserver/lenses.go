@@ -42,6 +42,11 @@ var lenses = map[string]LensDef{
 		Legend: "lens=minerals: vein tiles painted a,b,c... (skipping d/t/u, reserved elsewhere) keyed to THIS view's mineral names, listed in a footnote below",
 		Gather: gatherMineralsLens,
 	},
+	"wildlife": {
+		Name:   "wildlife",
+		Legend: "lens=wildlife: V dangerous animal, v harmless — tame/wild, species, and reason listed in a footnote below",
+		Gather: gatherWildlifeLens,
+	},
 }
 
 // lensNames returns the registered lens names, sorted, for error messages.
@@ -68,6 +73,8 @@ func lensGlyphSet(name string) []rune {
 		return []rune{'H', 'K', 'A', 'R', 'J'}
 	case "minerals":
 		return mineralLetterAlphabet
+	case "wildlife":
+		return []rune{'V', 'v'}
 	default:
 		return nil
 	}
@@ -316,4 +323,100 @@ func gatherZonesLens(ctx context.Context, b *Bridge, s *mapview.Slice, z int16) 
 		}
 	}
 	return mapview.Overlay{Marks: marks}, nil
+}
+
+// wildlifeListEntry is one entry from the plugin's list_wildlife query
+// (queries.cpp handleListWildlife) -- the sole consumer is this lens, unlike
+// buildingListEntry/zoneListEntry which are also shared with a flat listing
+// tool; wildlife is lens-only by design (danger awareness, never the
+// default view).
+type wildlifeListEntry struct {
+	ID           int    `json:"id"`
+	X            int    `json:"x"`
+	Y            int    `json:"y"`
+	Z            int    `json:"z"`
+	Tame         bool   `json:"tame"`
+	Name         string `json:"name"`
+	Dangerous    bool   `json:"dangerous"`
+	DangerReason string `json:"danger_reason,omitempty"`
+}
+
+// wildlifeGlyph is the dangerous/harmless case split for this lens: 'V'
+// (dangerous) vs 'v' (harmless) -- both verified disjoint from the base
+// terrain set (TestLensGlyphsDisjointFromBaseSet).
+func wildlifeGlyph(dangerous bool) rune {
+	if dangerous {
+		return 'V'
+	}
+	return 'v'
+}
+
+// wildlifeFootnoteLine renders one animal's footnote line -- species,
+// TAME/WILD, dangerous+reason, tile -- the per-view detail the glyph alone
+// can't carry (a lone 'V' doesn't say which predator, or where exactly).
+func wildlifeFootnoteLine(w wildlifeListEntry) string {
+	state := "WILD"
+	if w.Tame {
+		state = "TAME"
+	}
+	if w.Dangerous {
+		return fmt.Sprintf("%s (%s, DANGEROUS: %s) at (%d,%d)", w.Name, state, w.DangerReason, w.X, w.Y)
+	}
+	return fmt.Sprintf("%s (%s) at (%d,%d)", w.Name, state, w.X, w.Y)
+}
+
+// wildlifeInView reports whether (x,y) falls inside slice s's rendered crop
+// window. list_wildlife is queried per-z only (no x/y bound, mirroring
+// list_buildings/list_zones), so unlike gatherMineralsLens (whose Minerals
+// field already comes pre-windowed from the same map_slice call) this lens
+// must filter for itself before adding a footnote line -- otherwise "in
+// view" would silently mean "anywhere on this z-level". An empty Rows
+// (defensive -- DecodeSlice never allows this from a real plugin response)
+// reports false rather than panic on out-of-range indexing.
+func wildlifeInView(s *mapview.Slice, x, y int16) bool {
+	if s == nil || len(s.Rows) == 0 {
+		return false
+	}
+	x2 := s.X1 + int16(len(s.Rows[0])) - 1
+	y2 := s.Y1 + int16(len(s.Rows)) - 1
+	return x >= s.X1 && x <= x2 && y >= s.Y1 && y <= y2
+}
+
+// buildWildlifeOverlay does the actual work of gatherWildlifeLens on an
+// already-fetched raw list_wildlife response -- split out from the Bridge
+// call so the parsing/paint/footnote logic is unit-testable directly (no
+// TCP-mocking seam exists for arbitrary Query() calls; see Bridge's
+// mapSliceFn doc comment).
+func buildWildlifeOverlay(raw []byte, s *mapview.Slice) (mapview.Overlay, error) {
+	var resp struct {
+		Wildlife []wildlifeListEntry `json:"wildlife"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return mapview.Overlay{}, fmt.Errorf("wildlife lens: unparseable list_wildlife response: %w", err)
+	}
+	marks := map[[2]int16]rune{}
+	var footnotes []string
+	for _, w := range resp.Wildlife {
+		pos := [2]int16{int16(w.X), int16(w.Y)}
+		marks[pos] = wildlifeGlyph(w.Dangerous)
+		if wildlifeInView(s, pos[0], pos[1]) {
+			footnotes = append(footnotes, wildlifeFootnoteLine(w))
+		}
+	}
+	return mapview.Overlay{Marks: marks, Footnotes: footnotes}, nil
+}
+
+// gatherWildlifeLens paints every animal on the map (tame or wild) with
+// wildlifeGlyph and appends a footnote line for each one actually inside
+// the rendered crop -- overpainting a whole z-level's worth of glyphs is
+// harmless (RenderCrop only ever draws marks inside its own window, same as
+// buildings/zones), but the prose footnote must stay scoped to what's
+// actually on screen or it stops matching the picture above it.
+func gatherWildlifeLens(ctx context.Context, b *Bridge, s *mapview.Slice, z int16) (mapview.Overlay, error) {
+	args := fmt.Sprintf(`{"z":%d}`, z)
+	raw, err := b.Query(ctx, "list_wildlife", args)
+	if err != nil {
+		return mapview.Overlay{}, err
+	}
+	return buildWildlifeOverlay(raw, s)
 }

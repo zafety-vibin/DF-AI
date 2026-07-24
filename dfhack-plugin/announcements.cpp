@@ -50,6 +50,11 @@ using namespace DFHack;
 extern std::unique_ptr<CActiveSocket> g_socket;
 extern void trip_step_tripwire(const std::string &reason);
 
+// Extern from queries.cpp: dangerous-wildlife tripwire check (B11). Same
+// "first reason wins, no-op unless a step is in progress" contract as
+// trip_step_tripwire itself -- see checkWildlifeTripwire's doc comment.
+extern std::string checkWildlifeTripwire();
+
 // Helpers from tile_extractor.cpp
 extern void write_uint16_be(std::vector<uint8_t> &buf, uint16_t value);
 extern void write_int16_be(std::vector<uint8_t> &buf, int16_t value);
@@ -276,7 +281,17 @@ size_t poll_and_send_announcements()
     // (vector<df::report*>). If your DFHack version renamed this, adjust
     // here.
     auto &arr = df::global::world->status.announcements;
-    if (arr.empty()) return 0;
+    if (arr.empty()) {
+        // No DF announcement has ever fired yet (very early game). The
+        // dangerous-wildlife tripwire has no announcement feed of its own
+        // (DF never reports "a wolf appeared"), so it must still be
+        // checked here rather than silently skipped by this early return.
+        std::string wildlifeText = checkWildlifeTripwire();
+        if (!wildlifeText.empty()) {
+            trip_step_tripwire(wildlifeText);
+        }
+        return 0;
+    }
 
     std::vector<df::report*> news;
     news.reserve(32);
@@ -336,7 +351,23 @@ size_t poll_and_send_announcements()
         }
     }
 
-    if (news.empty()) return 0;
+    // Dangerous-wildlife tripwire (B11): only consulted when no REAL
+    // critical announcement already claimed the slot above -- an in-flight
+    // critical announcement always wins over a wildlife sighting found in
+    // the same poll. Must run BEFORE the news.empty() early return right
+    // below: a predator sighting has no announcement of its own, so "no new
+    // announcements to send" must not mean "skip the wildlife check" (the
+    // common case -- most polls have zero new announcements).
+    if (criticalText.empty()) {
+        criticalText = checkWildlifeTripwire();
+    }
+
+    if (news.empty()) {
+        if (!criticalText.empty()) {
+            trip_step_tripwire(criticalText);
+        }
+        return 0;
+    }
 
     size_t sent = send_announcement_update(news);
     if (sent > 0) {
@@ -365,7 +396,8 @@ size_t poll_and_send_announcements()
         }
     }
 
-    // A critical announcement mid-step ends the step immediately (pause +
+    // A critical announcement (or newly-sighted dangerous wildlife, folded
+    // into criticalText above) mid-step ends the step immediately (pause +
     // state push). No-op unless a step is actually in progress — see
     // trip_step_tripwire in df_ai_protocol.cpp.
     if (!criticalText.empty()) {

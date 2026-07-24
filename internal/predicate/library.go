@@ -43,6 +43,32 @@ func (p HasMinDwarves) Check(wm *worldmodel.WorldModel) Result {
 	return r
 }
 
+// dugTileEvidence returns the best available dug/modified-tile count plus
+// the evidence line(s) explaining its source. Prefers wm's live
+// region_scan count (installed transiently by check_goals' handler just
+// before CheckAll runs — see internal/mcpserver/tools_control.go and
+// live_state.go's liveDugTileCount) since that reflects the CURRENT map
+// state regardless of session/reconnect history; the session-delta
+// Modifications overlay (session-scoped, and fed by a TILE_UPDATE stream
+// that empirically delivers nothing) is always reported too, as
+// supplementary evidence — never ripped out, just no longer the sole or
+// preferred source.
+func dugTileEvidence(wm *worldmodel.WorldModel) (int, []string) {
+	overlayCount := 0
+	if wm.Observed.Modifications != nil {
+		overlayCount = int(wm.Observed.Modifications.GetCount())
+	}
+	if live := wm.LiveDugTiles(); live.Ok {
+		return int(live.Count), []string{
+			fmt.Sprintf("live dug-tile count (%s): %d", live.Source, live.Count),
+			fmt.Sprintf("session-delta overlay count (supplementary): %d", overlayCount),
+		}
+	}
+	return overlayCount, []string{
+		fmt.Sprintf("session-delta overlay count (no live scan this check): %d", overlayCount),
+	}
+}
+
 // HasShelter is a coarse early-game predicate: are there enough modified
 // (dug-out) tiles to plausibly contain the dwarves indoors? A more precise
 // check would require room detection, which we'll add later. For now this
@@ -77,10 +103,7 @@ func (p HasShelter) Check(wm *worldmodel.WorldModel) Result {
 		}
 	}
 
-	dugTiles := 0
-	if wm.Observed.Modifications != nil {
-		dugTiles = int(wm.Observed.Modifications.GetCount())
-	}
+	dugTiles, sourceEvidence := dugTileEvidence(wm)
 
 	required := dwarfCount * p.MinDugTilesPerDwarf
 	r := Result{
@@ -90,11 +113,8 @@ func (p HasShelter) Check(wm *worldmodel.WorldModel) Result {
 		Confidence: confidenceFromFreshness(snap.Entities.UpdatedAt),
 		CheckedAt:  now,
 	}
-	r.Evidence = []string{
-		fmt.Sprintf("dwarves: %d", dwarfCount),
-		fmt.Sprintf("dug tiles: %d", dugTiles),
-		fmt.Sprintf("required (%d/dwarf): %d", p.MinDugTilesPerDwarf, required),
-	}
+	r.Evidence = append([]string{fmt.Sprintf("dwarves: %d", dwarfCount)}, sourceEvidence...)
+	r.Evidence = append(r.Evidence, fmt.Sprintf("required (%d/dwarf): %d", p.MinDugTilesPerDwarf, required))
 	return r
 }
 
@@ -113,16 +133,13 @@ func (p HasModifiedAnything) Horizon() Horizon { return p.H }
 
 func (p HasModifiedAnything) Check(wm *worldmodel.WorldModel) Result {
 	now := time.Now()
-	count := uint32(0)
-	if wm.Observed.Modifications != nil {
-		count = wm.Observed.Modifications.GetCount()
-	}
+	count, evidence := dugTileEvidence(wm)
 	return Result{
 		Name:       p.Name(),
 		Horizon:    p.H,
 		Satisfied:  count > 0,
 		Confidence: 1.0,
-		Evidence:   []string{fmt.Sprintf("modified tile count: %d", count)},
+		Evidence:   evidence,
 		CheckedAt:  now,
 	}
 }

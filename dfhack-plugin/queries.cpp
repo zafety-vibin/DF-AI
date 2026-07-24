@@ -41,6 +41,7 @@
 #include "df/itemdef_weaponst.h"
 #include "df/itemdef_armorst.h"
 #include "df/itemdef_toolst.h"
+#include "df/tool_uses.h"
 #include "df/job_list_link.h"
 #include "df/job_item.h"
 #include "df/job_item_ref.h"
@@ -59,6 +60,7 @@
 #include "df/punishmentst.h"
 #include "df/punishment_flag.h"
 #include "df/unit.h"
+#include "df/creature_raw.h"
 #include "df/unit_labor.h"
 #include "df/unit_soul.h"
 #include "df/unit_skill.h"
@@ -129,10 +131,20 @@
 #include "df/building_tradedepotst.h"
 #include "df/building_tradedepot_flag.h"
 #include "df/plot_merchant_flag.h"
+#include "df/entity_buy_prices.h"
+#include "df/entity_sell_prices.h"
+#include "df/entity_buy_requests.h"
+#include "df/entity_sell_requests.h"
+#include "df/entity_sell_category.h"
+#include "df/meeting_topic.h"
+#include "df/meeting_event_type.h"
+#include "df/meeting_event.h"
+#include "df/historical_figure.h"
 #include "modules/Translation.h"
 
 #include "protocol.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -141,8 +153,10 @@
 #include <vector>
 #include <sstream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 
 // Builds the set of tile coords with an in-flight dig-designation job
@@ -502,6 +516,26 @@ static std::string handleManagerOrders(const std::string &args, uint8_t &status)
         return jsonError("world is null");
     }
 
+    // Order-progression fix (2026-07-22, see task C3): the plugin
+    // force-validates every order at creation time (work_orders.cpp), so
+    // "validated" alone can never distinguish a dispatched order from one
+    // still sitting in the manager's queue. Real progression lives
+    // elsewhere: df::job::order_id (job.h) is a plain int32_t copy of the
+    // spawning order's id, set on every job the manager has actually
+    // dispatched (-1 on jobs not spawned from an order); manager_order's
+    // own workshop_id (manager_order.h) goes non-negative once the manager
+    // has picked a workshop for the order, even before a worker takes the
+    // job. One pass over world->jobs.list here builds a count per order_id
+    // -- O(jobs) total instead of O(orders * jobs) from re-walking the job
+    // list inside the orders loop below.
+    std::unordered_map<int32_t, int32_t> jobsInProgressByOrder;
+    for (df::job_list_link *cur = df::global::world->jobs.list.next; cur != NULL; cur = cur->next) {
+        df::job *job = cur->item;
+        if (job && job->order_id >= 0) {
+            jobsInProgressByOrder[job->order_id]++;
+        }
+    }
+
     std::ostringstream os;
     os << "{\"orders\":[";
     bool first = true;
@@ -513,6 +547,9 @@ static std::string handleManagerOrders(const std::string &args, uint8_t &status)
         if (!o) continue;
         if (!first) os << ",";
         first = false;
+
+        auto jobsIt = jobsInProgressByOrder.find(o->id);
+        int32_t jobsInProgress = (jobsIt != jobsInProgressByOrder.end()) ? jobsIt->second : 0;
 
         // material/material_category/frequency: added in the 2026-07-19
         // manager-work-order fix wave alongside applyWorkOrder's new
@@ -540,6 +577,8 @@ static std::string handleManagerOrders(const std::string &args, uint8_t &status)
            << ",\"frequency\":" << jsonStr(ENUM_KEY_STR(workquota_frequency_type, o->frequency))
            << ",\"validated\":" << (o->status.bits.validated ? "true" : "false")
            << ",\"active\":" << (o->status.bits.active ? "true" : "false")
+           << ",\"jobs_in_progress\":" << jsonInt(jobsInProgress)
+           << ",\"workshop_assigned\":" << (o->workshop_id >= 0 ? "true" : "false")
            << "}";
     }
     os << "]}";
@@ -1765,6 +1804,169 @@ static std::string handleListZones(const std::string &args, uint8_t &status) {
     return os.str();
 }
 
+// kDangerousCarnivoreSize is the adultsize (creature_raw's cm^3-ish
+// GENERAL_SIZE, species-level, not per-caste -- df.creature.xml) above
+// which an otherwise-unflagged CARNIVORE caste is still treated as
+// dangerous. Sits between "wolf-sized" (~50000, already caught directly by
+// the LARGE_PREDATOR raw tag vanilla gives wolves) and "grizzly-sized"
+// (~350000), so it only fires for big carnivores vanilla's own raws don't
+// already flag explicitly.
+static const int32_t kDangerousCarnivoreSize = 100000;
+
+// classifyWildlifeDanger reports whether (race,caste) counts as dangerous
+// under this project's classifier and, if so, why. Priority: an explicit
+// LARGE_PREDATOR or AMBUSHPREDATOR raw tag first (the same signal DF's own
+// UI warns players about), then a CARNIVORE caste whose species adultsize
+// clears kDangerousCarnivoreSize. Units::casteFlagSet is bounds-checked
+// against a missing/invalid race or caste index (getCasteRaw ->
+// creature_raw::find + vector_get, both null-safe -- see Units.cpp:
+// 1006-1008) so a malformed unit can never crash this, only read as
+// harmless.
+static bool classifyWildlifeDanger(int32_t race, int32_t caste, std::string &reason) {
+    if (Units::casteFlagSet(race, caste, df::caste_raw_flags::LARGE_PREDATOR)) {
+        reason = "large predator";
+        return true;
+    }
+    if (Units::casteFlagSet(race, caste, df::caste_raw_flags::AMBUSHPREDATOR)) {
+        reason = "ambush predator";
+        return true;
+    }
+    if (Units::casteFlagSet(race, caste, df::caste_raw_flags::CARNIVORE)) {
+        df::creature_raw *craw = df::creature_raw::find(race);
+        if (craw && craw->adultsize >= kDangerousCarnivoreSize) {
+            reason = "large carnivore (adultsize " + jsonInt(craw->adultsize) + ")";
+            return true;
+        }
+    }
+    reason.clear();
+    return false;
+}
+
+// handleListWildlife answers `look`'s lens=wildlife overlay (danger
+// awareness -- never the default view, see design doc): every animal on
+// the map, tame or wild, with a truthful danger classification so a
+// grazing pasture pony and a wandering grizzly don't render identically.
+// Mirrors handleListBuildings' structure (optional {"z":int} filter, 200-
+// entry cap) over df::global::world->units.active instead of buildings.
+static std::string handleListWildlife(const std::string &args, uint8_t &status) {
+    if (!df::global::world) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("world is null");
+    }
+    std::string zArg = jsonGetString(args, "z");
+    bool hasZ = !zArg.empty();
+    int64_t zFilter = hasZ ? jsonGetInt(args, "z", 0) : 0;
+
+    std::ostringstream os;
+    os << "{\"wildlife\":[";
+    int count = 0;
+    bool truncated = false;
+    for (auto *unit : df::global::world->units.active) {
+        if (!unit) continue;
+        // Invalid/off-map position -- same sentinel entities.cpp:70 skips.
+        if (unit->pos.x == -30000) continue;
+        if (!Units::isAnimal(unit)) continue; // tame AND wild animals only
+        // A dead unit's df::unit lingers at a frozen last-known position --
+        // never report a corpse as a live actor (project rule, see
+        // tools_percept.go's dwarf-marker skip for the identical reason).
+        if (Units::isDead(unit)) continue;
+        if (hasZ && (int64_t)unit->pos.z != zFilter) continue;
+        if (count >= 200) { truncated = true; break; }
+
+        std::string name;
+        df::creature_raw *craw = df::creature_raw::find(unit->race);
+        if (craw) name = craw->name[0];
+
+        std::string reason;
+        bool dangerous = classifyWildlifeDanger(unit->race, unit->caste, reason);
+
+        if (count) os << ",";
+        os << "{\"id\":" << jsonInt(unit->id)
+           << ",\"x\":" << jsonInt(unit->pos.x)
+           << ",\"y\":" << jsonInt(unit->pos.y)
+           << ",\"z\":" << jsonInt(unit->pos.z)
+           << ",\"tame\":" << (Units::isFortControlled(unit) ? "true" : "false")
+           << ",\"name\":" << jsonStr(name)
+           << ",\"dangerous\":" << (dangerous ? "true" : "false");
+        if (dangerous) os << ",\"danger_reason\":" << jsonStr(reason);
+        os << "}";
+        count++;
+    }
+    os << "]";
+    if (truncated) os << ",\"truncated\":true";
+    os << "}";
+    status = QUERY_STATUS_SUCCESS;
+    return os.str();
+}
+
+// Dangerous-wildlife tripwire tracking. Guarded by g_known_wildlife_mutex
+// because checkWildlifeTripwire runs from the same two thread contexts
+// announcements.cpp's own tripwire plumbing does -- the main thread's
+// throttled plugin_onupdate poll AND the socket thread's
+// drain_from_socket_thread path (ConditionalCoreSuspender-guarded) -- the
+// identical reasoning behind announcements.cpp's g_repeat_count_mutex.
+static std::mutex g_known_wildlife_mutex;
+static std::unordered_set<int32_t> g_known_dangerous_wildlife_ids;
+
+// checkWildlifeTripwire walks df::global::world->units.active once looking
+// for a dangerous WILD unit -- classifyWildlifeDanger's LARGE_PREDATOR/
+// AMBUSHPREDATOR/big-CARNIVORE test, same as handleListWildlife above --
+// that has not already been seen since the last reset. Units::isFortControlled
+// excludes tame/pastured animals: a caste flagged LARGE_PREDATOR that the
+// fort has since tamed is not a threat, even though its raw tags don't
+// change. Returns a truthful auto-pause reason for the FIRST newly-seen
+// dangerous unit, "" if none are new. Marks EVERY currently-visible
+// dangerous wild unit as known within this SAME pass, not just the first --
+// this is what stops the tripwire's own push_state_refresh
+// (trip_step_tripwire, df_ai_protocol.cpp) from recursively re-tripping on
+// a still-visible predator when it calls back into the announcement poll
+// that invokes this function. External linkage: called from
+// poll_and_send_announcements (announcements.cpp).
+std::string checkWildlifeTripwire()
+{
+    if (!df::global::world) return "";
+
+    std::lock_guard<std::mutex> lock(g_known_wildlife_mutex);
+    std::string reasonOut;
+    for (auto *unit : df::global::world->units.active) {
+        if (!unit) continue;
+        if (unit->pos.x == -30000) continue;  // invalid/off-map position
+        if (!Units::isAnimal(unit)) continue;
+        if (Units::isDead(unit)) continue;
+        if (Units::isFortControlled(unit)) continue; // tame/owned -- never a threat
+
+        std::string reason;
+        if (!classifyWildlifeDanger(unit->race, unit->caste, reason)) continue;
+
+        bool isNew = g_known_dangerous_wildlife_ids.insert(unit->id).second;
+        if (isNew && reasonOut.empty()) {
+            std::string name;
+            df::creature_raw *craw = df::creature_raw::find(unit->race);
+            if (craw) name = craw->name[0];
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                     "dangerous wildlife sighted: %s (%s) at (%d,%d,%d)",
+                     name.empty() ? "unknown creature" : name.c_str(),
+                     reason.c_str(), unit->pos.x, unit->pos.y, unit->pos.z);
+            reasonOut = buf;
+        }
+    }
+    return reasonOut;
+}
+
+// reset_wildlife_tripwire_tracking clears the known-dangerous-unit set on
+// disconnect/reconnect. Mirrors reset_announcement_cursor's reasoning
+// exactly (announcements.cpp): a still-visible predator re-trips once after
+// reconnect rather than staying silently suppressed forever, since the
+// reconnected peer has no memory of it either. Call from
+// close_socket_and_reset() (df_ai_protocol.cpp), alongside the existing
+// reset_announcement_cursor() call.
+void reset_wildlife_tripwire_tracking()
+{
+    std::lock_guard<std::mutex> lock(g_known_wildlife_mutex);
+    g_known_dangerous_wildlife_ids.clear();
+}
+
 // Forward declaration -- implemented in locations.cpp (Task 1).
 uint8_t wireFromAbstractBuildingType(df::abstract_building_type t);
 
@@ -2004,6 +2206,36 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
     // the category-filtered detailed render (Go side) uses it.
     std::map<std::tuple<int, int, int, int>, int> subtypeCounts;
 
+    // containerFreeCount/containerFreeEmpty: additive siblings of freeCounts
+    // above, tallied only for the fixed set of storage-vessel item types a
+    // job actually needs an EMPTY one of -- BARREL/BUCKET/BIN/BAG outright,
+    // plus any TOOL item whose raws-defined itemdef carries the
+    // FOOD_STORAGE tool_use (a "pot"-style vessel some raws/mods add as a
+    // TOOL rather than a dedicated item_type). This is the live friction
+    // this exists to fix: "stocks shows 15 barrels" told a caller nothing
+    // about whether ANY of them were actually free to hold a new batch --
+    // brewing kept getting cancelled ("needs empty food storage item")
+    // against a pile that was invisibly all full. "Empty" mirrors DFHack's
+    // own scripts/empty-bin.lua definition (dfhack.items.getContainedItems
+    // returns none) via the CONTAINS_ITEM general_ref -- a barrel already
+    // holding a partial batch of drink is not empty just because "free"
+    // (not in_building/construction) says it's spare. Also excludes items
+    // already flags.bits.in_job: a bucket a hauling job is mid-carrying
+    // toward a still isn't actually available for the NEXT job to claim
+    // either, and that flag is already loaded per-item at the same cost as
+    // the in_building/construction check just above -- the cheap half of
+    // "and not job-reserved" (a full cross-reference against every job's
+    // job_items, to see whether some OTHER not-yet-dispatched job has its
+    // eye on this exact container, would mean walking every job in the
+    // fort per container and was judged not cheap enough to add here).
+    // Free-population only (matches freeCounts, not inUseCounts): a
+    // container flagged in_building/construction essentially never happens
+    // for these item types in practice, and the numbers this feeds are
+    // meant to read directly against the same "count" a caller already
+    // sees for that (item_type, material) key.
+    std::map<std::tuple<int, int, int>, int> containerFreeCount;
+    std::map<std::tuple<int, int, int>, int> containerFreeEmpty;
+
     auto &items = df::global::world->items.all;
     for (auto *it : items) {
         if (!it) continue;
@@ -2013,7 +2245,8 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
                                    (int)it->getActualMaterial(),
                                    (int)it->getActualMaterialIndex());
         int32_t units = itemStackUnits(it);
-        if (it->flags.bits.in_building || it->flags.bits.construction) {
+        bool inUse = it->flags.bits.in_building || it->flags.bits.construction;
+        if (inUse) {
             inUseCounts[key]++;
             inUseUnits[key] += units;
         } else {
@@ -2030,6 +2263,28 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
             subtypeCounts[std::make_tuple(itype, (int)it->getActualMaterial(),
                                           (int)it->getActualMaterialIndex(),
                                           (int)it->getSubtype())]++;
+        }
+
+        if (!inUse) {
+            bool isVessel = itype == (int)df::item_type::BARREL ||
+                            itype == (int)df::item_type::BUCKET ||
+                            itype == (int)df::item_type::BIN ||
+                            itype == (int)df::item_type::BAG;
+            if (!isVessel && itype == (int)df::item_type::TOOL) {
+                df::itemdef_toolst *toolDef = vector_get(
+                    df::global::world->raws.itemdefs.tools,
+                    (unsigned)it->getSubtype(), (df::itemdef_toolst *)nullptr);
+                if (toolDef) {
+                    for (df::tool_uses use : toolDef->tool_use) {
+                        if (use == df::tool_uses::FOOD_STORAGE) { isVessel = true; break; }
+                    }
+                }
+            }
+            if (isVessel) {
+                containerFreeCount[key]++;
+                bool hasContents = Items::getGeneralRef(it, df::general_ref_type::CONTAINS_ITEM) != nullptr;
+                if (!hasContents && !it->flags.bits.in_job) containerFreeEmpty[key]++;
+            }
         }
     }
 
@@ -2071,6 +2326,21 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
            << ",\"in_use\":" << jsonInt(inUseCount)
            << ",\"units\":" << jsonInt(freeUnitCount)
            << ",\"in_use_units\":" << jsonInt(inUseUnitCount);
+        // containers/empty: only present when this key had at least one
+        // storage-vessel item tallied above (containerFreeCount is only
+        // incremented for BARREL/BUCKET/BIN/BAG or a FOOD_STORAGE-flagged
+        // TOOL) -- absent for every other item_type, same conditional-field
+        // convention as "economic" below. "containers" can be LESS than
+        // "count" for TOOL: that key aggregates every tool of this material
+        // (picks included), while containers/empty describe only the
+        // food-storage-vessel subset of it.
+        auto containerIt = containerFreeCount.find(key);
+        if (containerIt != containerFreeCount.end()) {
+            auto containerEmptyIt = containerFreeEmpty.find(key);
+            int containerEmptyCount = (containerEmptyIt != containerFreeEmpty.end()) ? containerEmptyIt->second : 0;
+            os << ",\"containers\":" << jsonInt(containerIt->second)
+               << ",\"empty\":" << jsonInt(containerEmptyCount);
+        }
         if (itype == df::item_type::BOULDER) {
             // Economic stones (flux, ore-adjacent, etc.) are reserved by the
             // stone-use screen and masons won't take them by default — the
@@ -2698,6 +2968,115 @@ static std::string handleFortFootprint(const std::string &args, uint8_t &status)
            ",\"may_include_natural_cave\":" + (mayIncludeNaturalCave ? "true" : "false") + "}";
 }
 
+// regionScanKind classifies one tile for region_scan's live per-tile
+// answer to "what's actually carved/modified in THIS caller-chosen box,
+// right now". Unlike handleFortFootprint's isUnambiguousModificationMarker
+// (a whole-map, no-bounds scan that must stay conservative about shapes
+// natural map generation also produces), region_scan is always given an
+// explicit box by the caller — the caller already told us "this is the
+// area I care about", so a bare carved-open-floor or ramp tile inside it
+// is legitimately reportable without needing to prove player intent on
+// its own. Priority mirrors isUnambiguousModificationMarker where the two
+// overlap (construction > smooth > carved stair/fortification shape) plus
+// two kinds that function deliberately excludes for its own whole-map use
+// case: RAMP ("ramp") and plain open floor ("floor" — shape FLOOR/BOULDER/
+// PEBBLES, the same group classifyTileRevealed treats as walkable ground).
+// Within that group, GRASS_LIGHT/DARK/DRY/DEAD material is excluded from
+// "floor" the same way classifyTileRevealed splits it into ',' rather than
+// '.' — untouched surface grass is never a "dug" tile, and reporting it as
+// "floor" would let a caller-chosen box that merely spans two separate dig
+// sites count the natural grass between them as modified. Carved minecart
+// tracks (hasCarveTrackAt) are checked first within the group since the
+// occupancy bit alone proves player action regardless of what's under it
+// (grass included). Returns nullptr for tiles worth skipping entirely (bare
+// wall, unrevealed empty space, untouched grass, etc) — this project's "is
+// this open/modified" question, not a full tile dump.
+static const char *regionScanKind(df::tiletype tt, df::tile_occupancy occ) {
+    if (tileMaterial(tt) == df::tiletype_material::CONSTRUCTION) return "construction";
+    if (isSmoothedAt(tt)) return "smooth";
+    using S = df::tiletype_shape;
+    switch (tileShape(tt)) {
+        case S::STAIR_UP: return "stair_up";
+        case S::STAIR_DOWN: return "stair_down";
+        case S::STAIR_UPDOWN: return "stair_updown";
+        case S::FORTIFICATION: return "fortification";
+        case S::RAMP: return "ramp";
+        case S::FLOOR: case S::BOULDER: case S::PEBBLES: {
+            if (hasCarveTrackAt(occ)) return "track";
+            using M = df::tiletype_material;
+            M mat = tileMaterial(tt);
+            if (mat == M::GRASS_LIGHT || mat == M::GRASS_DARK ||
+                mat == M::GRASS_DRY || mat == M::GRASS_DEAD)
+                return nullptr;
+            return "floor";
+        }
+        default: break;
+    }
+    if (hasCarveTrackAt(occ)) return "track";
+    return nullptr;
+}
+
+// kMaxRegionScanTiles caps the scanned volume (x-span * y-span * z-span),
+// not the count of tiles actually reported (a fully-carved box reports
+// close to the whole volume). Unlike handleFortFootprint (one fixed
+// whole-map pass per call, size never caller-controlled), region_scan's
+// box is caller-chosen and could otherwise cost an unbounded per-tile
+// MapCache walk — refuse outright rather than silently truncating, so a
+// caller that mis-sized a request gets a truthful error instead of a
+// partial answer it might mistake for complete.
+static const int64_t kMaxRegionScanTiles = 200000;
+
+// handleRegionScan answers "what's actually carved/modified in this box,
+// right now" via a live MapExtras::MapCache scan — the counterpart to
+// handleFortFootprint (Q4, this project's shipped precedent for a live
+// map-state query) for callers that already know which box they care
+// about instead of needing the plugin to find one. Ships as the
+// replacement data source for two things that used to read the Go-side
+// session-delta Modifications overlay (wiped+rebaselined on every
+// reconnect, and fed by a TILE_UPDATE stream that empirically delivers
+// nothing — see docs/decisions.md): save_blueprint's dig-entry capture,
+// and check_goals' HasModifiedAnything/HasShelter predicates.
+static std::string handleRegionScan(const std::string &args, uint8_t &status) {
+    int64_t x1 = jsonGetInt(args, "x1", -1), y1 = jsonGetInt(args, "y1", -1);
+    int64_t z1 = jsonGetInt(args, "z1", -1);
+    int64_t x2 = jsonGetInt(args, "x2", -1), y2 = jsonGetInt(args, "y2", -1);
+    int64_t z2 = jsonGetInt(args, "z2", -1);
+    status = QUERY_STATUS_ERROR;
+    if (x1 < 0 || y1 < 0 || z1 < 0 || x2 < x1 || y2 < y1 || z2 < z1)
+        return jsonError("region_scan needs x1,y1,z1,x2,y2,z2 with x2>=x1, y2>=y1, z2>=z1");
+    int64_t volume = (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1);
+    if (volume > kMaxRegionScanTiles)
+        return jsonError("region_scan region too large (" + jsonInt(volume) +
+                          " tiles, max " + jsonInt(kMaxRegionScanTiles) + ")");
+    if (!Maps::isValidTilePos((int16_t)x1, (int16_t)y1, (int16_t)z1) ||
+        !Maps::isValidTilePos((int16_t)x2, (int16_t)y2, (int16_t)z2))
+        return jsonError("region_scan out of bounds");
+
+    MapExtras::MapCache cache;
+    std::string tiles = "[";
+    int count = 0;
+    for (int16_t z = (int16_t)z1; z <= (int16_t)z2; z++) {
+        for (int16_t y = (int16_t)y1; y <= (int16_t)y2; y++) {
+            for (int16_t x = (int16_t)x1; x <= (int16_t)x2; x++) {
+                df::coord pos(x, y, z);
+                df::tiletype tt = cache.tiletypeAt(pos);
+                df::tile_occupancy occ = cache.occupancyAt(pos);
+                const char *kind = regionScanKind(tt, occ);
+                if (!kind) continue;
+                if (count) tiles += ",";
+                tiles += "{\"x\":" + jsonInt(x) + ",\"y\":" + jsonInt(y) + ",\"z\":" + jsonInt(z) +
+                         ",\"kind\":" + jsonStr(kind) + "}";
+                count++;
+            }
+        }
+    }
+    tiles += "]";
+    status = QUERY_STATUS_SUCCESS;
+    return "{\"x1\":" + jsonInt(x1) + ",\"y1\":" + jsonInt(y1) + ",\"z1\":" + jsonInt(z1) +
+           ",\"x2\":" + jsonInt(x2) + ",\"y2\":" + jsonInt(y2) + ",\"z2\":" + jsonInt(z2) +
+           ",\"count\":" + jsonInt(count) + ",\"tiles\":" + tiles + "}";
+}
+
 // handleZoneValue estimates a civzone's furniture-derived value plus a raw
 // component breakdown, for comparison against noble_demands' required_office/
 // required_bedroom/required_dining/required_tomb room-VALUE minimums
@@ -2928,6 +3307,51 @@ static std::string handleZoneValue(const std::string &args, uint8_t &status) {
     return os.str();
 }
 
+// walkableFromMapEdge cheaply checks whether depotPos shares a walkability
+// group (Maps::getWalkableGroup, Maps.h:384) with ANY true map-boundary
+// entry tile -- a direct C++ port of DFHack's own plugins/pathable.cpp
+// (get_pathability_groups + get_entry_tiles, lines 146-190), which computes
+// exactly this same-group membership test against
+// df::global::plotinfo->map_edge.surface_x/y/z (original-name
+// connected_enter_*_5, df.plotinfo.xml:989-1006), restricted to tiles that
+// are genuinely on the map boundary (x==0/y==0/x==max/y==max, matching
+// pathable.cpp:189-190 exactly).
+//
+// This is a per-unit walkability-group test, NOT a wagon-width check --
+// reported as a SEPARATE, honestly-labeled field alongside the native
+// accessible/have_access flag (which DF computes with the full wagon-width
+// pathing DFHack's own pathable.cpp wagon_flood/is_wagon_traversible tier,
+// lines 210-390, reproduces at real cost and even DFHack's own comment
+// there admits is imperfect -- "TODO: cannot traverse doors, up stairs, or
+// up/down stairs"). Reading BOTH together is the diagnostic: if this cheap
+// check ALSO reports false, the depot is topologically cut off entirely
+// (a real wall/dig problem); if this passes while accessible is still
+// false, the obstruction is specifically wagon-corridor WIDTH (a narrow
+// 1-2 tile chokepoint) that this cheap per-unit check cannot see -- at
+// which point a model should inspect the known wagon corridor with
+// look/cross_section rather than expect a second bespoke pathing engine
+// here.
+static bool walkableFromMapEdge(df::coord depotPos) {
+    if (!df::global::plotinfo) return false;
+    uint16_t depotGroup = Maps::getWalkableGroup(depotPos);
+    if (!depotGroup) return false;
+
+    uint32_t countX = 0, countY = 0, countZ = 0;
+    Maps::getTileSize(countX, countY, countZ);
+    if (!countX || !countY) return false;
+    int16_t maxX = (int16_t)(countX - 1);
+    int16_t maxY = (int16_t)(countY - 1);
+
+    auto &edge = df::global::plotinfo->map_edge;
+    size_t n = edge.surface_x.size();
+    for (size_t i = 0; i < n; i++) {
+        df::coord pos(edge.surface_x[i], edge.surface_y[i], edge.surface_z[i]);
+        if (pos.x != 0 && pos.y != 0 && pos.x != maxX && pos.y != maxY) continue;
+        if (Maps::getWalkableGroup(pos) == depotGroup) return true;
+    }
+    return false;
+}
+
 // handleCaravanStatus enumerates active caravans (df::global::plotinfo->
 // caravans -- confirmed via df.plotinfo.xml:821, struct-type 'caravan_state'
 // original-name 'merchant', a std::vector<caravan_state*> field of
@@ -2937,10 +3361,13 @@ static std::string handleZoneValue(const std::string &args, uint8_t &status) {
 // original-name 'plot_event' -- the ONLY place a countdown exists before a
 // caravan/liaison shows up in plotinfo->caravans at all), whether a liaison
 // meeting is currently active (plotinfo->dip_meeting_info, df.plotinfo.xml:
-// 858), and depot readiness (first TRADE_DEPOT building's build stage and
-// trade_flags). No args. 2026-07-19 trade/caravan research pass
+// 858), and depot readiness (first TRADE_DEPOT building's build stage,
+// trade_flags, native accessible/have_access, and the cheap
+// walkable_from_edge diagnostic -- see walkableFromMapEdge's doc comment
+// above for how the two access fields together localize an access
+// problem). No args. 2026-07-19 trade/caravan research pass
 // (docs/decisions.md); see also depot_goods (staged/pending goods at the
-// depot) and bring_goods_to_depot (the write side).
+// depot) and bring_goods_to_depot/set_depot_trade_flags (the write sides).
 //
 // time_remaining/ticks_remaining conversion mirrors handleListMandates'
 // timeout_counter/timeout_limit x10 factor EXACTLY: DFHack's own
@@ -3034,6 +3461,7 @@ static std::string handleCaravanStatus(const std::string &args, uint8_t &status)
            << ",\"z\":" << jsonInt(depot->z)
            << ",\"built\":" << (depot->getBuildStage() >= depot->getMaxBuildStage() ? "true" : "false")
            << ",\"accessible\":" << (depot->accessible ? "true" : "false")
+           << ",\"walkable_from_edge\":" << (walkableFromMapEdge(df::coord(depot->centerx, depot->centery, depot->z)) ? "true" : "false")
            << ",\"trader_requested\":" << (depot->trade_flags.bits.trader_requested ? "true" : "false")
            << ",\"anyone_can_trade\":" << (depot->trade_flags.bits.anyone_can_trade ? "true" : "false")
            << "}";
@@ -3052,14 +3480,25 @@ static std::string handleCaravanStatus(const std::string &args, uint8_t &status)
 // found (matches DFHack's own scripts/caravan.lua:107 single-depot
 // assumption) -- no coordinates needed for the common one-depot case.
 //
-// "staged": depot->contained_items filtered to use_mode==TEMP (a staged
-// trade good; PERM is the depot's own construction material, e.g. the
-// blocks it was built from -- see df.building.xml building_item_role_type).
+// "staged_ours" / "staged_theirs": depot->contained_items filtered to
+// use_mode==TEMP (a staged trade good; PERM is the depot's own
+// construction material, e.g. the blocks it was built from -- see
+// df.building.xml building_item_role_type), split by
+// item->flags.bits.trader (item_flags.h bit 15, "Item owned by trader") --
+// trade-pack wave fix for the prior single "staged" list aggregating our
+// own marked-for-trade goods together with the merchants' import
+// inventory with no ownership discriminator at all. movegoods.lua's own
+// is_tradeable_item treats flags.trader as a hard reject for anything the
+// fort side could ever select, confirming trader==true is reserved for
+// merchant stock and never set on fort goods before an actual trade
+// commits.
 // "pending": items attached to a queued BringItemToDepot job on this depot
 // (depot->jobs) -- hauling in progress, not yet physically at the depot.
-// Both aggregated by (item_type, material) like stockpile_inventory, not
-// by individual item ID -- no tool today surfaces item identity, and this
-// is a read, not an ID-based follow-up action.
+// Needs no ours/theirs split: a queued haul job can only ever be OUR
+// outgoing goods (merchant stock never gets a BringItemToDepot job).
+// All three aggregated by (item_type, material) like stockpile_inventory,
+// not by individual item ID -- no tool today surfaces item identity, and
+// this is a read, not an ID-based follow-up action.
 static std::string handleDepotGoods(const std::string &args, uint8_t &status) {
     if (!df::global::world) {
         status = QUERY_STATUS_ERROR;
@@ -3089,14 +3528,22 @@ static std::string handleDepotGoods(const std::string &args, uint8_t &status) {
     }
 
     // (item_type, mat_type, mat_index) -> (count, total_value, any_requested)
-    std::map<std::tuple<int, int, int>, std::tuple<int, int64_t, bool>> staged;
+    std::map<std::tuple<int, int, int>, std::tuple<int, int64_t, bool>> stagedOurs;
+    std::map<std::tuple<int, int, int>, std::tuple<int, int64_t, bool>> stagedTheirs;
     for (auto *bi : depot->contained_items) {
         if (!bi || !bi->item) continue;
         if (bi->use_mode != df::building_item_role_type::TEMP) continue;
+        // Trade-pack wave: unmark_trade_goods releases a staged item by
+        // clearing flags.bits.in_building, but no DFHack API removes the
+        // buildingitemst entry itself (Items.cpp's moveToBuilding push has
+        // no documented inverse) -- without this gate, an unmarked item
+        // would keep rendering here as still staged forever. See
+        // trade.cpp's applyUnmarkTradeGoods for the write side.
+        if (!bi->item->flags.bits.in_building) continue;
         df::item *item = bi->item;
         auto key = std::make_tuple((int)item->getType(), (int)item->getActualMaterial(),
                                    (int)item->getActualMaterialIndex());
-        auto &agg = staged[key];
+        auto &agg = item->flags.bits.trader ? stagedTheirs[key] : stagedOurs[key];
         std::get<0>(agg)++;
         std::get<1>(agg) += Items::getValue(item);
         if (Items::isRequestedTradeGood(item)) std::get<2>(agg) = true;
@@ -3142,11 +3589,190 @@ static std::string handleDepotGoods(const std::string &args, uint8_t &status) {
        << ",\"z\":" << jsonInt(depot->z)
        << ",\"built\":" << (depot->getBuildStage() >= depot->getMaxBuildStage() ? "true" : "false")
        << "}"
-       << ",\"staged\":";
-    renderAgg(os, staged);
+       << ",\"staged_ours\":";
+    renderAgg(os, stagedOurs);
+    os << ",\"staged_theirs\":";
+    renderAgg(os, stagedTheirs);
     os << ",\"pending\":";
     renderAgg(os, pending);
     os << "}";
+
+    status = QUERY_STATUS_SUCCESS;
+    return os.str();
+}
+
+// handleTradeAgreements reports each visiting civ's concluded trade
+// agreement data (df::caravan_state::buy_prices — specific items THIS civ
+// has requested the fort sell it, each with its own price bonus, original-
+// name "requestagreement"; sell_prices — broad entity_sell_category
+// buckets the fort gets a price break buying from this civ's own imports,
+// original-name "tradeagreement", both fields on caravan_state per
+// df.plotinfo.xml, dereferenced right alongside the same car->entity/
+// dip_meeting_info lookups handleCaravanStatus above already performs),
+// plus whatever the CURRENTLY OPEN liaison meeting (if any) has already
+// resolved so far this visit (df::global::plotinfo->dip_meeting_info,
+// meeting_diplomat_info's own ->events vector of meeting_event entries
+// concluded WITHIN this same still-open meeting — distinct from and
+// narrower than the standing agreement fields above, which persist across
+// meetings once concluded). Read-only; wave-7 trade/diplomacy brief item 5.
+// The liaison meeting itself (viewscreen_meetingst) happened invisibly to
+// this project before this query existed (fortress/memory/goals.md); this
+// only reads whatever DF's own dipscript has already written to these
+// structures — it never drives or advances a meeting.
+//
+// No args. Iterates every civ with an active caravan_state exactly like
+// caravan_status (df::global::plotinfo->caravans) — this answers "what's
+// the current standing deal with each civ visiting right now", not a full
+// permanent audit trail across all civs/all time (historical_entity::
+// meeting_events would be that; deliberately out of scope this pass, see
+// docs/decisions.md).
+//
+// price_percent mirrors DFHack's own scripts/internal/caravan/common.lua:420
+// EXACTLY: (price * 100) / 128 — 128 is DF's own "no change" baseline (100%
+// of normal value), NOT a "+0%" bonus-only percentage; 150 means "civ pays
+// 150% of normal value for this", 64 means "civ pays half".
+//
+// Honest null-safety: sell_prices/buy_prices are BOTH independently
+// nullable (a civ can have no agreement at all, or an agreement covering
+// only one direction) — emit empty arrays, never guess or backfill.
+// meeting_active is only true while a dip_meeting_info entry with matching
+// civ_id genuinely exists right now (mirrors caravan_status's own
+// liaison_meeting_active gate) — whether an UNATTENDED meeting reliably
+// auto-concludes within a bounded time is unverified by this plugin (see
+// the wave-7 investigation's open_questions); this handler only ever
+// reports what the structures say at the moment it's called, never a
+// prediction about when a meeting will resolve.
+static std::string handleTradeAgreements(const std::string &args, uint8_t &status) {
+    if (!df::global::world || !df::global::plotinfo) {
+        status = QUERY_STATUS_ERROR;
+        return jsonError("world/plotinfo is null");
+    }
+
+    std::ostringstream os;
+    os << "{\"civs\":[";
+    bool first = true;
+    for (auto *car : df::global::plotinfo->caravans) {
+        if (!car) continue;
+        if (!first) os << ",";
+        first = false;
+
+        std::string civName;
+        if (df::historical_entity *civ = df::historical_entity::find(car->entity)) {
+            civName = Translation::translateName(&civ->name, true);
+        }
+
+        os << "{\"civ\":" << jsonStr(civName)
+           << ",\"entity_id\":" << jsonInt(car->entity);
+
+        // Specific-item requests (buy_prices/"requestagreement") — items
+        // this civ has asked the fort to sell it, each with an individual
+        // price multiplier. items/price are parallel vectors on two
+        // different structs (entity_buy_prices + its nested
+        // entity_buy_requests); bound to the shortest of all of them
+        // defensively rather than assume they're always kept in lockstep.
+        os << ",\"specific_item_requests\":[";
+        if (car->buy_prices && car->buy_prices->items) {
+            auto *items = car->buy_prices->items;
+            size_t n = car->buy_prices->price.size();
+            n = std::min(n, items->item_type.size());
+            n = std::min(n, items->item_subtype.size());
+            n = std::min(n, items->mat_types.size());
+            n = std::min(n, items->mat_indices.size());
+            for (size_t i = 0; i < n; i++) {
+                if (i > 0) os << ",";
+                int16_t matType = items->mat_types[i];
+                int32_t matIndex = items->mat_indices[i];
+                std::string material = "any";
+                if (matType >= 0) {
+                    MaterialInfo mi(matType, matIndex);
+                    if (mi.isValid()) material = mi.toString();
+                }
+                os << "{\"item_type\":" << jsonStr(ENUM_KEY_STR(item_type, items->item_type[i]))
+                   << ",\"item_subtype\":" << jsonInt(items->item_subtype[i])
+                   << ",\"material\":" << jsonStr(material)
+                   << ",\"price_percent\":" << jsonInt(((int64_t)car->buy_prices->price[i] * 100) / 128)
+                   << "}";
+            }
+        }
+        os << "]";
+
+        // Category-bucket agreement (sell_prices/"tradeagreement") — broad
+        // classes of the civ's own import goods the fort gets a price
+        // break buying, e.g. "Weapons" or "Cheese". entity_sell_category
+        // has ~107 values (df/entity_sell_category.h); only non-empty
+        // buckets are emitted, min/max in case a category holds more than
+        // one differently-priced resource.
+        os << ",\"category_agreement\":[";
+        bool firstCat = true;
+        if (car->sell_prices) {
+            for (int cat = 0; cat <= df::enum_traits<df::entity_sell_category>::last_item_value; cat++) {
+                auto &prices = car->sell_prices->price[cat];
+                if (prices.empty()) continue;
+                if (!firstCat) os << ",";
+                firstCat = false;
+                int minPct = 0, maxPct = 0;
+                bool firstPrice = true;
+                for (int32_t p : prices) {
+                    int pct = (int)(((int64_t)p * 100) / 128);
+                    if (firstPrice || pct < minPct) minPct = pct;
+                    if (firstPrice || pct > maxPct) maxPct = pct;
+                    firstPrice = false;
+                }
+                os << "{\"category\":" << jsonStr(ENUM_KEY_STR(entity_sell_category, (df::entity_sell_category)cat))
+                   << ",\"count\":" << jsonInt((int64_t)prices.size())
+                   << ",\"min_percent\":" << jsonInt(minPct)
+                   << ",\"max_percent\":" << jsonInt(maxPct)
+                   << "}";
+            }
+        }
+        os << "]";
+
+        // Live meeting draft — only while a liaison meeting for this civ is
+        // actually open right now (mirrors caravan_status's own
+        // liaison_meeting_active gate, handleCaravanStatus above).
+        df::meeting_diplomat_info *dip = nullptr;
+        for (auto *d : df::global::plotinfo->dip_meeting_info) {
+            if (d && d->civ_id == car->entity) { dip = d; break; }
+        }
+        os << ",\"meeting_active\":" << (dip ? "true" : "false");
+        if (dip) {
+            os << ",\"topics_under_discussion\":[";
+            for (size_t i = 0; i < dip->topic_list.size(); i++) {
+                if (i > 0) os << ",";
+                os << jsonStr(ENUM_KEY_STR(meeting_topic, dip->topic_list[i]));
+            }
+            os << "]";
+
+            std::string diplomatName, associateName;
+            if (df::historical_figure *hf = df::historical_figure::find(dip->diplomat_id)) {
+                diplomatName = Translation::translateName(&hf->name, true);
+            }
+            if (df::historical_figure *hf = df::historical_figure::find(dip->associate_id)) {
+                associateName = Translation::translateName(&hf->name, true);
+            }
+            os << ",\"diplomat\":" << jsonStr(diplomatName)
+               << ",\"associate\":" << jsonStr(associateName);
+
+            os << ",\"resolved_this_meeting\":[";
+            bool firstEv = true;
+            for (auto *ev : dip->events) {
+                if (!ev) continue;
+                if (!firstEv) os << ",";
+                firstEv = false;
+                os << "{\"type\":" << jsonStr(ENUM_KEY_STR(meeting_event_type, ev->type))
+                   << ",\"topic\":" << jsonStr(ENUM_KEY_STR(meeting_topic, ev->topic))
+                   << ",\"quota_total\":" << jsonInt(ev->quota_total)
+                   << ",\"quota_remaining\":" << jsonInt(ev->quota_remaining)
+                   << ",\"year\":" << jsonInt(ev->year)
+                   << ",\"ticks\":" << jsonInt(ev->ticks)
+                   << "}";
+            }
+            os << "]";
+        }
+
+        os << "}";
+    }
+    os << "]}";
 
     status = QUERY_STATUS_SUCCESS;
     return os.str();
@@ -3191,6 +3817,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = handleCaravanStatus(args, status);
         } else if (name == "depot_goods") {
             data = handleDepotGoods(args, status);
+        } else if (name == "trade_agreements") {
+            data = handleTradeAgreements(args, status);
         } else if (name == "fort_wealth") {
             data = handleFortWealth(args, status);
         } else if (name == "wellbeing") {
@@ -3205,6 +3833,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = handleListBuildings(args, status);
         } else if (name == "list_zones") {
             data = handleListZones(args, status);
+        } else if (name == "list_wildlife") {
+            data = handleListWildlife(args, status);
         } else if (name == "zone_value") {
             data = handleZoneValue(args, status);
         } else if (name == "list_locations") {
@@ -3225,6 +3855,8 @@ void executeQuery(uint32_t queryID, const std::string &name, const std::string &
             data = queryColumnProfile(args, status);
         } else if (name == "fort_footprint") {
             data = handleFortFootprint(args, status);
+        } else if (name == "region_scan") {
+            data = handleRegionScan(args, status);
         } else {
             status = QUERY_STATUS_UNKNOWN;
             data = jsonError("unknown query name: " + name);

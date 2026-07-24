@@ -1278,6 +1278,7 @@ func TestBringGoodsToDepotRoundTrip(t *testing.T) {
 			MaterialFilter: "silver",
 			MaxCount:       10,
 			MaxTotalValue:  5000,
+			ItemClass:      ItemClassCrafts,
 		},
 	}
 	data, err := SerializeMessage(orig)
@@ -1295,6 +1296,46 @@ func TestBringGoodsToDepotRoundTrip(t *testing.T) {
 	if got.CommandID != 18 || got.CommandType != CommandTypeBringGoodsToDepot ||
 		got.BringGoodsToDepot != orig.BringGoodsToDepot {
 		t.Fatalf("round-trip mismatch: %+v", got.BringGoodsToDepot)
+	}
+}
+
+// TestBringGoodsToDepotLegacyPayloadWithoutItemClass hand-crafts a
+// BRING_GOODS_TO_DEPOT payload ending right after MaxTotalValue — exactly
+// what a pre-item_class peer emits — and checks it decodes as ItemClassAny,
+// the same EOF-tolerant trailing-field backward-compat rule
+// TestBuildLegacyPayloadWithoutMaterialByte establishes for BUILD.
+func TestBringGoodsToDepotLegacyPayloadWithoutItemClass(t *testing.T) {
+	var buf bytes.Buffer
+	_ = binary.Write(&buf, binary.BigEndian, uint32(0)) // length placeholder
+	buf.WriteByte(ProtocolVersion)
+	buf.WriteByte(MessageTypeCommand)
+	_ = binary.Write(&buf, binary.BigEndian, uint32(20)) // CommandID
+	buf.WriteByte(CommandTypeBringGoodsToDepot)
+	_ = binary.Write(&buf, binary.BigEndian, int16(50))  // X
+	_ = binary.Write(&buf, binary.BigEndian, int16(60))  // Y
+	_ = binary.Write(&buf, binary.BigEndian, int16(139)) // Z
+	itemTypeBytes := []byte("CRAFTS")
+	_ = binary.Write(&buf, binary.BigEndian, uint16(len(itemTypeBytes)))
+	buf.Write(itemTypeBytes)
+	materialBytes := []byte("silver")
+	_ = binary.Write(&buf, binary.BigEndian, uint16(len(materialBytes)))
+	buf.Write(materialBytes)
+	_ = binary.Write(&buf, binary.BigEndian, int32(10))   // MaxCount
+	_ = binary.Write(&buf, binary.BigEndian, int64(5000)) // MaxTotalValue
+	// no trailing ItemClass byte -- legacy shape
+	data := buf.Bytes()
+	binary.BigEndian.PutUint32(data[0:4], uint32(len(data)))
+
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode legacy bring_goods_to_depot payload: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 20 || got.BringGoodsToDepot.ItemClass != ItemClassAny {
+		t.Fatalf("legacy payload must decode ItemClass as ItemClassAny: %+v", got.BringGoodsToDepot)
 	}
 }
 
@@ -1723,5 +1764,157 @@ func TestEditOrderInvalidFrequencyRejected(t *testing.T) {
 	}
 	if _, err := SerializeMessage(orig); err == nil {
 		t.Fatal("frequency out of range must fail validation")
+	}
+}
+
+func TestUnmarkTradeGoodsRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   37,
+		CommandType: CommandTypeUnmarkTradeGoods,
+		UnmarkTradeGoods: UnmarkTradeGoodsDesignation{
+			X: 50, Y: 60, Z: 139,
+			ItemTypeFilter: "FIGURINE",
+			MaterialFilter: "shell",
+			ItemClass:      ItemClassCrafts,
+			MaxCount:       5,
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 37 || got.CommandType != CommandTypeUnmarkTradeGoods ||
+		got.UnmarkTradeGoods != orig.UnmarkTradeGoods {
+		t.Fatalf("round-trip mismatch: %+v", got.UnmarkTradeGoods)
+	}
+}
+
+func TestUnmarkTradeGoodsEmptyFiltersRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:        38,
+		CommandType:      CommandTypeUnmarkTradeGoods,
+		UnmarkTradeGoods: UnmarkTradeGoodsDesignation{X: 1, Y: 2, Z: 3, MaxCount: 9999},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.UnmarkTradeGoods.ItemTypeFilter != "" || got.UnmarkTradeGoods.MaterialFilter != "" {
+		t.Fatalf("expected empty filters, got: %+v", got.UnmarkTradeGoods)
+	}
+	if got.UnmarkTradeGoods.ItemClass != ItemClassAny || got.UnmarkTradeGoods.MaxCount != 9999 {
+		t.Fatalf("round-trip mismatch: %+v", got.UnmarkTradeGoods)
+	}
+}
+
+func TestUnmarkTradeGoodsMaxCountZeroRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:        39,
+		CommandType:      CommandTypeUnmarkTradeGoods,
+		UnmarkTradeGoods: UnmarkTradeGoodsDesignation{X: 1, Y: 2, Z: 3, MaxCount: 0},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("MaxCount == 0 must fail validation")
+	}
+}
+
+func TestUnmarkTradeGoodsInvalidItemClassRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   40,
+		CommandType: CommandTypeUnmarkTradeGoods,
+		UnmarkTradeGoods: UnmarkTradeGoodsDesignation{
+			X: 1, Y: 2, Z: 3, MaxCount: 1, ItemClass: ItemClassCrafts + 1,
+		},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("invalid item class must fail validation")
+	}
+}
+
+func TestBringGoodsToDepotInvalidItemClassRejected(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   41,
+		CommandType: CommandTypeBringGoodsToDepot,
+		BringGoodsToDepot: BringGoodsToDepotDesignation{
+			X: 1, Y: 2, Z: 3, MaxCount: 1, ItemClass: ItemClassCrafts + 1,
+		},
+	}
+	if _, err := SerializeMessage(orig); err == nil {
+		t.Fatal("invalid item class must fail validation")
+	}
+}
+
+func TestSetDepotTradeFlagsRoundTrip(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   42,
+		CommandType: CommandTypeSetDepotTradeFlags,
+		SetDepotTradeFlags: SetDepotTradeFlagsDesignation{
+			X: 28, Y: 52, Z: 110,
+			TraderRequested: true,
+			AnyoneCanTrade:  false,
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != 42 || got.CommandType != CommandTypeSetDepotTradeFlags ||
+		got.SetDepotTradeFlags != orig.SetDepotTradeFlags {
+		t.Fatalf("round-trip mismatch: %+v", got.SetDepotTradeFlags)
+	}
+}
+
+func TestSetDepotTradeFlagsBothFalseRoundTrip(t *testing.T) {
+	// Both bools false is a legitimate, distinct state from an unset/omitted
+	// payload — confirm it round-trips rather than being confused with a
+	// zero-value/absent-field sentinel (there is none here; both fields are
+	// always encoded).
+	orig := &CommandMessage{
+		CommandID:   43,
+		CommandType: CommandTypeSetDepotTradeFlags,
+		SetDepotTradeFlags: SetDepotTradeFlagsDesignation{
+			X: 1, Y: 2, Z: 3,
+			TraderRequested: false,
+			AnyoneCanTrade:  false,
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.SetDepotTradeFlags.TraderRequested || got.SetDepotTradeFlags.AnyoneCanTrade {
+		t.Fatalf("expected both flags false, got: %+v", got.SetDepotTradeFlags)
 	}
 }

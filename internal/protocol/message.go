@@ -418,6 +418,37 @@ const (
 	// EditOrderDesignation's doc comment and dfhack-plugin/work_orders.cpp
 	// applyEditOrder.
 	CommandTypeEditOrder uint8 = 0x2A
+
+	// CommandTypeUnmarkTradeGoods reverses bring_goods_to_depot's marking --
+	// see UnmarkTradeGoodsDesignation's doc comment and dfhack-plugin/
+	// protocol.h COMMAND_TYPE_UNMARK_TRADE_GOODS / trade.cpp
+	// applyUnmarkTradeGoods for the full sequence.
+	CommandTypeUnmarkTradeGoods uint8 = 0x2B
+
+	// CommandTypeSetDepotTradeFlags writes building_tradedepotst.trade_flags
+	// (trader_requested/anyone_can_trade) directly -- a bare bitfield with no
+	// validation logic anywhere in the DFHack codebase (grepped), and
+	// DFHack's own scripts/caravan.lua:108 does the exact same direct write.
+	// See SetDepotTradeFlagsDesignation's doc comment and dfhack-plugin/
+	// protocol.h COMMAND_TYPE_SET_DEPOT_TRADE_FLAGS / trade.cpp
+	// applySetDepotTradeFlags for the full sequence (including the
+	// trader_requested true->false job-cleanup companion mutation).
+	CommandTypeSetDepotTradeFlags uint8 = 0x2C
+)
+
+// ItemClass* constants -- the curated bucket vocabulary shared by
+// BringGoodsToDepotDesignation.ItemClass and
+// UnmarkTradeGoodsDesignation.ItemClass. ItemClassAny (the zero value, and
+// what an old encoded BringGoodsToDepot payload missing the trailing byte
+// decodes as) applies no class gate — ItemTypeFilter/MaterialFilter alone
+// decide. ItemClassCrafts mirrors df::job_type::MakeCrafts's own
+// possible_item list (FIGURINE/AMULET/RING/EARRING/CROWN/BRACELET/SCEPTER,
+// df.job.xml) plus TOTEM (job_type::MakeTotem, folded into the same trade
+// bucket) — see dfhack-plugin/trade.cpp itemClassMatches for the exact set.
+// Matches dfhack-plugin/protocol.h ITEM_CLASS_ANY / ITEM_CLASS_CRAFTS.
+const (
+	ItemClassAny    uint8 = 0x00
+	ItemClassCrafts uint8 = 0x01
 )
 
 // SquadOrder* constants for SquadOrderDesignation.Type -- DF-AI's own wire
@@ -1450,12 +1481,25 @@ type WorkOrderDesignation struct {
 // applyBringGoodsToDepot for the full eligibility rules and KNOWN
 // LIMITATIONs (nested/carried items and items already committed to some
 // other building are not reached).
+//
+// ItemClass (trade-pack wave, 2026-07 papercuts pass) is an ItemClass*
+// constant, encoded as an ALWAYS-appended trailing wire byte —
+// ItemClassAny (0x00, the zero value) is what an old encoded payload
+// missing that byte decodes as, matching this project's established
+// EOF-tolerant trailing-field convention (see WorkOrderDesignation.Subtype).
+// ItemClass != ItemClassAny makes the plugin reach INTO bins/food-storage
+// containers: ItemTypeFilter/MaterialFilter apply to each CONTAINED item
+// (not the bin's own type/material) — if any content matches, the WHOLE
+// BIN is marked (vanilla container-hauling behavior), never the bin AND a
+// content individually. ItemClassAny leaves bins opaque, exactly as
+// before this field existed.
 type BringGoodsToDepotDesignation struct {
 	X, Y, Z        int16
 	ItemTypeFilter string
 	MaterialFilter string
 	MaxCount       int32
 	MaxTotalValue  int64
+	ItemClass      uint8
 }
 
 // AppointPositionDesignation appoints (or replaces the holder of) one
@@ -1616,6 +1660,45 @@ type EditOrderDesignation struct {
 	Frequency    uint8 // WorkOrderFrequency* constant; ignored unless HasFrequency
 }
 
+// UnmarkTradeGoodsDesignation reverses bring_goods_to_depot's marking at
+// the trade depot at (X,Y,Z) -- same filter surface as
+// BringGoodsToDepotDesignation (ItemTypeFilter/MaterialFilter/ItemClass),
+// minus MaxTotalValue (nothing to cap when releasing goods). Scans two
+// populations up to MaxCount total matches: a PENDING item (a queued
+// BringItemToDepot job that hasn't arrived yet) is released via DFHack's
+// own Job::removeJob on that job; an ALREADY-STAGED item (arrived, sitting
+// in the depot's contained_items with use_mode==TEMP) is released by
+// clearing its flags.bits.in_building -- both mirror
+// scripts/internal/caravan/movegoods.lua's own onDismiss unmark paths. See
+// dfhack-plugin/trade.cpp applyUnmarkTradeGoods for the exact sequence and
+// its SAFETY INVARIANT (never touches flags.bits.trader==true merchant
+// stock).
+type UnmarkTradeGoodsDesignation struct {
+	X, Y, Z        int16
+	ItemTypeFilter string
+	MaterialFilter string
+	ItemClass      uint8
+	MaxCount       int32
+}
+
+// SetDepotTradeFlagsDesignation writes the trade depot at (X,Y,Z)'s
+// trade_flags bitfield directly (df::building_tradedepot_flag, a
+// validation-free 2-bit field -- DFHack's own scripts/caravan.lua:108 does
+// the identical direct write when a caravan leaves). Both fields are
+// REQUIRED, not a delta: the caller is expected to read current values via
+// caravan_status first and submit the whole desired final state, simpler
+// and more truthful than an unchanged/true/false tri-state encoding.
+//
+// TraderRequested true->false ALSO cancels any pending TradeAtDepot job at
+// this depot (job_type::TradeAtDepot) -- caravan.lua's own 'leave' command
+// pairs the same flag clear with the same job cancellation; see
+// dfhack-plugin/trade.cpp applySetDepotTradeFlags for the exact sequence.
+type SetDepotTradeFlagsDesignation struct {
+	X, Y, Z         int16
+	TraderRequested bool
+	AnyoneCanTrade  bool
+}
+
 // StockpileDesignation represents a stockpile zone designation. The
 // GroupMask is a bitfield of StockpileGroup* constants identifying which
 // item categories the stockpile will accept at the top-level UI grouping.
@@ -1707,6 +1790,9 @@ type CommandMessage struct {
 	CancelOrder CancelOrderDesignation // For CANCEL_ORDER commands
 	EditOrder   EditOrderDesignation   // For EDIT_ORDER commands
 
+	UnmarkTradeGoods   UnmarkTradeGoodsDesignation   // For UNMARK_TRADE_GOODS commands
+	SetDepotTradeFlags SetDepotTradeFlagsDesignation // For SET_DEPOT_TRADE_FLAGS commands
+
 	CreateLocation  CreateLocationDesignation  // For CREATE_LOCATION commands
 	AssignLodging   AssignLodgingDesignation   // For ASSIGN_LODGING commands
 	UnassignLodging UnassignLodgingDesignation // For UNASSIGN_LODGING commands
@@ -1722,7 +1808,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeEditOrder {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeSetDepotTradeFlags {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -1853,6 +1939,9 @@ func (m *CommandMessage) Validate() error {
 		if m.BringGoodsToDepot.MaxCount < 1 {
 			return errors.New("bring_goods_to_depot requires MaxCount >= 1")
 		}
+		if m.BringGoodsToDepot.ItemClass > ItemClassCrafts {
+			return fmt.Errorf("invalid item class: 0x%02X", m.BringGoodsToDepot.ItemClass)
+		}
 	case CommandTypeAppointPosition:
 		if m.AppointPosition.PositionCode == "" {
 			return errors.New("appoint_position requires a non-empty PositionCode")
@@ -1884,6 +1973,13 @@ func (m *CommandMessage) Validate() error {
 		}
 		if m.EditOrder.HasFrequency && m.EditOrder.Frequency > WorkOrderFrequencyYearly {
 			return fmt.Errorf("invalid work order frequency: 0x%02X", m.EditOrder.Frequency)
+		}
+	case CommandTypeUnmarkTradeGoods:
+		if m.UnmarkTradeGoods.MaxCount < 1 {
+			return errors.New("unmark_trade_goods requires MaxCount >= 1")
+		}
+		if m.UnmarkTradeGoods.ItemClass > ItemClassCrafts {
+			return fmt.Errorf("invalid item class: 0x%02X", m.UnmarkTradeGoods.ItemClass)
 		}
 	}
 

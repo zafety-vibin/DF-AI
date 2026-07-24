@@ -73,10 +73,15 @@ bool applyAssignWorkDetail(uint16_t detailIndex, int32_t unitID, bool add, std::
 bool applySetWorkDetailMode(uint16_t detailIndex, uint8_t mode, std::string &error);
 bool applyCreateWorkDetail(const std::string &name, uint8_t mode, const std::vector<uint8_t> &laborIDs, std::string &error);
 
-// Forward declaration for function from trade.cpp
+// Forward declarations for functions from trade.cpp
 bool applyBringGoodsToDepot(int16_t x, int16_t y, int16_t z,
                             const std::string &itemTypeFilter, const std::string &materialFilter,
-                            int32_t maxCount, int64_t maxTotalValue, std::string &error);
+                            uint8_t itemClass, int32_t maxCount, int64_t maxTotalValue, std::string &error);
+bool applyUnmarkTradeGoods(int16_t x, int16_t y, int16_t z,
+                           const std::string &itemTypeFilter, const std::string &materialFilter,
+                           uint8_t itemClass, int32_t maxCount, std::string &error);
+bool applySetDepotTradeFlags(int16_t x, int16_t y, int16_t z,
+                              bool traderRequested, bool anyoneCanTrade, std::string &error);
 
 // Forward declarations for functions from nobles.cpp
 bool applyAppointPosition(int32_t unitID, const std::string &positionCode, std::string &error);
@@ -115,8 +120,9 @@ bool applyRemoveBurrow(const std::string &name, std::string &error);
 bool applyAssignBurrow(const std::string &name, bool assign, bool allCitizens, int32_t unitID, std::string &error);
 bool applySetAlert(const std::string &name, bool active, std::string &error);
 
-// Forward declaration for function from queries.cpp
+// Forward declarations for functions from queries.cpp
 void executeQuery(uint32_t queryID, const std::string &name, const std::string &args);
+void reset_wildlife_tripwire_tracking();  // B11: dangerous-wildlife tripwire
 
 // Forward declarations from announcements.cpp
 size_t poll_and_send_announcements();
@@ -1338,6 +1344,11 @@ void executeCommand(const std::vector<uint8_t> &payload)
             // Payload: [4:cmdID][1:cmdType][2:X][2:Y][2:Z]
             //          [2:ItemTypeLen][N:ItemType][2:MaterialLen][N:Material]
             //          [4:MaxCount][8:MaxTotalValue]
+            //          [1:ItemClass] -- trade-pack wave: ALWAYS appended by
+            //          the Go encoder; a payload ending before it is
+            //          present (old pre-item_class encodings) decodes as
+            //          ITEM_CLASS_ANY -- mirrors internal/protocol/codec.go's
+            //          EOF-tolerant decode of the same field.
             if (payload.size() < 11 + 2) {
                 sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid BRING_GOODS_TO_DEPOT payload");
                 return;
@@ -1367,7 +1378,58 @@ void executeCommand(const std::vector<uint8_t> &payload)
             uint64_t maxTotalValueRaw = 0;
             for (int i = 0; i < 8; i++) maxTotalValueRaw = (maxTotalValueRaw << 8) | payload[offset + i];
             int64_t maxTotalValue = (int64_t)maxTotalValueRaw;
-            success = applyBringGoodsToDepot(x, y, z, itemTypeFilter, materialFilter, maxCount, maxTotalValue, error);
+            offset += 8;
+            uint8_t itemClass = (payload.size() >= offset + 1) ? payload[offset] : ITEM_CLASS_ANY;
+            success = applyBringGoodsToDepot(x, y, z, itemTypeFilter, materialFilter, itemClass, maxCount, maxTotalValue, error);
+            break;
+        }
+        case COMMAND_TYPE_UNMARK_TRADE_GOODS: {
+            // Payload: [4:cmdID][1:cmdType][2:X][2:Y][2:Z]
+            //          [2:ItemTypeLen][N:ItemType][2:MaterialLen][N:Material]
+            //          [1:ItemClass][4:MaxCount]
+            if (payload.size() < 11 + 2) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid UNMARK_TRADE_GOODS payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            size_t offset = 11;
+            uint16_t itemTypeLen = ((uint16_t)payload[offset] << 8) | payload[offset + 1];
+            offset += 2;
+            if (payload.size() < offset + (size_t)itemTypeLen + 2) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid UNMARK_TRADE_GOODS item type filter");
+                return;
+            }
+            std::string itemTypeFilter(payload.begin() + offset, payload.begin() + offset + itemTypeLen);
+            offset += itemTypeLen;
+            uint16_t materialLen = ((uint16_t)payload[offset] << 8) | payload[offset + 1];
+            offset += 2;
+            if (payload.size() < offset + (size_t)materialLen + 1 + 4) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid UNMARK_TRADE_GOODS material filter");
+                return;
+            }
+            std::string materialFilter(payload.begin() + offset, payload.begin() + offset + materialLen);
+            offset += materialLen;
+            uint8_t itemClass = payload[offset];
+            offset += 1;
+            int32_t maxCount = (int32_t)read_uint32_be(payload, offset);
+            success = applyUnmarkTradeGoods(x, y, z, itemTypeFilter, materialFilter, itemClass, maxCount, error);
+            break;
+        }
+        case COMMAND_TYPE_SET_DEPOT_TRADE_FLAGS: {
+            // Payload: [4:cmdID][1:cmdType][2:X][2:Y][2:Z]
+            //          [1:TraderRequested][1:AnyoneCanTrade]
+            if (payload.size() < 13) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SET_DEPOT_TRADE_FLAGS payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            bool traderRequested = payload[11] != 0;
+            bool anyoneCanTrade = payload[12] != 0;
+            success = applySetDepotTradeFlags(x, y, z, traderRequested, anyoneCanTrade, error);
             break;
         }
         case COMMAND_TYPE_APPOINT_POSITION: {
@@ -2084,6 +2146,11 @@ static void close_socket_and_reset()
     }
     g_connected = false;
     reset_announcement_cursor();
+    // B11: a still-visible dangerous-wildlife unit re-trips once after
+    // reconnect rather than staying silently suppressed forever -- same
+    // reconnect-tolerance precedent as reset_announcement_cursor just above
+    // (the reconnected peer has no memory of it either).
+    reset_wildlife_tripwire_tracking();
 }
 
 // Teardown path for the SOCKET THREAD ONLY (heartbeat timeout, server-sent

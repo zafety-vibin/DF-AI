@@ -1496,6 +1496,10 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 	case CommandTypeBringGoodsToDepot:
 		// [2: X] [2: Y] [2: Z] [2: ItemTypeLen][N: ItemType]
 		// [2: MaterialLen][N: Material] [4: MaxCount] [8: MaxTotalValue]
+		// [1: ItemClass] -- trade-pack wave: ALWAYS appended by this
+		// encoder; a payload ending before it (pre-ItemClass peer) decodes
+		// as ItemClassAny, same EOF-tolerant backward-compat rule as
+		// WorkOrderDesignation's Subtype tail.
 		for _, v := range []int16{msg.BringGoodsToDepot.X, msg.BringGoodsToDepot.Y, msg.BringGoodsToDepot.Z} {
 			if err := binary.Write(w, binary.BigEndian, v); err != nil {
 				return err
@@ -1525,6 +1529,9 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 			return err
 		}
 		if err := binary.Write(w, binary.BigEndian, msg.BringGoodsToDepot.MaxTotalValue); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.BringGoodsToDepot.ItemClass); err != nil {
 			return err
 		}
 	case CommandTypeAppointPosition:
@@ -1625,6 +1632,61 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 			return err
 		}
 		if err := binary.Write(w, binary.BigEndian, msg.EditOrder.Frequency); err != nil {
+			return err
+		}
+	case CommandTypeUnmarkTradeGoods:
+		// [2: X] [2: Y] [2: Z] [2: ItemTypeLen][N: ItemType]
+		// [2: MaterialLen][N: Material] [1: ItemClass] [4: MaxCount]
+		for _, v := range []int16{msg.UnmarkTradeGoods.X, msg.UnmarkTradeGoods.Y, msg.UnmarkTradeGoods.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		unmarkItemTypeBytes := []byte(msg.UnmarkTradeGoods.ItemTypeFilter)
+		if len(unmarkItemTypeBytes) > 255 {
+			return errors.New("unmark_trade_goods item type filter too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(unmarkItemTypeBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(unmarkItemTypeBytes); err != nil {
+			return err
+		}
+		unmarkMaterialBytes := []byte(msg.UnmarkTradeGoods.MaterialFilter)
+		if len(unmarkMaterialBytes) > 255 {
+			return errors.New("unmark_trade_goods material filter too long (max 255 bytes)")
+		}
+		if err := binary.Write(w, binary.BigEndian, uint16(len(unmarkMaterialBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(unmarkMaterialBytes); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.UnmarkTradeGoods.ItemClass); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.UnmarkTradeGoods.MaxCount); err != nil {
+			return err
+		}
+	case CommandTypeSetDepotTradeFlags:
+		// [2: X] [2: Y] [2: Z] [1: TraderRequested] [1: AnyoneCanTrade]
+		for _, v := range []int16{msg.SetDepotTradeFlags.X, msg.SetDepotTradeFlags.Y, msg.SetDepotTradeFlags.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		traderRequested := uint8(0)
+		if msg.SetDepotTradeFlags.TraderRequested {
+			traderRequested = 1
+		}
+		if err := binary.Write(w, binary.BigEndian, traderRequested); err != nil {
+			return err
+		}
+		anyoneCanTrade := uint8(0)
+		if msg.SetDepotTradeFlags.AnyoneCanTrade {
+			anyoneCanTrade = 1
+		}
+		if err := binary.Write(w, binary.BigEndian, anyoneCanTrade); err != nil {
 			return err
 		}
 	}
@@ -2193,6 +2255,15 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 		if err := binary.Read(buf, binary.BigEndian, &msg.BringGoodsToDepot.MaxTotalValue); err != nil {
 			return nil, err
 		}
+		// Optional trailing ItemClass byte: a payload without it (pre-
+		// ItemClass peer) decodes as ItemClassAny — same EOF-tolerant
+		// backward-compat rule as WorkOrderDesignation's Subtype tail.
+		if err := binary.Read(buf, binary.BigEndian, &msg.BringGoodsToDepot.ItemClass); err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
+			msg.BringGoodsToDepot.ItemClass = ItemClassAny
+		}
 	case CommandTypeAppointPosition:
 		if err := binary.Read(buf, binary.BigEndian, &msg.AppointPosition.UnitID); err != nil {
 			return nil, err
@@ -2277,6 +2348,52 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 		if err := binary.Read(buf, binary.BigEndian, &msg.EditOrder.Frequency); err != nil {
 			return nil, err
 		}
+	case CommandTypeUnmarkTradeGoods:
+		for _, p := range []*int16{&msg.UnmarkTradeGoods.X, &msg.UnmarkTradeGoods.Y, &msg.UnmarkTradeGoods.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		var unmarkItemTypeLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &unmarkItemTypeLen); err != nil {
+			return nil, err
+		}
+		unmarkItemTypeBytes := make([]byte, unmarkItemTypeLen)
+		if _, err := io.ReadFull(buf, unmarkItemTypeBytes); err != nil {
+			return nil, err
+		}
+		msg.UnmarkTradeGoods.ItemTypeFilter = string(unmarkItemTypeBytes)
+		var unmarkMaterialLen uint16
+		if err := binary.Read(buf, binary.BigEndian, &unmarkMaterialLen); err != nil {
+			return nil, err
+		}
+		unmarkMaterialBytes := make([]byte, unmarkMaterialLen)
+		if _, err := io.ReadFull(buf, unmarkMaterialBytes); err != nil {
+			return nil, err
+		}
+		msg.UnmarkTradeGoods.MaterialFilter = string(unmarkMaterialBytes)
+		if err := binary.Read(buf, binary.BigEndian, &msg.UnmarkTradeGoods.ItemClass); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &msg.UnmarkTradeGoods.MaxCount); err != nil {
+			return nil, err
+		}
+	case CommandTypeSetDepotTradeFlags:
+		for _, p := range []*int16{&msg.SetDepotTradeFlags.X, &msg.SetDepotTradeFlags.Y, &msg.SetDepotTradeFlags.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		var traderRequested uint8
+		if err := binary.Read(buf, binary.BigEndian, &traderRequested); err != nil {
+			return nil, err
+		}
+		msg.SetDepotTradeFlags.TraderRequested = traderRequested != 0
+		var anyoneCanTrade uint8
+		if err := binary.Read(buf, binary.BigEndian, &anyoneCanTrade); err != nil {
+			return nil, err
+		}
+		msg.SetDepotTradeFlags.AnyoneCanTrade = anyoneCanTrade != 0
 	default:
 		return nil, fmt.Errorf("unknown command type: 0x%02X", msg.CommandType)
 	}

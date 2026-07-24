@@ -679,11 +679,12 @@ func (e *CommandExecutor) SendCreateWorkDetail(name string, mode uint8, laborIDs
 }
 
 // SendBringGoodsToDepot marks up to maxCount free fort items (filtered by
-// itemTypeFilter/materialFilter substrings, "" = no filter) for hauling to
+// itemTypeFilter/materialFilter substrings, "" = no filter, plus an
+// itemClass bucket — protocol.ItemClassAny/ItemClassCrafts) for hauling to
 // the built trade depot at (x,y,z) — see protocol.BringGoodsToDepotDesignation
 // for the exact eligibility rules and known limitations. maxTotalValue <= 0
 // means no cap on the running total estimated value of marked items.
-func (e *CommandExecutor) SendBringGoodsToDepot(x, y, z int16, itemTypeFilter, materialFilter string, maxCount int32, maxTotalValue int64) (*CommandResult, error) {
+func (e *CommandExecutor) SendBringGoodsToDepot(x, y, z int16, itemTypeFilter, materialFilter string, itemClass uint8, maxCount int32, maxTotalValue int64) (*CommandResult, error) {
 	cmd := &protocol.CommandMessage{
 		CommandID:   e.tracker.GenerateCommandID(),
 		CommandType: protocol.CommandTypeBringGoodsToDepot,
@@ -693,6 +694,46 @@ func (e *CommandExecutor) SendBringGoodsToDepot(x, y, z int16, itemTypeFilter, m
 			MaterialFilter: materialFilter,
 			MaxCount:       maxCount,
 			MaxTotalValue:  maxTotalValue,
+			ItemClass:      itemClass,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendUnmarkTradeGoods reverses bring_goods_to_depot's marking at the trade
+// depot at (x,y,z), filtered by the same itemTypeFilter/materialFilter/
+// itemClass surface (no maxTotalValue — nothing to cap when releasing
+// goods). See protocol.UnmarkTradeGoodsDesignation for the exact PENDING/
+// STAGED release sequence and its safety invariant (never touches
+// merchant-owned goods).
+func (e *CommandExecutor) SendUnmarkTradeGoods(x, y, z int16, itemTypeFilter, materialFilter string, itemClass uint8, maxCount int32) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeUnmarkTradeGoods,
+		UnmarkTradeGoods: protocol.UnmarkTradeGoodsDesignation{
+			X: x, Y: y, Z: z,
+			ItemTypeFilter: itemTypeFilter,
+			MaterialFilter: materialFilter,
+			ItemClass:      itemClass,
+			MaxCount:       maxCount,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendSetDepotTradeFlags writes the trade depot at (x,y,z)'s trade_flags
+// bitfield directly -- both fields are the WHOLE desired final state, not a
+// delta (read current values via caravan_status first). See
+// protocol.SetDepotTradeFlagsDesignation for the exact write sequence and
+// its trader_requested true->false job-cleanup companion mutation.
+func (e *CommandExecutor) SendSetDepotTradeFlags(x, y, z int16, traderRequested, anyoneCanTrade bool) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeSetDepotTradeFlags,
+		SetDepotTradeFlags: protocol.SetDepotTradeFlagsDesignation{
+			X: x, Y: y, Z: z,
+			TraderRequested: traderRequested,
+			AnyoneCanTrade:  anyoneCanTrade,
 		},
 	}
 	return e.SendCommand(cmd)

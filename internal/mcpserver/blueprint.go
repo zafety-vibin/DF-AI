@@ -58,17 +58,27 @@ func normalizeRegion(x1, y1, z1, x2, y2, z2 int16) modifications.Region {
 	return modifications.Region{XMin: x1, XMax: x2, YMin: y1, YMax: y2, ZMin: z1, ZMax: z2}
 }
 
-// saveBlueprint captures the DUG modifications inside region and writes
-// them to blueprints/<name>.csv via the existing
-// CreateBlueprintFromModifications + SaveToCSV pair (both previously
-// orphaned — nothing called them). Returns the tile count and the path
+// saveBlueprint captures the currently carved/modified tiles inside region
+// (via a live region_scan query — see blueprints.CreateBlueprintFromRegionScan)
+// and writes them to blueprints/<name>.csv via SaveToCSV. This replaced an
+// earlier version that read the session-delta Modifications overlay
+// (CreateBlueprintFromModifications, kept for reference/tests but no
+// longer this function's caller): that overlay is wiped+rebaselined on
+// every reconnect and its backing TILE_UPDATE stream empirically delivers
+// nothing, so a save_blueprint call after any reconnect used to silently
+// see zero tiles. region_scan reads the live map instead, so it works
+// regardless of connection history. Returns the tile count and the path
 // written.
-func saveBlueprint(b *Bridge, name string, region modifications.Region) (int, string, error) {
+func saveBlueprint(ctx context.Context, b *Bridge, name string, region modifications.Region) (int, string, error) {
 	safeName := filepath.Base(strings.TrimSpace(name))
 	if safeName == "" || safeName == "." || safeName == string(filepath.Separator) {
 		return 0, "", fmt.Errorf("invalid blueprint name %q", name)
 	}
-	bp, err := blueprints.CreateBlueprintFromModifications(b.WM.Observed.Modifications, region, safeName)
+	tiles, err := regionScan(ctx, b, region)
+	if err != nil {
+		return 0, "", fmt.Errorf("region_scan failed: %w", err)
+	}
+	bp, err := blueprints.CreateBlueprintFromRegionScan(tiles, region, safeName)
 	if err != nil {
 		return 0, "", err
 	}

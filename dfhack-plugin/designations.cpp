@@ -75,6 +75,28 @@ static bool isCarvedFeatureShape(df::tiletype_shape shape)
            shape == df::tiletype_shape::FORTIFICATION;
 }
 
+// True for any digType that changes a tile's carved SHAPE once dug (stairs
+// of any kind, ramps, channels) as opposed to a plain Default mine, which
+// just removes rock/soil without producing a shape. Used to warn when a
+// PENDING (not-yet-carved) designation of one of these gets silently
+// replaced by a DIFFERENT digType before a dwarf ever reaches the tile --
+// e.g. a flat rect designation eating a queued stair shaft (live incident:
+// fortress/memory/journal.md, learnings.md -- a rooms dig silently replaced
+// a pending stairs designation with no warning; the overseer caught it
+// in-client). Deliberately fires for any differing shape-changing pair
+// (stair<->ramp<->channel included), not only "was a stair" -- losing a
+// queued ramp or channel to a plain mine is just as silent and just as
+// worth flagging. Excludes Default and No: those are the ordinary "mine
+// this tile" and "nothing queued" cases, not shape-changing requests.
+static bool isShapeChangingDig(df::tile_dig_designation d)
+{
+    return d == df::tile_dig_designation::UpStair ||
+           d == df::tile_dig_designation::DownStair ||
+           d == df::tile_dig_designation::UpDownStair ||
+           d == df::tile_dig_designation::Ramp ||
+           d == df::tile_dig_designation::Channel;
+}
+
 // Does the tile directly ABOVE (x, y, zTop) already provide a downward
 // stair connection — carved into the terrain or queued as a dig
 // designation? If so, the top of a new stair range must be UpDownStair,
@@ -232,6 +254,10 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
                                // gain their missing down component (join)
     int convertedStairs = 0;   // carved stairs overwritten by a non-stair
                                // digType, losing their vertical connection
+    int overwrittenPending = 0; // PENDING (not-yet-carved) stair/ramp/channel
+                               // designations of a DIFFERENT shape-changing
+                               // type silently replaced -- see
+                               // isShapeChangingDig's doc comment
     bool joinedAbove = false;  // top kind promoted to UpDownStair (see loop)
     bool joinedBelow = false;  // bottom kind promoted to UpDownStair
 
@@ -328,6 +354,11 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
                 }
 
                 df::tile_designation des = cache.designationAt(pos);
+                // Captured BEFORE this tile's new dig type is computed below
+                // -- shared by both the stair-shaft and plain-overwrite
+                // branches that follow, so the pending-designation-overwrite
+                // check after them covers both paths.
+                df::tile_dig_designation priorDig = des.bits.dig;
 
                 if (isStairShaft) {
                     if (z == z1) {
@@ -369,18 +400,29 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
                     } else {
                         des.bits.dig = df::tile_dig_designation::UpDownStair;
                     }
-                    // Span hidden terrain by design.
-                    cache.setDesignationAt(pos, des);
-                    designated++;
                 } else {
                     // Hidden tiles are designated like DF's own UI does — fog
                     // of war is where forts get dug. Nothing increments
                     // blocked here today; it stays for future per-tile
                     // rejection paths (e.g. non-diggable screening).
                     des.bits.dig = dfDigType;
-                    cache.setDesignationAt(pos, des);
-                    designated++;
                 }
+
+                // A pending (not-yet-carved) stair/ramp/channel designation
+                // of a DIFFERENT shape-changing type sat on this tile and is
+                // about to be silently replaced by what we just computed
+                // above -- e.g. a flat rect eating a queued stair shaft.
+                // Purely informational, never blocks (see
+                // isShapeChangingDig's doc comment for the live incident).
+                if (priorDig != df::tile_dig_designation::No &&
+                    priorDig != des.bits.dig &&
+                    isShapeChangingDig(priorDig)) {
+                    overwrittenPending++;
+                }
+
+                // Span hidden terrain by design (both branches above).
+                cache.setDesignationAt(pos, des);
+                designated++;
             }
         }
     }
@@ -398,9 +440,27 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
     // tiles, including converted stairs; promoted carved up-stairs
     // (in-range or the abutting tile above the top) are reported by their
     // own count.
+    // Descriptive label for the overwrittenPending note below -- the TYPE
+    // now being written, not what was replaced. For a stair shaft the
+    // per-tile type varies (UpStair/DownStair/UpDownStair), so "stairs"
+    // covers all three; for the plain path dfDigType is constant across
+    // the whole call.
+    std::string requestedTypeLabel;
+    if (isStairShaft) {
+        requestedTypeLabel = "stairs";
+    } else {
+        switch (dfDigType) {
+            case df::tile_dig_designation::Channel:   requestedTypeLabel = "channel"; break;
+            case df::tile_dig_designation::Ramp:      requestedTypeLabel = "ramp"; break;
+            case df::tile_dig_designation::DownStair: requestedTypeLabel = "down stair"; break;
+            case df::tile_dig_designation::UpStair:   requestedTypeLabel = "up stair"; break;
+            default:                                  requestedTypeLabel = "mine"; break;
+        }
+    }
+
     std::string stairText;
     if (skippedCarved > 0 || promotedCarved > 0 || joinedAbove || joinedBelow ||
-        convertedStairs > 0) {
+        convertedStairs > 0 || overwrittenPending > 0) {
         char buf[192];
         snprintf(buf, sizeof(buf), "%d designated", designated);
         stairText = buf;
@@ -419,6 +479,12 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
             snprintf(buf, sizeof(buf),
                      " (%d will remove existing stairs: vertical connection lost)",
                      convertedStairs);
+            stairText += buf;
+        }
+        if (overwrittenPending > 0) {
+            snprintf(buf, sizeof(buf),
+                     " (%d pending stair/ramp/channel designation(s) replaced by %s)",
+                     overwrittenPending, requestedTypeLabel.c_str());
             stairText += buf;
         }
         if (joinedAbove)

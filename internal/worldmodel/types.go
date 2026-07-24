@@ -43,6 +43,13 @@ type WorldModel struct {
 	eventSeq   atomic.Uint64
 	lastUpdate atomic.Int64 // unix nanos
 	bornAt     time.Time
+
+	// tileDeltaCount is a monotonically increasing count of tiles delivered
+	// via TILE_UPDATE (OnTileUpdate), independent of eventSeq (which tracks
+	// ENTITY_UPDATE pushes only). A dead tile-delta stream previously had no
+	// visible symptom at all -- this counter exists so the step tool can show
+	// whether TILE_UPDATE delivers anything at each turn boundary.
+	tileDeltaCount atomic.Uint64
 }
 
 // ObservedState mirrors what DF currently reports. The overlay pointers are
@@ -64,6 +71,28 @@ type ObservedState struct {
 	// adds to it; the deliberator reads it to react to in-game events
 	// the way a player would.
 	Alerts *AlertStore
+
+	// LiveDugTiles is the most recent live dug-tile count check_goals
+	// injected via SetLiveDugTiles (see LiveTileCount) — read directly by
+	// predicates since Predicate.Check(wm) only ever receives the
+	// WorldModel, never the mcpserver Bridge that can issue live queries.
+	LiveDugTiles LiveTileCount
+}
+
+// LiveTileCount is an optional, per-call live dug/modified-tile count
+// obtained via a region_scan query (see mcpserver's check_goals handler
+// and internal/mcpserver/live_state.go's liveDugTileCount) rather than the
+// session-delta Modifications overlay. Ok is false between check_goals
+// calls, or whenever no live count could be established for the current
+// check (no dwarves observed, nothing marked at the sampled z-level, or
+// the region_scan call itself failed) — predicates fall back to the
+// overlay's GetCount() in that case, reporting it as supplementary
+// evidence either way. Source is a short human-readable provenance string
+// folded verbatim into predicate evidence lines.
+type LiveTileCount struct {
+	Count  uint32
+	Source string
+	Ok     bool
 }
 
 // EntitySnapshot is a point-in-time copy of entity positions, partitioned by
@@ -178,6 +207,31 @@ func (w *WorldModel) SetOverlays(
 	w.Observed.Modifications = mods
 }
 
+// SetLiveDugTiles installs a fresh live dug-tile count (see LiveTileCount)
+// — check_goals' handler calls this immediately before CheckAll so
+// HasModifiedAnything/HasShelter can prefer it over the session-delta
+// Modifications overlay. Pair with ClearLiveDugTiles afterward so a stale
+// count never leaks into an unrelated later check.
+func (w *WorldModel) SetLiveDugTiles(count uint32, source string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.Observed.LiveDugTiles = LiveTileCount{Count: count, Source: source, Ok: true}
+}
+
+// ClearLiveDugTiles resets the live dug-tile count to "not set" (Ok=false).
+func (w *WorldModel) ClearLiveDugTiles() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.Observed.LiveDugTiles = LiveTileCount{}
+}
+
+// LiveDugTiles returns the most recently installed live dug-tile count.
+func (w *WorldModel) LiveDugTiles() LiveTileCount {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.Observed.LiveDugTiles
+}
+
 // SetPlanReader installs the plan package's view interface. Safe to call once
 // during startup or whenever the plan package wires in.
 func (w *WorldModel) SetPlanReader(p PlanReader) {
@@ -212,6 +266,15 @@ func (w *WorldModel) AdvanceTick() uint64 { return w.tick.Add(1) }
 // events so the reconciler can order them.
 func (w *WorldModel) NextEventID() uint64 { return w.eventSeq.Add(1) }
 
+// AdvanceTileDeltaCount adds n to the running tile-delta count and returns
+// the new total. The populator calls this from OnTileUpdate with the number
+// of tiles actually processed; external callers should not.
+func (w *WorldModel) AdvanceTileDeltaCount(n uint64) uint64 { return w.tileDeltaCount.Add(n) }
+
+// TileDeltaCount returns the running total of tiles delivered via
+// TILE_UPDATE since this process started.
+func (w *WorldModel) TileDeltaCount() uint64 { return w.tileDeltaCount.Load() }
+
 // LastUpdate returns the time of the most recent perception event the
 // populator processed.
 func (w *WorldModel) LastUpdate() time.Time {
@@ -244,6 +307,13 @@ type Snapshot struct {
 	Fort        FortSnapshot
 	World       WorldSnapshot
 	Predictions PredictedSummary
+
+	// TileDeltaCount is the running total of tiles delivered via TILE_UPDATE
+	// (OnTileUpdate) since this process started -- independent of EventSeq,
+	// which only reflects ENTITY_UPDATE pushes. Diffing this field across two
+	// snapshots (e.g. a step's before/after) shows whether the tile-delta
+	// stream delivered anything in that window.
+	TileDeltaCount uint64
 
 	// ActiveAlerts is the current set of un-dismissed DF announcements,
 	// newest first, capped at SnapshotMaxAlerts.
@@ -296,5 +366,6 @@ func (w *WorldModel) Snapshot() Snapshot {
 		Predictions:      w.Predicted.summary(),
 		ActiveAlerts:     alerts,
 		ActiveAlertCount: activeCount,
+		TileDeltaCount:   w.tileDeltaCount.Load(),
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/df-ai/orchestrator/internal/mapview"
 	"github.com/df-ai/orchestrator/internal/topology"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -127,6 +128,110 @@ func resolveAnchor(topo *topology.TopologyOverlay, x, y, z int16) (topology.Coor
 	return c, nil
 }
 
+// anchorLiveFetcher is the minimal live-query capability resolveAnchorLive's
+// overlay-fallback needs — MapSlice alone, a subset of mapview.SliceProvider
+// (which Bridge already implements; see the compile-time check in
+// tools_percept_test.go). A narrow interface here, rather than *Bridge
+// directly, is what lets a test fake the live plugin round-trip with a
+// canned Slice.
+type anchorLiveFetcher interface {
+	MapSlice(ctx context.Context, x1, y1, z, x2, y2 int16) (*mapview.Slice, error)
+}
+
+// anchorLiveWindow is how far past the anchor tile resolveAnchorLive samples
+// on each side when it falls back to a live query. A single reseeded tile
+// would already resolve (RegionAt treats a lone open tile as its own
+// region), but sampling a small neighborhood makes the reseed connect into
+// whatever's actually around the anchor rather than leaving it an isolated
+// speck.
+const anchorLiveWindow = 5
+
+// resolveAnchorLive is resolveAnchor with a live-query fallback. The
+// overlay-based lookup (resolveAnchor) trusts topology.BuildRegionGraph over
+// a TopologyOverlay that is seeded once from FULL_STATE and updated only by
+// the TILE_UPDATE stream — which empirically delivers nothing and is wiped
+// on every reconnect, so the overlay can say "no region here" for tiles the
+// live game state shows are perfectly good open floor. When that happens,
+// this queries the same live map_slice channel `look` uses on every call
+// and, if the live data shows the anchor open, seeds the overlay from it and
+// rebuilds the region graph before giving up. live may be nil (e.g. a
+// disconnected bridge); the overlay-only result is then returned unchanged.
+// If live data ALSO fails to resolve a region at the anchor, the original
+// overlay error is returned as-is — a second, redundant error would be less
+// truthful, not more.
+func resolveAnchorLive(ctx context.Context, topo *topology.TopologyOverlay, live anchorLiveFetcher, x, y, z int16) (topology.Coord, error) {
+	c, err := resolveAnchor(topo, x, y, z)
+	if err == nil || live == nil {
+		return c, err
+	}
+
+	w, h, _ := topo.GetDimensions()
+	x1, y1 := clampAnchorLow(x-anchorLiveWindow), clampAnchorLow(y-anchorLiveWindow)
+	x2, y2 := clampAnchorHigh(x+anchorLiveWindow, int16(w)-1), clampAnchorHigh(y+anchorLiveWindow, int16(h)-1)
+	s, liveErr := live.MapSlice(ctx, x1, y1, z, x2, y2)
+	if liveErr != nil {
+		return topology.Coord{}, err
+	}
+	seedOverlayFromSlice(topo, s)
+
+	target := topology.Coord{X: x, Y: y, Z: z}
+	rg := topology.BuildRegionGraph(topo)
+	if _, ok := rg.RegionAt(target); !ok {
+		// Live data agrees: the tile is solid, or otherwise not classifiable
+		// as open floor. Keep the original truthful error.
+		return topology.Coord{}, err
+	}
+	return target, nil
+}
+
+func clampAnchorLow(v int16) int16 {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+func clampAnchorHigh(v, max int16) int16 {
+	if v > max {
+		return max
+	}
+	return v
+}
+
+// glyphTileState maps a map_slice/look glyph (mapview.Legend) to the
+// three-state classification resolveAnchorLive can safely assert from live
+// data alone, mirroring topology.ClassifyState's FLAG_FLOOR/FLAG_WALL
+// priority applied to the glyphs queries.cpp's classifyTile already reduced
+// the raw tiletype to (see dfhack-plugin/tile_extractor.cpp's shape->flag
+// switch for the source mapping). ok=false for any glyph that can't be
+// classified from the glyph alone (hidden fog, open air/ramp-top, trees,
+// liquids, ...) — SetTileState would otherwise assert a state the glyph
+// doesn't actually justify.
+func glyphTileState(g byte) (topology.TileState, bool) {
+	switch g {
+	case '.', ',', '<', '>', 'X', '^':
+		return topology.StateOpen, true
+	case '#', '%', '=':
+		return topology.StateClosed, true
+	default:
+		return topology.StateUnknown, false
+	}
+}
+
+// seedOverlayFromSlice writes the live glyph classification for every
+// unambiguous tile in s into topo (see glyphTileState).
+func seedOverlayFromSlice(topo *topology.TopologyOverlay, s *mapview.Slice) {
+	for dy, row := range s.Rows {
+		for dx := 0; dx < len(row); dx++ {
+			state, ok := glyphTileState(row[dx])
+			if !ok {
+				continue
+			}
+			_ = topo.SetTileState(s.X1+int16(dx), s.Y1+int16(dy), s.Z, state)
+		}
+	}
+}
+
 func registerPlaceTools(srv *mcp.Server, b *Bridge) {
 	type namePlaceIn struct {
 		X    int    `json:"x" jsonschema:"a tile inside the region to name"`
@@ -145,7 +250,7 @@ func registerPlaceTools(srv *mcp.Server, b *Bridge) {
 		if topo == nil {
 			return withDash(b, ctx, "topology not built yet (waiting for full state)"), nil, nil
 		}
-		anchor, err := resolveAnchor(topo, int16(in.X), int16(in.Y), int16(in.Z))
+		anchor, err := resolveAnchorLive(ctx, topo, b, int16(in.X), int16(in.Y), int16(in.Z))
 		if err != nil {
 			return withDash(b, ctx, err.Error()), nil, nil
 		}

@@ -33,6 +33,21 @@ type Bridge struct {
 	Logger     *logging.Logger
 	Digs       *pendingDigs // session-scoped ACKed dig rects (see digrects.go)
 	port       uint16
+	// mapSliceFn, when non-nil, replaces MapSlice's real plugin round-trip
+	// below with a canned fetch. The only seam of its kind in Bridge: no
+	// TCP-mocking harness exists for dfhack.Client (see
+	// TestLookDescriptionDocumentsPendingBuildingMarker's doc comment in
+	// tools_percept_test.go), but places.go's resolveAnchorLive needs a way
+	// to exercise a live map_slice fallback in tests without a real
+	// connection. Always nil on a Bridge built by NewBridge.
+	mapSliceFn func(ctx context.Context, x1, y1, z, x2, y2 int16) (*mapview.Slice, error)
+	// queryFn, when non-nil, replaces Query's real plugin round-trip below
+	// with a canned response — same rationale and shape as mapSliceFn
+	// above. Added so liveDugTileCount's multi-z fort_footprint +
+	// region_scan pipeline (live_state.go) can be exercised end-to-end in
+	// tests without a live connection. Always nil on a Bridge built by
+	// NewBridge.
+	queryFn func(ctx context.Context, name, argsJSON string) ([]byte, error)
 }
 
 func NewBridge(cfgPath string) (*Bridge, error) {
@@ -135,6 +150,9 @@ func (b *Bridge) Mods() *modifications.ModificationOverlay {
 
 // Query forwards a named JSON query to the plugin.
 func (b *Bridge) Query(ctx context.Context, name, argsJSON string) ([]byte, error) {
+	if b != nil && b.queryFn != nil {
+		return b.queryFn(ctx, name, argsJSON)
+	}
 	if !b.Connected() {
 		return nil, fmt.Errorf("plugin not connected")
 	}
@@ -146,6 +164,9 @@ func (b *Bridge) Query(ctx context.Context, name, argsJSON string) ([]byte, erro
 // MapSlice / ColumnProfile implement mapview.SliceProvider over the
 // plugin query channel.
 func (b *Bridge) MapSlice(ctx context.Context, x1, y1, z, x2, y2 int16) (*mapview.Slice, error) {
+	if b != nil && b.mapSliceFn != nil {
+		return b.mapSliceFn(ctx, x1, y1, z, x2, y2)
+	}
 	args := fmt.Sprintf(`{"x1":%d,"y1":%d,"z":%d,"x2":%d,"y2":%d}`, x1, y1, z, x2, y2)
 	raw, err := b.Query(ctx, "map_slice", args)
 	if err != nil {

@@ -102,3 +102,68 @@ func TestCreateBlueprintFromModifications_DugRoomHostingBuilding(t *testing.T) {
 		}
 	}
 }
+
+// TestCreateBlueprintFromRegionScan_SkipsConstructionKeepsRest is the
+// region_scan-sourced sibling of TestCreateBlueprintFromModifications above:
+// it must reproduce CreateBlueprintFromModifications' "only save DUG tiles,
+// skip built walls" filter even though the live region_scan input carries a
+// richer kind vocabulary (floor/stairs/ramp/fortification/smooth/track/
+// construction) than the overlay's binary Dug/not-Dug classification ever
+// did. Every non-construction kind must survive as a dig_type "default"
+// entry at region-relative coordinates; "construction" tiles must be
+// dropped entirely, matching the original behavior for built walls.
+func TestCreateBlueprintFromRegionScan_SkipsConstructionKeepsRest(t *testing.T) {
+	region := modifications.Region{XMin: 10, XMax: 12, YMin: 20, YMax: 22, ZMin: 4, ZMax: 4}
+	tiles := []RegionScanTile{
+		{X: 10, Y: 20, Z: 4, Kind: "floor"},
+		{X: 11, Y: 20, Z: 4, Kind: "stair_down"},
+		{X: 12, Y: 20, Z: 4, Kind: "ramp"},
+		{X: 10, Y: 21, Z: 4, Kind: "fortification"},
+		{X: 11, Y: 21, Z: 4, Kind: "smooth"},
+		{X: 12, Y: 21, Z: 4, Kind: "track"},
+		{X: 10, Y: 22, Z: 4, Kind: "construction"}, // must be dropped
+	}
+
+	bp, err := CreateBlueprintFromRegionScan(tiles, region, "capture1")
+	if err != nil {
+		t.Fatalf("CreateBlueprintFromRegionScan: %v", err)
+	}
+	if len(bp.Digs) != 6 {
+		t.Fatalf("got %d digs, want 6 (construction tile must be skipped): %+v", len(bp.Digs), bp.Digs)
+	}
+	for _, d := range bp.Digs {
+		if d.DigType != "default" {
+			t.Errorf("dig (%d,%d,%d) has dig_type %q, want \"default\" (kind inference is a known gap)", d.X, d.Y, d.Z, d.DigType)
+		}
+	}
+	// Region-relative coordinates: origin is (10,20,4).
+	want := [2]int16{0, 0} // (10,20,4) -> (0,0,0)
+	found := false
+	for _, d := range bp.Digs {
+		if d.X == want[0] && d.Y == want[1] && d.Z == 0 {
+			found = true
+		}
+		if d.X == 0 && d.Y == 2 { // the construction tile's coords must NOT appear
+			t.Errorf("construction tile at region-relative (0,2) leaked into the blueprint")
+		}
+	}
+	if !found {
+		t.Fatalf("expected a dig at region-relative (0,0,0), got %+v", bp.Digs)
+	}
+}
+
+// TestCreateBlueprintFromRegionScan_AllConstructionErrors guards the empty
+// case: a region that's entirely built (no dug tiles at all) must error
+// instead of silently writing a zero-tile blueprint, mirroring
+// CreateBlueprintFromModifications' "no modifications in region" error for
+// its own empty case.
+func TestCreateBlueprintFromRegionScan_AllConstructionErrors(t *testing.T) {
+	region := modifications.Region{XMin: 0, XMax: 1, YMin: 0, YMax: 0, ZMin: 0, ZMax: 0}
+	tiles := []RegionScanTile{
+		{X: 0, Y: 0, Z: 0, Kind: "construction"},
+		{X: 1, Y: 0, Z: 0, Kind: "construction"},
+	}
+	if _, err := CreateBlueprintFromRegionScan(tiles, region, "empty"); err == nil {
+		t.Fatal("expected an error when every scanned tile is a construction")
+	}
+}

@@ -1709,6 +1709,31 @@ bool placeRoomValueFurniture(int16_t x, int16_t y, int16_t z, uint8_t buildType,
             bt = df::building_type::OfferingPlace;
             break;
         case BUILD_TYPE_INSTRUMENT:
+            // Instruments split into two distinct DF item categories that
+            // both map to item_type INSTRUMENT (df.item.xml's
+            // items_other_id/job_item_vector_id enums each carry an
+            // INSTRUMENT entry AND a separate INSTRUMENT_STATIONARY entry):
+            // INSTRUMENT_STATIONARY is buildable furniture (what this
+            // building type needs); plain INSTRUMENT is handheld, carried
+            // and played by musicians from a stockpile, and can never
+            // satisfy this filter. constructWithFilters only validates tile
+            // placement, not filter satisfiability -- without this
+            // pre-check a caravan-bought handheld instrument ACKs SUCCESS
+            // here and only fails much later, live, when DF's own
+            // job-assignment gives up and cancels with a generic "unable to
+            // complete" (no fort-side hint why). Reuses pickFurnitureItem's
+            // existing scan/bad-flags screen as a pure existence check.
+            // MUST pass Ordinary (0), not QUALITY_TIER_ANY (0xFF):
+            // pickFurnitureItem's `q < (int16_t)qualityTier` threshold
+            // comparison has no ANY special case, so passing the ANY
+            // sentinel here would make it reject every real item (quality
+            // only ranges 0-6) and always report "none in stock".
+            if (!pickFurnitureItem(df::item_type::INSTRUMENT, df::items_other_id::INSTRUMENT_STATIONARY,
+                                    false, (uint8_t)df::item_quality::Ordinary)) {
+                error = "no stationary instrument in stock (handheld instruments are not "
+                        "placeable -- performers use them from stockpiles, not this building type)";
+                return false;
+            }
             filters.push_back(makeItemFilter(df::item_type::INSTRUMENT, df::job_item_vector_id::INSTRUMENT_STATIONARY));
             bt = df::building_type::Instrument;
             break;

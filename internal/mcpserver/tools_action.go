@@ -13,6 +13,11 @@ import (
 	"github.com/df-ai/orchestrator/internal/topology"
 )
 
+// connectorLiveRecheckMaxZSpan bounds connectorSuggestion's live map_slice
+// recheck to designations spanning few z-levels — see the SAME-Z LIVE
+// RECHECK doc paragraph on connectorSuggestion itself.
+const connectorLiveRecheckMaxZSpan = 8
+
 // connectorSuggestion checks whether the just-designated rectangle
 // touches any existing open (already-dug) region. Returns "" when it
 // does (or when nothing has been dug yet — no suggestion makes sense
@@ -46,12 +51,39 @@ import (
 // terminating on a wall, an unexplored corner of the rectangle, or a tile
 // with no real path to it — strictly worse than today's occasionally-
 // unhelpful-but-honest region-graph answer, which is always at least a
-// real, reachable tile. A real fix needs a freshness/coverage signal for
-// the region graph itself (e.g. skip the suggestion when total known-open
-// tiles is suspiciously small relative to the fort's history, or gate on
-// time-since-last-FULL_STATE) — not attempted this pass; no such signal
-// is threaded through Bridge/WorldModel today.
-func connectorSuggestion(topo *topology.TopologyOverlay, digs *pendingDigs, x1, y1, z1, x2, y2, z2 int16) string {
+// real, reachable tile.
+//
+// COVERAGE GATE (this pass): right before trusting NearestRegion's
+// answer, total known-open tiles (topo.Counts()) is checked against an
+// absolute floor and against the size of the rectangle just designated.
+// Below either threshold the overlay hasn't classified enough of the map
+// for a NearestRegion answer to mean anything — return "" instead of a
+// coordinate that looks confident and might be a map corner. This does
+// NOT fully close the gap described above: there is still no time-since-
+// last-FULL_STATE signal threaded through Bridge/WorldModel, so a resync
+// that happens to reclassify a large-but-still-wrong area would still
+// pass the gate. It catches the small-overlay shape, which is what the
+// 2026-07-19 incident actually was.
+//
+// SAME-Z LIVE RECHECK (this pass, wave 7): the coverage gate above only
+// ever catches a globally-sparse overlay. It does nothing for the more
+// common case — a well-populated overlay that is merely LOCALLY stale,
+// because the TopologyOverlay is fed solely by the TILE_UPDATE stream
+// (docs/decisions.md, 2026-07-22: demoted from source-of-truth, wiped and
+// rebaselined on every reconnect). A same-z corridor tile dug and ACKed
+// moments ago can read StateUnknown here even though the live game state
+// shows it open — exactly the Iron Quarter incident (fortress/memory/
+// goals.md, 2026-07-22). Before falling through to NearestRegion, `live`
+// (nil-able — a disconnected bridge just skips this step) re-samples the
+// same padded-ring window the stale-overlay scan above already computed,
+// via the same map_slice channel `look`/`name_place` already use, and
+// self-heals the overlay if it disagrees — mirroring resolveAnchorLive's
+// established pattern (places.go). Bounded to designations spanning few
+// z-levels (connectorLiveRecheckMaxZSpan): this targets the reported
+// same-z false positive, not tall multi-z stair shafts, which would cost
+// dozens of extra plugin round trips for no benefit and keep today's
+// unchanged coverage-gate/NearestRegion behavior instead.
+func connectorSuggestion(ctx context.Context, live anchorLiveFetcher, topo *topology.TopologyOverlay, digs *pendingDigs, x1, y1, z1, x2, y2, z2 int16) string {
 	rg := topology.BuildRegionGraph(topo)
 	if len(rg.Regions) == 0 {
 		return ""
@@ -96,7 +128,41 @@ func connectorSuggestion(topo *topology.TopologyOverlay, digs *pendingDigs, x1, 
 			}
 		}
 	}
+	// Live recheck — see the SAME-Z LIVE RECHECK doc paragraph above. Only
+	// attempted when the swept z-range is small and a live fetcher is
+	// available; any error, nil slice, or all-solid result falls through
+	// UNCHANGED to the coverage-gate/NearestRegion path below — this step
+	// only ever short-circuits to "connected", never to "disconnected".
+	if live != nil && int(z2-z1+1) <= connectorLiveRecheckMaxZSpan {
+		for z := z1; z <= z2; z++ {
+			slice, err := live.MapSlice(ctx, x1-1, y1-1, z, x2+1, y2+1)
+			if err != nil || slice == nil {
+				continue
+			}
+			for _, row := range slice.Rows {
+				for i := 0; i < len(row); i++ {
+					if state, ok := glyphTileState(row[i]); ok && state == topology.StateOpen {
+						seedOverlayFromSlice(topo, slice)
+						return "" // live data shows an open neighbor the overlay hadn't caught up on
+					}
+				}
+			}
+		}
+	}
+
 	centerX, centerY, centerZ := (x1+x2)/2, (y1+y2)/2, z1
+
+	// Coverage gate — see the COVERAGE GATE doc paragraph above. A
+	// NearestRegion answer is only as good as the overlay's actual
+	// known-open coverage; suppress it rather than trust a coordinate
+	// built from too little data.
+	const minKnownOpenTiles = 20
+	openCount, _, _ := topo.Counts()
+	rectTiles := uint32(x2-x1+1) * uint32(y2-y1+1) * uint32(z2-z1+1)
+	if openCount < minKnownOpenTiles || openCount < rectTiles {
+		return ""
+	}
+
 	_, target, _, ok := rg.NearestRegion(topology.Coord{X: centerX, Y: centerY, Z: centerZ})
 	if !ok {
 		return ""
@@ -247,6 +313,37 @@ func digTypeFromName(s string) (uint8, error) {
 		return 0, fmt.Errorf("remove_ramp is not on the wire protocol yet (no tile_dig_designation value for ramp/stair removal is exposed) — this blueprint tile is reported as failed, not silently skipped")
 	}
 	return 0, fmt.Errorf("unknown dig type %q (default|stairs|channel|ramp|upstair|downstair|updown_stair|down_stair|up_stair|remove_ramp)", s)
+}
+
+// isFlatDigType reports whether a wire DigType only ever carves the single Z
+// it's designated on. Everything is flat except the three stair-family
+// types (UpStair/DownStair/UpDownStair) — CommandExecutor.SendDigRegion's
+// own doc comment says a Z1!=Z2 stair request legitimately expands into a
+// shaft (UpStair at the bottom, DownStair at the top, UpDownStair between);
+// DF's own tile_dig_designation has no such multi-Z concept for the rest.
+func isFlatDigType(dt uint8) bool {
+	switch dt {
+	case protocol.DigTypeUpDownStair, protocol.DigTypeUpStair, protocol.DigTypeDownStair:
+		return false
+	default:
+		return true
+	}
+}
+
+// clampFlatDigZ2 enforces designate_dig's single-Z-per-call rule for flat
+// dig types. A Z1!=Z2 request for a flat type used to silently paint every
+// intervening Z level with the same designation — a live incident where a
+// typo painted a 4x5 block through 30 z-levels and two aquifers (see
+// docs/decisions.md). Clamps z2 down to z1 and returns a truthful note
+// describing the clamp; returns z2 unchanged and no note for stair types
+// (which legitimately span a range) or when z1 already equals z2. Clamp-
+// with-note, not hard-reject: consistent with this codebase's truthful-
+// but-forgiving ACK style.
+func clampFlatDigZ2(typeName string, dt uint8, z1, z2 int) (clampedZ2 int, note string) {
+	if isFlatDigType(dt) && z2 != z1 {
+		return z1, fmt.Sprintf("NOTE: type=%s only carves one z-level per call — z2 clamped from %d to %d; repeat this call per level, or use type=stairs to span a z-range in one shaft", typeName, z2, z1)
+	}
+	return z2, ""
 }
 
 var buildTypes = map[string]uint8{
@@ -535,7 +632,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		Z1   int    `json:"z1"`
 		X2   int    `json:"x2"`
 		Y2   int    `json:"y2"`
-		Z2   int    `json:"z2" jsonschema:"for stairs, the ending z (deep!); for flat digs same as z1"`
+		Z2   int    `json:"z2" jsonschema:"for stairs, the ending z (deep!); flat types clamp z2 to z1, one level per call"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "designate_dig",
@@ -548,14 +645,19 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		if err != nil {
 			return withDash(b, ctx, err.Error()), nil, nil
 		}
+		var clampNote string
+		in.Z2, clampNote = clampFlatDigZ2(in.Type, dt, in.Z1, in.Z2)
 		res, err := b.Exec.SendDigRegion(dt, int16(in.X1), int16(in.Y1), int16(in.Z1), int16(in.X2), int16(in.Y2), int16(in.Z2))
 		what := fmt.Sprintf("dig %s (%d,%d,%d)->(%d,%d,%d)", in.Type, in.X1, in.Y1, in.Z1, in.X2, in.Y2, in.Z2)
 		ack := ackText(res, err, what)
+		if clampNote != "" {
+			ack = ack + "\n" + clampNote
+		}
 		// Reachability guidance: only meaningful after a successful dig
 		// designation, and only against a live topology overlay.
 		if err == nil && res != nil && res.Success {
 			if topo := b.Topo(); topo != nil {
-				if suggestion := connectorSuggestion(topo, b.Digs, int16(in.X1), int16(in.Y1), int16(in.Z1), int16(in.X2), int16(in.Y2), int16(in.Z2)); suggestion != "" {
+				if suggestion := connectorSuggestion(ctx, b, topo, b.Digs, int16(in.X1), int16(in.Y1), int16(in.Z1), int16(in.X2), int16(in.Y2), int16(in.Z2)); suggestion != "" {
 					ack = ack + "\n" + suggestion
 				}
 			}
@@ -815,10 +917,23 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		}
 		queued := 0
 		var lastErr string
+		// lastOccupancy carries the plugin's truthful post-add queue-slot
+		// note (e.g. "(queue now 7/10)", work_orders.cpp queueOccupancyNote)
+		// through to the final ACK — a SUCCESS result now legitimately
+		// carries a non-empty res.ErrorMsg for this occupancy text, so the
+		// per-iteration success check below must key on res.Success alone,
+		// NOT res.ErrorMsg == "" (that stricter check used to be harmless
+		// when success always left ErrorMsg empty, but would now misread
+		// every real success as the failure branch and abort the loop after
+		// just one queued job).
+		var lastOccupancy string
 		for i := 0; i < count; i++ {
 			res, err := b.Exec.SendQueueJob(int16(in.X), int16(in.Y), int16(in.Z), ot, wireName, in.Material, in.Subtype)
-			if err == nil && res != nil && res.Success && res.ErrorMsg == "" {
+			if err == nil && res != nil && res.Success {
 				queued++
+				if res.ErrorMsg != "" {
+					lastOccupancy = res.ErrorMsg
+				}
 				continue
 			}
 			// resultDetail (not ackText) here: the switch below already adds
@@ -830,6 +945,9 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		what := fmt.Sprintf("queue %dx %s job at (%d,%d,%d)", count, label, in.X, in.Y, in.Z)
 		switch {
 		case queued == count:
+			if lastOccupancy != "" {
+				return withDash(b, ctx, fmt.Sprintf("SUCCESS: %s (%d/%d queued) %s", what, queued, count, lastOccupancy)), nil, nil
+			}
 			return withDash(b, ctx, fmt.Sprintf("SUCCESS: %s (%d/%d queued)", what, queued, count)), nil, nil
 		case queued > 0:
 			return withDash(b, ctx, fmt.Sprintf("PARTIAL: %s — %d/%d queued, then: %s", what, queued, count, lastErr)), nil, nil
@@ -1190,18 +1308,27 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "save_blueprint",
-		Description: "Capture the dig modifications this session made inside a 3D region as a named blueprint CSV under blueprints/ — design a pod once, capture it, re-stamp it elsewhere with apply_blueprint. Only tiles this session actually DUG are captured (built walls/floors, smoothing, etc are not); every captured tile is recorded as dig_type 'default' today (inferring stairs/ramps/channels from tile shape is a known gap), so re-designate those by hand after re-applying if the source pod had any.",
+		Description: "Capture the currently carved/modified tiles inside a 3D region as a named blueprint CSV under blueprints/ (a live map scan, not scoped to this session) — design a pod once, capture it, re-stamp it elsewhere with apply_blueprint. Built walls/floors (constructions) are not captured; every captured tile is recorded as dig_type 'default' today (inferring stairs/ramps/channels from tile shape is a known gap), so re-designate those by hand after re-applying if the source pod had any.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in saveBpIn) (*mcp.CallToolResult, any, error) {
-		if b == nil || b.WM == nil || b.WM.Observed.Modifications == nil {
-			return TextResult("NOT CONNECTED: start DF, then run `ai-connect` in the DFHack console — no modification history to capture yet."), nil, nil
+		if b == nil {
+			return TextResult("NOT CONNECTED: start DF, then run `ai-connect` in the DFHack console."), nil, nil
 		}
 		region := normalizeRegion(int16(in.X1), int16(in.Y1), int16(in.Z1), int16(in.X2), int16(in.Y2), int16(in.Z2))
-		count, path, err := saveBlueprint(b, in.Name, region)
+		count, path, err := saveBlueprint(ctx, b, in.Name, region)
 		if err != nil {
 			return withDash(b, ctx, fmt.Sprintf("save_blueprint %q failed: %v", in.Name, err)), nil, nil
 		}
 		return withDash(b, ctx, fmt.Sprintf("captured blueprint %q: %d tiles written to %s — re-apply with apply_blueprint{name:%q, origin_x, origin_y, origin_z}", in.Name, count, path, in.Name)), nil, nil
 	})
+
+	// itemClasses is the curated item_class vocabulary shared by
+	// bring_goods_to_depot and unmark_trade_goods — "" and "any" both map
+	// to protocol.ItemClassAny (no class gate, filters alone decide).
+	itemClasses := map[string]uint8{
+		"":       protocol.ItemClassAny,
+		"any":    protocol.ItemClassAny,
+		"crafts": protocol.ItemClassCrafts,
+	}
 
 	type bringGoodsIn struct {
 		X             int    `json:"x" jsonschema:"trade depot tile (any tile of its footprint)"`
@@ -1209,12 +1336,13 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		Z             int    `json:"z"`
 		ItemType      string `json:"item_type,omitempty" jsonschema:"optional substring filter against the DFHack item_type enum name (e.g. CRAFTS, WEAPON) — omit to match any type"`
 		Material      string `json:"material,omitempty" jsonschema:"optional case-insensitive substring filter against the item's material name (e.g. silver) — omit to match any material"`
+		ItemClass     string `json:"item_class,omitempty" jsonschema:"any|crafts (figurines/amulets/rings/earrings/crowns/bracelets/scepters/totems) — crafts also reaches INTO bins: item_type/material then filter each bin's CONTENTS instead of the bin itself, and the whole bin is marked if any content matches (never the bin and a content both). Omit for any (bins stay opaque, unchanged behavior)"`
 		MaxCount      int    `json:"max_count" jsonschema:"required cap on how many items to mark — this is a bulk filter-driven action with real consequences, so there is no unlimited sentinel; pass a large number to approximate one"`
 		MaxTotalValue int    `json:"max_total_value,omitempty" jsonschema:"optional cap on the running total estimated value of marked items; omit or <=0 for no cap"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "bring_goods_to_depot",
-		Description: "Mark up to max_count free fort items (filtered by item_type/material substrings, not by item ID) for hauling to the built trade depot at (x,y,z) — DF's own hauling AI then carries them, same as any stockpile-hauling job. Does not reach into containers/creature inventories, and does not execute the actual trade exchange with the caravan — that commit has no safe non-viewscreen API and stays a human-in-the-client action. See caravan_status/depot_goods for read-side state.",
+		Description: "Mark up to max_count free fort items (filtered by item_type/material substrings and/or an item_class bucket, not by item ID) for hauling to the built trade depot at (x,y,z) — DF's own hauling AI then carries them, same as any stockpile-hauling job. Without item_class, does not reach into containers/creature inventories. Does not execute the actual trade exchange with the caravan — that commit has no safe non-viewscreen API and stays a human-in-the-client action. See caravan_status/depot_goods for read-side state, unmark_trade_goods to undo.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in bringGoodsIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -1222,8 +1350,59 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		if in.MaxCount < 1 {
 			return withDash(b, ctx, "bring_goods_to_depot requires max_count >= 1"), nil, nil
 		}
-		res, err := b.Exec.SendBringGoodsToDepot(int16(in.X), int16(in.Y), int16(in.Z), in.ItemType, in.Material, int32(in.MaxCount), int64(in.MaxTotalValue))
+		itemClass, ok := itemClasses[strings.ToLower(in.ItemClass)]
+		if !ok {
+			return withDash(b, ctx, fmt.Sprintf("unknown item_class %q (any|crafts)", in.ItemClass)), nil, nil
+		}
+		res, err := b.Exec.SendBringGoodsToDepot(int16(in.X), int16(in.Y), int16(in.Z), in.ItemType, in.Material, itemClass, int32(in.MaxCount), int64(in.MaxTotalValue))
 		what := fmt.Sprintf("bring goods to depot (%d,%d,%d)", in.X, in.Y, in.Z)
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
+	})
+
+	type unmarkTradeGoodsIn struct {
+		X         int    `json:"x" jsonschema:"trade depot tile (any tile of its footprint)"`
+		Y         int    `json:"y"`
+		Z         int    `json:"z"`
+		ItemType  string `json:"item_type,omitempty" jsonschema:"optional substring filter against the DFHack item_type enum name — omit to match any type"`
+		Material  string `json:"material,omitempty" jsonschema:"optional case-insensitive substring filter against the item's material name — omit to match any material"`
+		ItemClass string `json:"item_class,omitempty" jsonschema:"any|crafts — same bucket bring_goods_to_depot uses"`
+		MaxCount  int    `json:"max_count" jsonschema:"required cap on how many items to release — no unlimited sentinel; pass a large number to approximate one"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "unmark_trade_goods",
+		Description: "Reverse bring_goods_to_depot's marking at the trade depot at (x,y,z) — same item_type/material/item_class filter surface. A still-pending hauling job is cancelled outright; an already-staged item is returned to ordinary fort stock. Never touches merchant-owned (caravan) goods. See depot_goods for current staged/pending state.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in unmarkTradeGoodsIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		if in.MaxCount < 1 {
+			return withDash(b, ctx, "unmark_trade_goods requires max_count >= 1"), nil, nil
+		}
+		itemClass, ok := itemClasses[strings.ToLower(in.ItemClass)]
+		if !ok {
+			return withDash(b, ctx, fmt.Sprintf("unknown item_class %q (any|crafts)", in.ItemClass)), nil, nil
+		}
+		res, err := b.Exec.SendUnmarkTradeGoods(int16(in.X), int16(in.Y), int16(in.Z), in.ItemType, in.Material, itemClass, int32(in.MaxCount))
+		what := fmt.Sprintf("unmark trade goods at depot (%d,%d,%d)", in.X, in.Y, in.Z)
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
+	})
+
+	type setDepotTradeFlagsIn struct {
+		X               int  `json:"x" jsonschema:"trade depot tile (any tile of its footprint)"`
+		Y               int  `json:"y"`
+		Z               int  `json:"z"`
+		TraderRequested bool `json:"trader_requested" jsonschema:"whether the depot's trader_requested flag is set — the WHOLE desired final state, not a delta; read the current value from caravan_status first. Clearing this (true to false) also cancels any pending TradeAtDepot job at the depot"`
+		AnyoneCanTrade  bool `json:"anyone_can_trade" jsonschema:"whether the depot's anyone_can_trade flag is set — same whole-state convention as trader_requested"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "set_depot_trade_flags",
+		Description: "Write the trade depot's trader_requested/anyone_can_trade bitfield directly at (x,y,z) — the same direct write DFHack's own caravan.lua uses. Both fields must be submitted as the whole desired final state, not a delta; check caravan_status first. Clearing trader_requested cancels any pending TradeAtDepot job at the depot, mirroring DFHack's own 'leave' behavior.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in setDepotTradeFlagsIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		res, err := b.Exec.SendSetDepotTradeFlags(int16(in.X), int16(in.Y), int16(in.Z), in.TraderRequested, in.AnyoneCanTrade)
+		what := fmt.Sprintf("set depot trade flags at (%d,%d,%d)", in.X, in.Y, in.Z)
 		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 

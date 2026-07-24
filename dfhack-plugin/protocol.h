@@ -127,6 +127,19 @@ constexpr uint8_t COMMAND_TYPE_CREATE_WORK_DETAIL   = 0x22;
 // (internal/protocol/message.go BringGoodsToDepotDesignation) for the wire
 // layout. Executing an actual trade (the Offer/Trade commit) has no safe
 // non-viewscreen API and is deliberately NOT implemented.
+//
+// Trade-pack wave (2026-07 papercuts pass): the payload gained an ALWAYS-
+// appended trailing [1:ItemClass] byte (an ITEM_CLASS_* constant below) --
+// a payload ending before it is present decodes as ITEM_CLASS_ANY, same
+// EOF-tolerant backward-compat rule as QUEUE_JOB's Material/Subtype tails.
+// ItemClass != ITEM_CLASS_ANY additionally makes the top-level scan REACH
+// INTO bins/food-storage containers: when any content matches
+// ItemClass+ItemTypeFilter+MaterialFilter (filters apply to the CONTENT,
+// not the bin's own type/material), the WHOLE BIN is marked (vanilla
+// container-hauling behavior, mirrors DFHack's own movegoods.lua
+// is_container/markForTrade precedent) -- never both the bin and one of
+// its contents individually. ItemClass == ITEM_CLASS_ANY (the default)
+// leaves the original bins-are-opaque behavior untouched.
 constexpr uint8_t COMMAND_TYPE_BRING_GOODS_TO_DEPOT = 0x23;
 
 // COMMAND_TYPE_APPOINT_POSITION fills (or replaces the holder of) one
@@ -234,6 +247,55 @@ constexpr uint8_t BOOKKEEPER_PRECISION_ALL_ACCURATE  = 0x04;
 //     HasFrequency gate each edit independently; at least one must be set.
 constexpr uint8_t COMMAND_TYPE_CANCEL_ORDER = 0x29;
 constexpr uint8_t COMMAND_TYPE_EDIT_ORDER   = 0x2A;
+
+// ITEM_CLASS_* -- BRING_GOODS_TO_DEPOT's trailing ItemClass byte and
+// UNMARK_TRADE_GOODS's ItemClass field share this curated vocabulary.
+// ITEM_CLASS_ANY (0x00, the default) applies no class gate at all --
+// ItemTypeFilter/MaterialFilter alone decide, exactly as today.
+// ITEM_CLASS_CRAFTS mirrors job_type::MakeCrafts's own possible_item list
+// (df.job.xml: FIGURINE/AMULET/RING/EARRING/CROWN/BRACELET/SCEPTER) plus
+// TOTEM (job_type::MakeTotem -- a separate job producing the same kind of
+// small trinket/finished good, folded into the same trade bucket) -- DF
+// 53.15 has no top-level item_type::CRAFTS value at all, so this bucket is
+// the only way to select "finished goods" as a class rather than a single
+// item_type substring. See trade.cpp's itemClassMatches for the exact set.
+constexpr uint8_t ITEM_CLASS_ANY    = 0x00;
+constexpr uint8_t ITEM_CLASS_CRAFTS = 0x01;
+
+// COMMAND_TYPE_UNMARK_TRADE_GOODS reverses bring_goods_to_depot's marking
+// at the trade depot at (X,Y,Z), filtered by the same ItemTypeFilter/
+// MaterialFilter/ItemClass surface (no MaxTotalValue -- there is nothing to
+// cap when releasing goods). Two populations, both scanned up to MaxCount
+// total matches: a PENDING item (a queued BringItemToDepot job that hasn't
+// arrived yet) is released via DFHack's own Job::removeJob on that job --
+// the exact primitive scripts/internal/caravan/movegoods.lua's own unmark
+// (onDismiss) uses; an ALREADY-STAGED item (arrived, sitting in the
+// depot's contained_items with use_mode==TEMP) is released by clearing its
+// flags.bits.in_building -- movegoods.lua's own unmark for that case.
+// SAFETY INVARIANT: never touches an item with flags.bits.trader==true
+// (merchant stock is never ours to unmark). See trade.cpp's
+// applyUnmarkTradeGoods for the exact sequence, and queries.cpp's
+// handleDepotGoods for the companion fix (its staged view now also checks
+// flags.bits.in_building, since no DFHack API removes the stale
+// buildingitemst entry an unmark leaves behind).
+constexpr uint8_t COMMAND_TYPE_UNMARK_TRADE_GOODS = 0x2B;
+
+// COMMAND_TYPE_SET_DEPOT_TRADE_FLAGS writes building_tradedepotst.
+// trade_flags (trader_requested / anyone_can_trade) directly at the depot
+// (X,Y,Z) -- a bare 2-bit bitfield with no validation logic anywhere in the
+// DFHack codebase (building_tradedepot_flag.h, df.building.xml:1683), and
+// DFHack's own scripts/caravan.lua:108 performs the identical direct write.
+// Payload: [4:cmdID][1:cmdType][2:X][2:Y][2:Z]
+//          [1:TraderRequested][1:AnyoneCanTrade]
+// Both booleans are the WHOLE desired final state, not a delta -- the
+// caller reads current values via caravan_status first and submits the
+// complete pair; simpler and more truthful than an unchanged/true/false
+// tri-state encoding. TraderRequested transitioning true->false ALSO
+// cancels any pending TradeAtDepot job at this depot (job_type::
+// TradeAtDepot), mirroring caravan.lua's own 'leave' command, which pairs
+// the identical flag clear with the identical job cancellation -- see
+// trade.cpp's applySetDepotTradeFlags for the exact sequence.
+constexpr uint8_t COMMAND_TYPE_SET_DEPOT_TRADE_FLAGS = 0x2C;
 
 // Location types -- DF-AI's own wire values for df::abstract_building_type's
 // INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL/HOSPITAL. A Location is created FROM an

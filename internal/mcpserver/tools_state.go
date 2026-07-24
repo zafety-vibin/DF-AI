@@ -107,6 +107,20 @@ func renderBuildings(raw []byte) string {
 // servings actually on hand). For item types that don't stack (structs
 // where DF's stack_size concept doesn't apply), the plugin reports
 // Units==Count — see queries.cpp's itemStackUnits.
+//
+// Containers/Empty are only present (queries.cpp only emits them) when this
+// (item_type, material) key has at least one storage-vessel item counted
+// among Count — BARREL/BUCKET/BIN/BAG always qualify, plus any TOOL whose
+// itemdef declares the FOOD_STORAGE tool_use. Empty is the subset with no
+// CONTAINS_ITEM general_ref AND not flags.bits.in_job (see queries.cpp's
+// handleStockpileInventory doc comment for why job-reserved is folded into
+// "not empty" too). This is the fix for a live, twice-repeated friction:
+// "stocks shows 15 barrels" said nothing about whether ANY were free to
+// hold a new batch, and brewing kept getting cancelled ("needs empty food
+// storage item") against a pile that was invisibly all full. Containers
+// can be LESS than Count for TOOL (that key aggregates every tool of the
+// material, picks included, not just food-storage pots) — see renderStocks
+// for how that's rendered honestly.
 type stockItem struct {
 	ItemType   string `json:"item_type"`
 	Material   string `json:"material"`
@@ -115,6 +129,26 @@ type stockItem struct {
 	Units      int    `json:"units,omitempty"`
 	InUseUnits int    `json:"in_use_units,omitempty"`
 	Economic   bool   `json:"economic,omitempty"`
+	Containers int    `json:"containers,omitempty"`
+	Empty      int    `json:"empty,omitempty"`
+}
+
+// formatContainerNote renders the Containers/Empty pair as a terse suffix:
+// "(N empty)" when every counted item of this key is a vessel (the common
+// case: BARREL/BUCKET/BIN/BAG), or the more explicit "(N containers, M
+// empty)" when the vessel subset is smaller than the total count (TOOL,
+// where non-vessel subtypes like picks share the same material key) — never
+// silently implying "20 total, 1 empty" when only 2 of the 20 were even
+// containers to begin with. Empty string when Containers is 0 (not a
+// container-bearing key at all).
+func formatContainerNote(containers, empty, total int) string {
+	if containers <= 0 {
+		return ""
+	}
+	if containers >= total {
+		return fmt.Sprintf(" (%d empty)", empty)
+	}
+	return fmt.Sprintf(" (%d containers, %d empty)", containers, empty)
 }
 
 // stockQuality is one (item_type, quality tier) tally from the plugin's
@@ -277,7 +311,8 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 					inUse = fmt.Sprintf(" (+%d built-in)", it.InUse)
 				}
 			}
-			fmt.Fprintf(&sb, "- %s: %s %s%s%s\n", it.ItemType, it.Material, countStr, econ, inUse)
+			containerNote := formatContainerNote(it.Containers, it.Empty, it.Count)
+			fmt.Fprintf(&sb, "- %s: %s %s%s%s%s\n", it.ItemType, it.Material, countStr, econ, inUse, containerNote)
 		}
 		// Quality and subtype are each tallied per item_type, not per
 		// material, so both print once per type below the material entries
@@ -303,6 +338,8 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 		inUse      int
 		inUseUnits int
 		economic   int
+		containers int
+		empty      int
 		materials  []stockItem
 	}
 	order := make([]string, 0)
@@ -321,6 +358,8 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 		if it.Economic {
 			agg.economic += it.Count
 		}
+		agg.containers += it.Containers
+		agg.empty += it.Empty
 		agg.materials = append(agg.materials, it)
 	}
 	var sb strings.Builder
@@ -364,8 +403,9 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 		if qs, ok := qualityByType[t]; ok {
 			qualityNote = fmt.Sprintf(" [%s]", formatQuality(qs))
 		}
-		fmt.Fprintf(&sb, "- %s: %d total%s across %d material%s%s%s%s; top: %s\n",
-			t, agg.total, unitsNote, len(agg.materials), plural(len(agg.materials)), econNote, inUseNote, qualityNote, strings.Join(tops, ", "))
+		containerNote := formatContainerNote(agg.containers, agg.empty, agg.total)
+		fmt.Fprintf(&sb, "- %s: %d total%s%s across %d material%s%s%s%s; top: %s\n",
+			t, agg.total, unitsNote, containerNote, len(agg.materials), plural(len(agg.materials)), econNote, inUseNote, qualityNote, strings.Join(tops, ", "))
 	}
 	return sb.String()
 }
@@ -388,6 +428,16 @@ type managerOrder struct {
 	Frequency        string `json:"frequency"`         // df::workquota_frequency_type key; "OneTime" for a plain one-off order
 	Validated        bool   `json:"validated"`
 	Active           bool   `json:"active"`
+	// JobsInProgress/WorkshopAssigned (added task C3, 2026-07-22): the
+	// plugin force-validates every order at creation (work_orders.cpp), so
+	// Validated alone never distinguishes a dispatched order from one
+	// still sitting in the manager's queue — that binary ladder rendered
+	// every non-active order as "queued" forever, observed live for a
+	// game-week. These come from df::job::order_id back-references and
+	// manager_order::workshop_id (queries.cpp handleManagerOrders) and
+	// give real progression instead.
+	JobsInProgress   int  `json:"jobs_in_progress"`
+	WorkshopAssigned bool `json:"workshop_assigned"`
 }
 
 // renderManagerOrders renders the manager_orders response compactly. Does
@@ -409,11 +459,24 @@ func renderManagerOrders(raw []byte) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%d manager orders:\n", len(resp.Orders))
 	for _, o := range resp.Orders {
-		status := "queued, not yet dispatched"
-		if o.Active {
-			status = "ACTIVE"
-		} else if !o.Validated {
+		// Status ladder (task C3): validated is always true (plugin
+		// force-sets it at creation) so it only ever demotes to "invalid"
+		// on a future DF version where that stops holding. Real
+		// progression is jobs_in_progress (a worker is actually on it, or
+		// DF's own active flag agrees) ranking above workshop_assigned
+		// (manager picked a workshop, no worker yet) above the plain
+		// queued default.
+		status := "queued, awaiting manager dispatch"
+		switch {
+		case !o.Validated:
 			status = "invalid"
+		case o.Active || o.JobsInProgress > 0:
+			status = "in progress"
+			if o.JobsInProgress > 0 {
+				status = fmt.Sprintf("in progress (%d job%s)", o.JobsInProgress, plural(o.JobsInProgress))
+			}
+		case o.WorkshopAssigned:
+			status = "workshop assigned, awaiting worker"
 		}
 		// mat: only printed when the order actually carries a material
 		// selector — most job types (PrepareMeal, ConstructBlocks' generic
@@ -1175,14 +1238,15 @@ type pendingEventEntry struct {
 // Distinct from depotGoodsDepotInfo (depot_goods' depot section), which
 // assumes a depot already exists and never reports Exists=false.
 type caravanDepotStatus struct {
-	Exists          bool `json:"exists"`
-	X               int  `json:"x"`
-	Y               int  `json:"y"`
-	Z               int  `json:"z"`
-	Built           bool `json:"built"`
-	Accessible      bool `json:"accessible"`
-	TraderRequested bool `json:"trader_requested"`
-	AnyoneCanTrade  bool `json:"anyone_can_trade"`
+	Exists           bool `json:"exists"`
+	X                int  `json:"x"`
+	Y                int  `json:"y"`
+	Z                int  `json:"z"`
+	Built            bool `json:"built"`
+	Accessible       bool `json:"accessible"`
+	WalkableFromEdge bool `json:"walkable_from_edge"`
+	TraderRequested  bool `json:"trader_requested"`
+	AnyoneCanTrade   bool `json:"anyone_can_trade"`
 }
 
 // caravanFlagSummary joins a caravan's active plot_merchant_flag bits into a
@@ -1262,9 +1326,16 @@ func renderCaravanStatus(raw []byte) string {
 	}
 
 	if resp.Depot.Exists {
-		fmt.Fprintf(&sb, "Depot at (%d,%d,%d): built=%v accessible=%v trader_requested=%v anyone_can_trade=%v\n",
+		fmt.Fprintf(&sb, "Depot at (%d,%d,%d): built=%v accessible=%v walkable_from_edge=%v trader_requested=%v anyone_can_trade=%v\n",
 			resp.Depot.X, resp.Depot.Y, resp.Depot.Z, resp.Depot.Built, resp.Depot.Accessible,
-			resp.Depot.TraderRequested, resp.Depot.AnyoneCanTrade)
+			resp.Depot.WalkableFromEdge, resp.Depot.TraderRequested, resp.Depot.AnyoneCanTrade)
+		if !resp.Depot.Accessible {
+			if resp.Depot.WalkableFromEdge {
+				sb.WriteString("  access diagnostic: same walkability region as a map edge tile, but native accessible=false — likely a wagon-corridor WIDTH chokepoint (a narrow 1-2 tile gap), not a full blockage; inspect the known wagon route with look/cross_section (walkable_from_edge is a cheap per-unit check, not a wagon-width one).\n")
+			} else {
+				sb.WriteString("  access diagnostic: NOT in the same walkability region as any map edge tile — the depot looks topologically cut off entirely (a real wall/dig problem), not merely wagon-width-limited.\n")
+			}
+		}
 	} else {
 		sb.WriteString("No trade depot built yet.\n")
 	}
@@ -1315,23 +1386,165 @@ func renderDepotGoodsAgg(label string, entries []depotGoodsAggEntry) string {
 }
 
 // renderDepotGoods renders the depot_goods response: what's physically
-// staged at the depot (use_mode TEMP contained_items) versus what's already
-// marked and being hauled there but hasn't arrived (pending BringItemToDepot
-// jobs) — the two states a model needs to distinguish before deciding
-// whether to mark more goods with bring_goods_to_depot.
+// staged at the depot (use_mode TEMP contained_items), split into OUR own
+// marked-for-trade goods versus the merchants' own import inventory
+// (discriminated by item->flags.bits.trader — never set on fort goods
+// before an actual trade commits), plus what's already marked and being
+// hauled to the depot but hasn't arrived yet (pending BringItemToDepot
+// jobs, always ours — merchant stock never gets a hauling job) — the three
+// states a model needs to distinguish before deciding whether to mark more
+// goods with bring_goods_to_depot.
 func renderDepotGoods(raw []byte) string {
 	var resp struct {
-		Depot   depotGoodsDepotInfo  `json:"depot"`
-		Staged  []depotGoodsAggEntry `json:"staged"`
-		Pending []depotGoodsAggEntry `json:"pending"`
+		Depot        depotGoodsDepotInfo  `json:"depot"`
+		StagedOurs   []depotGoodsAggEntry `json:"staged_ours"`
+		StagedTheirs []depotGoodsAggEntry `json:"staged_theirs"`
+		Pending      []depotGoodsAggEntry `json:"pending"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return fmt.Sprintf("unparseable depot_goods response: %v\nraw: %s", err, capRawJSON(string(raw)))
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Depot at (%d,%d,%d) (built=%v):\n", resp.Depot.X, resp.Depot.Y, resp.Depot.Z, resp.Depot.Built)
-	sb.WriteString(renderDepotGoodsAgg("staged", resp.Staged))
+	sb.WriteString(renderDepotGoodsAgg("staged (ours)", resp.StagedOurs))
+	sb.WriteString(renderDepotGoodsAgg("staged (theirs / merchant goods)", resp.StagedTheirs))
 	sb.WriteString(renderDepotGoodsAgg("pending (hauling, not yet arrived)", resp.Pending))
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// tradeAgreementItemRequest is one specific-item entry from the plugin's
+// trade_agreements query's per-civ specific_item_requests (queries.cpp
+// handleTradeAgreements, df::caravan_state.buy_prices/"requestagreement")
+// — an item this civ has asked the fort to sell it, at its own price bonus.
+// ItemSubtype is -1 ("any subtype") verbatim from DF's own wildcard
+// convention, not remapped.
+type tradeAgreementItemRequest struct {
+	ItemType     string `json:"item_type"`
+	ItemSubtype  int    `json:"item_subtype"`
+	Material     string `json:"material"`
+	PricePercent int    `json:"price_percent"`
+}
+
+// tradeAgreementCategory is one entity_sell_category bucket from
+// trade_agreements' per-civ category_agreement (df::caravan_state.
+// sell_prices/"tradeagreement") — a broad class of the civ's own import
+// goods (e.g. "Weapons", "Cheese") the fort gets a price break buying.
+// Count/min/max cover the (rare) case where a category holds more than one
+// differently-priced resource.
+type tradeAgreementCategory struct {
+	Category   string `json:"category"`
+	Count      int    `json:"count"`
+	MinPercent int    `json:"min_percent"`
+	MaxPercent int    `json:"max_percent"`
+}
+
+// tradeAgreementMeetingEvent is one topic already resolved WITHIN the
+// currently-open liaison meeting (df::meeting_diplomat_info.events) —
+// distinct from and narrower than the standing agreement fields above,
+// which persist across meetings once concluded.
+type tradeAgreementMeetingEvent struct {
+	Type           string `json:"type"`
+	Topic          string `json:"topic"`
+	QuotaTotal     int    `json:"quota_total"`
+	QuotaRemaining int    `json:"quota_remaining"`
+	Year           int    `json:"year"`
+	Ticks          int    `json:"ticks"`
+}
+
+// tradeAgreementCiv is one civ's entry from the plugin's trade_agreements
+// query — every civ with an active caravan_state right now (same scope as
+// caravan_status), never a permanent cross-visit history.
+type tradeAgreementCiv struct {
+	Civ                   string                       `json:"civ"`
+	EntityID              int                          `json:"entity_id"`
+	SpecificItemRequests  []tradeAgreementItemRequest  `json:"specific_item_requests"`
+	CategoryAgreement     []tradeAgreementCategory     `json:"category_agreement"`
+	MeetingActive         bool                         `json:"meeting_active"`
+	TopicsUnderDiscussion []string                     `json:"topics_under_discussion"`
+	Diplomat              string                       `json:"diplomat"`
+	Associate             string                       `json:"associate"`
+	ResolvedThisMeeting   []tradeAgreementMeetingEvent `json:"resolved_this_meeting"`
+}
+
+// renderTradeAgreements renders the trade_agreements response: per-civ
+// standing trade agreements (specific item requests + bulk category price
+// breaks, both independently nullable on the plugin side — an honest
+// "no agreement recorded" when a civ has neither) plus whatever a
+// currently-open liaison meeting has already resolved this visit, labeled
+// explicitly as a draft distinct from the standing agreement above it.
+// Whether an unattended meeting reliably auto-concludes is unverified —
+// this only ever reports what the structures say the instant it's called.
+func renderTradeAgreements(raw []byte) string {
+	var resp struct {
+		Civs []tradeAgreementCiv `json:"civs"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Sprintf("unparseable trade_agreements response: %v\nraw: %s", err, capRawJSON(string(raw)))
+	}
+	if len(resp.Civs) == 0 {
+		return "No civ currently has an active caravan_state — trade_agreements only reads civs visiting right now, not a permanent cross-visit history."
+	}
+	var sb strings.Builder
+	for _, c := range resp.Civs {
+		civ := c.Civ
+		if civ == "" {
+			civ = fmt.Sprintf("entity#%d", c.EntityID)
+		}
+		fmt.Fprintf(&sb, "%s:\n", civ)
+		if len(c.SpecificItemRequests) == 0 && len(c.CategoryAgreement) == 0 {
+			fmt.Fprintf(&sb, "  no agreement recorded with %s\n", civ)
+		} else {
+			if len(c.SpecificItemRequests) == 0 {
+				sb.WriteString("  requested imports: none\n")
+			} else {
+				sb.WriteString("  requested imports (civ wants to buy these from the fort at a price bonus):\n")
+				for _, r := range c.SpecificItemRequests {
+					subtype := "any subtype"
+					if r.ItemSubtype >= 0 {
+						subtype = fmt.Sprintf("subtype %d", r.ItemSubtype)
+					}
+					fmt.Fprintf(&sb, "    %s (%s, %s): %d%% of normal value\n", r.ItemType, subtype, r.Material, r.PricePercent)
+				}
+			}
+			if len(c.CategoryAgreement) == 0 {
+				sb.WriteString("  export price agreement (bulk categories): none\n")
+			} else {
+				sb.WriteString("  export price agreement (bulk categories the fort gets a price break buying):\n")
+				for _, ca := range c.CategoryAgreement {
+					pct := fmt.Sprintf("%d%%", ca.MinPercent)
+					if ca.MinPercent != ca.MaxPercent {
+						pct = fmt.Sprintf("%d%%-%d%%", ca.MinPercent, ca.MaxPercent)
+					}
+					fmt.Fprintf(&sb, "    %s x%d: %s of normal value\n", ca.Category, ca.Count, pct)
+				}
+			}
+		}
+		if c.MeetingActive {
+			sb.WriteString("  liaison meeting currently OPEN (draft, not yet folded into the standing agreement above):\n")
+			if len(c.TopicsUnderDiscussion) > 0 {
+				fmt.Fprintf(&sb, "    topics: %s\n", strings.Join(c.TopicsUnderDiscussion, ", "))
+			}
+			var who []string
+			if c.Diplomat != "" {
+				who = append(who, "diplomat "+c.Diplomat)
+			}
+			if c.Associate != "" {
+				who = append(who, "associate "+c.Associate)
+			}
+			if len(who) > 0 {
+				fmt.Fprintf(&sb, "    %s\n", strings.Join(who, ", "))
+			}
+			if len(c.ResolvedThisMeeting) == 0 {
+				sb.WriteString("    nothing resolved yet this meeting\n")
+			} else {
+				sb.WriteString("    resolved this meeting:\n")
+				for _, ev := range c.ResolvedThisMeeting {
+					fmt.Fprintf(&sb, "      %s (%s) quota %d/%d remaining, year %d tick %d\n",
+						ev.Type, ev.Topic, ev.QuotaRemaining, ev.QuotaTotal, ev.Year, ev.Ticks)
+				}
+			}
+		}
+	}
 	return strings.TrimRight(sb.String(), "\n")
 }
 
@@ -1958,9 +2171,46 @@ func dwarfSummaryLine(d dwarfDetailResp) string {
 		dwarfDisplayName(d), d.ID, deadTag, dwarfCurrentJobLabel(d), dwarfTopSkillLabel(d), len(d.Labors))
 }
 
+// maxIdleNamesListed caps how many idle dwarves' names renderIdleRollup
+// spells out before it falls back to reporting just the count — the
+// fort-planning skill's "visible idle labor" check wants a glanceable
+// line, not a roster dump once half the fort is idle.
+const maxIdleNamesListed = 8
+
+// renderIdleRollup summarizes idle labor across a batch of already-fetched
+// dwarf_detail records as one line, e.g. "idle: 3 of 7 (edzul, thob,
+// adil)". Idle detection reuses dwarfCurrentJobLabel — the exact function
+// dwarf_detail's own "current job: idle" line is built from — so this
+// rollup can never disagree with a follow-up per-dwarf lookup. Dead units
+// are excluded from both the idle count and the denominator (a dead
+// unit's current_job is null too, and would otherwise misreport a death
+// as idle labor going to waste).
+func renderIdleRollup(details []dwarfDetailResp) string {
+	total := 0
+	idleCount := 0
+	var idleNames []string
+	for _, d := range details {
+		if d.Dead {
+			continue
+		}
+		total++
+		if dwarfCurrentJobLabel(d) == "idle" {
+			idleCount++
+			idleNames = append(idleNames, dwarfDisplayName(d))
+		}
+	}
+	if idleCount == 0 || idleCount > maxIdleNamesListed {
+		return fmt.Sprintf("idle: %d of %d\n", idleCount, total)
+	}
+	return fmt.Sprintf("idle: %d of %d (%s)\n", idleCount, total, strings.Join(idleNames, ", "))
+}
+
 // renderDwarvesVerbose fans out one dwarf_detail query per dwarf (capped
-// at maxDwarfList) and renders one summary line each. This is the
-// expensive path — see the dwarves tool's verbose param description.
+// at maxDwarfList), renders one summary line each, and rolls the batch up
+// into a single "idle: N of M" line (see renderIdleRollup) so the caller
+// gets the fort-wide idle-labor picture from this one tool call instead of
+// re-deriving it from the per-dwarf lines. This is the expensive path —
+// see the dwarves tool's verbose param description.
 func renderDwarvesVerbose(ctx context.Context, b *Bridge, dwarves []protocol.EntityInfo) string {
 	if len(dwarves) == 0 {
 		return "0 dwarves."
@@ -1970,23 +2220,28 @@ func renderDwarvesVerbose(ctx context.Context, b *Bridge, dwarves []protocol.Ent
 	if capped > maxDwarfList {
 		capped = maxDwarfList
 	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "%d dwarves (verbose — one dwarf_detail query per dwarf):\n", capped)
+	details := make([]dwarfDetailResp, 0, capped)
+	var lines strings.Builder
 	for i := 0; i < capped; i++ {
 		d := dwarves[i]
 		raw, err := b.Query(ctx, "dwarf_detail", fmt.Sprintf(`{"id":%d}`, d.ID))
 		if err != nil {
-			fmt.Fprintf(&sb, "- id=%d: query failed: %v\n", d.ID, err)
+			fmt.Fprintf(&lines, "- id=%d: query failed: %v\n", d.ID, err)
 			continue
 		}
 		detail, perr := parseDwarfDetail(raw)
 		if perr != nil {
-			fmt.Fprintf(&sb, "- id=%d: unparseable detail: %v\n", d.ID, perr)
+			fmt.Fprintf(&lines, "- id=%d: unparseable detail: %v\n", d.ID, perr)
 			continue
 		}
-		sb.WriteString(dwarfSummaryLine(detail))
-		sb.WriteString("\n")
+		details = append(details, detail)
+		lines.WriteString(dwarfSummaryLine(detail))
+		lines.WriteString("\n")
 	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d dwarves (verbose — one dwarf_detail query per dwarf):\n", capped)
+	sb.WriteString(renderIdleRollup(details))
+	sb.WriteString(lines.String())
 	if n > capped {
 		fmt.Fprintf(&sb, "... and %d more not queried (verbose caps at %d — use dwarf_detail by id for the rest)\n", n-capped, maxDwarfList)
 	}
@@ -2081,7 +2336,7 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 	})
 
 	type dwarvesIn struct {
-		Verbose bool `json:"verbose,omitempty" jsonschema:"when true, render one line per dwarf (name | current job | top skill | labor count) by querying dwarf_detail for every dwarf — verbose issues one query per dwarf (capped at 50), so use it for censuses, not every turn"`
+		Verbose bool `json:"verbose,omitempty" jsonschema:"when true, render one line per dwarf (name | current job | top skill | labor count) plus a fort-wide idle-labor rollup, by querying dwarf_detail for every dwarf — verbose issues one query per dwarf (capped at 50), so use it for censuses, not every turn"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "dwarves",
@@ -2116,7 +2371,7 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "stocks",
-		Description: "Stockpile inventory by item type and material — what the fort actually has. count is free/available stock only (not yet built or installed); in_use is the same item/material already incorporated into a building or construction (a built bed, an installed door, a boulder mortared into a wall) — a positive count is what's actually available to assign or build with. Default view is aggregated (one line per item type, top materials); pass category to narrow the query and see full per-material detail for one type. Item types with any above-Ordinary craftsmanship also show a quality-tier breakdown. category=\"mechanism\" is aliased to the game's actual TRAPPARTS item type.",
+		Description: "Stockpile inventory by item type and material — what the fort actually has. count is free/available stock only (not yet built or installed); in_use is the same item/material already incorporated into a building or construction (a built bed, an installed door, a boulder mortared into a wall) — a positive count is what's actually available to assign or build with. Default view is aggregated (one line per item type, top materials); pass category to narrow the query and see full per-material detail for one type. Item types with any above-Ordinary craftsmanship also show a quality-tier breakdown. Storage vessels (barrels/buckets/bins/bags, plus food-storage tools) also show an empty count: a full barrel can't take a new job even though it counts toward stock. category=\"mechanism\" is aliased to the game's actual TRAPPARTS item type.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in stocksIn) (*mcp.CallToolResult, any, error) {
 		raw, err := b.Query(ctx, "stockpile_inventory", stocksQueryArgs(in.Category))
 		if err != nil {
@@ -2230,7 +2485,7 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "caravan_status",
-		Description: "Active caravans (civ, trade state, days until forced departure, tribute/casualty/hardship/seized/offended flags, trade-session value/mood so far, whether the liaison is actively meeting), scheduled-but-not-yet-arrived caravan/diplomat events, and trade depot readiness (built, accessible, trader_requested, anyone_can_trade). Executing the actual trade exchange stays a human-in-the-client action — see bring_goods_to_depot for what a model can do at a caravan, and depot_goods for what's currently staged.",
+		Description: "Active caravans (civ, trade state, days until forced departure, tribute/casualty/hardship/seized/offended flags, trade-session value/mood so far, whether the liaison is actively meeting), scheduled-but-not-yet-arrived caravan/diplomat events, and trade depot readiness (built, native accessible, the cheap walkable_from_edge access diagnostic — same walkability region as a map edge tile, NOT a wagon-width check; read alongside accessible to localize an access problem — trader_requested, anyone_can_trade). Executing the actual trade exchange stays a human-in-the-client action — see bring_goods_to_depot for what a model can do at a caravan, set_depot_trade_flags to toggle trader_requested/anyone_can_trade, and depot_goods for what's currently staged.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 		raw, err := b.Query(ctx, "caravan_status", "{}")
 		if err != nil {
@@ -2246,7 +2501,7 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "depot_goods",
-		Description: "What's physically staged at the trade depot versus what's already marked for trade and being hauled there but hasn't arrived yet, aggregated by item type + material (not individual item IDs). Auto-targets the first trade depot when x/y/z are omitted.",
+		Description: "What's physically staged at the trade depot — split into our own marked-for-trade goods (staged_ours) versus the merchants' own import inventory (staged_theirs) — versus what's already marked for trade and being hauled there but hasn't arrived yet (pending, always ours), aggregated by item type + material (not individual item IDs). Auto-targets the first trade depot when x/y/z are omitted.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in depotGoodsIn) (*mcp.CallToolResult, any, error) {
 		args := "{}"
 		if in.X != nil && in.Y != nil {
@@ -2261,6 +2516,17 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
 		}
 		return withDash(b, ctx, renderDepotGoods(raw)), nil, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "trade_agreements",
+		Description: "Concluded trade-agreement data per visiting civ: specific items they've requested the fort sell (price bonus), bulk import categories the fort gets a price break buying, plus whatever a currently-open liaison meeting has resolved so far this visit (draft, separate from the standing agreement). Read-only — the meeting and the trade commit itself stay unautomated.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+		raw, err := b.Query(ctx, "trade_agreements", "{}")
+		if err != nil {
+			return withDash(b, ctx, "query failed: "+err.Error()), nil, nil
+		}
+		return withDash(b, ctx, renderTradeAgreements(raw)), nil, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{

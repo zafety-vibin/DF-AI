@@ -71,10 +71,15 @@ func frameStr(f int64) string {
 }
 
 // stepReport builds the post-step summary: sim-frame progress (game time,
-// from sim_status), population delta, new alerts, and repeated warnings.
-// pushed=false means the world model never received a state push after the
-// step completed — the deltas below would then be computed against frozen
-// data, so say so.
+// from sim_status), tile-delta count, population delta, new alerts, and
+// repeated warnings. pushed=false means the world model never received a
+// state push after the step completed — the deltas below would then be
+// computed against frozen data, so say so.
+//
+// "tile deltas this step" diffs Snapshot.TileDeltaCount (before vs after) --
+// a separate counter from EventSeq (ENTITY_UPDATE only, checked by pushed
+// above) so a dead TILE_UPDATE stream is visible even when entity pushes
+// keep arriving normally.
 //
 // beforeAlerts maps an alert ID present BEFORE the step to its RepeatCount
 // at that time (DF report.repeat_count — see worldmodel.Alert). An ID
@@ -98,6 +103,7 @@ func stepReport(ticks int, beforeFrame, afterFrame int64, pushed bool, before, a
 	if !pushed {
 		sb.WriteString("WARNING: no state push received after the step — deltas below may be stale; check the dashboard data age\n")
 	}
+	fmt.Fprintf(&sb, "tile deltas this step: %d\n", after.TileDeltaCount-before.TileDeltaCount)
 	if d := len(after.Entities.Dwarves) - len(before.Entities.Dwarves); d != 0 {
 		fmt.Fprintf(&sb, "dwarf count change: %+d\n", d)
 	}
@@ -291,6 +297,17 @@ func registerControlTools(srv *mcp.Server, b *Bridge) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 		if b == nil || b.Preds == nil {
 			return TextResult("NOT CONNECTED: start DF, then run `ai-connect` in the DFHack console."), nil, nil
+		}
+		// Pre-fetch a live dug-tile count (region_scan over the fort's
+		// current-activity z-level, see liveDugTileCount) and install it on
+		// the world model just for this CheckAll pass, so
+		// HasModifiedAnything/HasShelter can prefer it over the session-delta
+		// Modifications overlay without every predicate's Check(wm) signature
+		// needing to change. Cleared immediately after so a stale count never
+		// leaks into an unrelated later check.
+		if count, source, ok := liveDugTileCount(ctx, b); ok {
+			b.WM.SetLiveDugTiles(count, source)
+			defer b.WM.ClearLiveDugTiles()
 		}
 		return withDash(b, ctx, renderGoals(b.Preds.CheckAll(b.WM))), nil, nil
 	})

@@ -226,6 +226,69 @@ func CreateBlueprintFromModifications(
 	return bp, nil
 }
 
+// RegionScanTile is one tile entry from the plugin's region_scan query
+// (dfhack-plugin/queries.cpp's handleRegionScan) — a live MapExtras scan of
+// the given box, not a session-delta journal entry. Kind names what
+// region_scan found there: "floor" (carved/open passable ground),
+// "stair_up"/"stair_down"/"stair_updown", "ramp", "fortification",
+// "smooth", "track" (carved minecart track), or "construction" (a built
+// wall/floor/etc — see CreateBlueprintFromRegionScan for why that one is
+// excluded from dig blueprints).
+type RegionScanTile struct {
+	X, Y, Z int16
+	Kind    string
+}
+
+// CreateBlueprintFromRegionScan builds a DigBlueprint from a live
+// region_scan instead of the session-delta Modifications overlay
+// CreateBlueprintFromModifications reads — region_scan sees the CURRENT
+// map state regardless of connection history, closing that function's
+// blind spot (a save_blueprint call after a reconnect used to see
+// nothing, since the overlay is wiped+rebaselined on every reconnect and
+// its backing TILE_UPDATE stream empirically delivers nothing anyway).
+// Kind "construction" is skipped to match
+// CreateBlueprintFromModifications' original "only save DUG tiles, skip
+// built walls" filter; every other kind becomes a dig entry. dig_type is
+// always "default" — inferring a specific quickfort dig type (stairs/
+// channel/ramp) from a tile's carved shape is the same unresolved TODO
+// CreateBlueprintFromModifications already carries, not a new gap this
+// function introduces.
+func CreateBlueprintFromRegionScan(
+	tiles []RegionScanTile,
+	region modifications.Region,
+	name string,
+) (*DigBlueprint, error) {
+	bp := &DigBlueprint{
+		Name:   name,
+		Author: "ai",
+		Digs:   make([]DigEntry, 0, len(tiles)),
+	}
+
+	originX, originY, originZ := region.XMin, region.YMin, region.ZMin
+
+	for _, t := range tiles {
+		if t.Kind == "construction" {
+			continue
+		}
+		bp.Digs = append(bp.Digs, DigEntry{
+			X:       t.X - originX,
+			Y:       t.Y - originY,
+			Z:       t.Z - originZ,
+			DigType: "default",
+		})
+	}
+
+	if len(bp.Digs) == 0 {
+		return nil, fmt.Errorf("no dug tiles in region")
+	}
+
+	bp.Width = region.XMax - region.XMin + 1
+	bp.Height = region.YMax - region.YMin + 1
+	bp.Depth = region.ZMax - region.ZMin + 1
+
+	return bp, nil
+}
+
 // parseQuickfortGrid parses community quickfort grid format
 // Format: #dig start(x;y) followed by grid of cells with dig designations
 func parseQuickfortGrid(records [][]string, filename string) (*DigBlueprint, error) {

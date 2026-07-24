@@ -2,6 +2,342 @@
 
 (newest entries on top)
 
+## 2026-07-22 — FORT #6 SESSION 2 (Summer y100 day 100 → day 157+, RESUMED post-deploy)
+
+**LIVE-VERIFY: 10/10.** New DLL loaded clean; tile deltas flow every
+step (10-57/step — the stream is ALIVE this session; why it read dead
+before remains unproven); name_place works ("the Long Street" named);
+save_blueprint captured the comb (112 tiles); ZONE DANCE CONFIRMED
+FOLKLORE (designate→assign instant, zero ticks — five forts of
+stepping between was farm-plot-stage confusion + the old zone_value
+bug); stocks "(N empty)"; queue "(now N/10)"; orders ladder truthful;
+idle rollup; wildlife lens clean empty-state (positive test pending an
+actual animal in view).
+
+**REAL-ROOMS DOCTRINE (overseer challenge) EXECUTED:** 137 hall
+partitioned into hospital | dining | kitchen (stone walls, rock doors
+at y=96); 133 office walled around adil's chair; IRON QUARTER built
+as four 5x5 stone-walled rooms w/ door gaps at z=132 WEST (bilateral
+mirror of the Vault): wood furnace (A), smelter (B), forge (C),
+Jewelers planned for D. Walls-by-subtraction (undug stone + vein
+pillars) — the comb pattern generalized.
+
+**WEALTH ARC (overseer-directed):** struck native platinum x2 +
+magnetite in the quarter digs → charcoal bootstrap → SmeltOre
+INORGANIC:NATIVE_PLATINUM → 8 platinum bars → ConstructStatue order →
+PLATINUM STATUE (verified in stocks, now displayed in the dining
+room). Wealth 7.9k→10.6k. Magnetite x4 smelting behind it. Shell
+crafts x5 by melbil (Bonecarver 13!) for the caravan; bone order
+cancelled truthfully (only vermin bone until fishery yields turtle
+bone). Standing seasonal orders: bed/chair/table/door x4 (chairs/
+tables/doors INORGANIC).
+
+**MIGRANTS +6 (pop 13, day 131):** 3 spare bedrooms assigned same-day
+(zasit/melbil/zefon), musicians+poet to the dorm (tavern band waiting
+for a tavern). Specializations per overseer: zasit→Miners (3rd pick),
+olon→Woodcutters, edóm→Fisherdwarves. BEDROOM DISTRICT gridded per
+overseer: N/S trunk (87-89,93-111) hugging the spine + row streets
+y=93-95/109-111 + 8 new cells roughed + 6-cell east extension —
+24-room capacity, everything ≤~12 tiles from stairs. Stray Dog found
+dead → crypt room digging at (94-97,112-114,133) (east column
+self-pruned by a damp cancel — my own goals-file rule violated by one
+tile; the SE halo is real).
+
+**Days 179-198 — FIRST CARAVAN + WAVE 2 + TAVERN ARC (paused day 198
+mid-arc, overseer break):** Liaison + The Gray Mansion caravan arrived
+(22k imports); trade tools live-tested — caravan_status/depot_goods/
+bring_goods work for LOOSE items but BINS BLOCK CRAFT STAGING (big gap,
+in goals.md with 5 more trade/diplomacy findings). Overseer executed
+the exchange in-client: BOUGHT steel anvil + malachite instrument
+(paid: platinum bars, trade goods, mugs, the 8 rough gems). WAVE 2
+(+6, pop 19): vutok FORGE_ARMOR 7 (→ new Metalworkers detail
+CUSTOM_1), sigun GLASSMAKER 10, lorbam ENCRUSTGEM 10 (jewelers built
+in Iron Quarter room D, gems pending), + siege op + 2 performers.
+All 6 housed in extension cells same-day (5 doors up, beds queued).
+TAVERN: create_location at the dining room ACKed SUCCESS + shows in
+list_locations but overseer's client shows plain meeting hall —
+PHANTOM LOCATION bug (state left intact for engineering). Real tavern
+per overseer: GRAND HALL 12x13 at z=130 EAST (107-118,97-109), dry at
+3 bored corners (NW corner was wet — shifted), 6 patchy aquifer tiles
+inside will self-prune to pillars; satellite stair (116-117,101-102)
+131→130. LEARNING BANKED: flat rect silently ate the pending stair
+designation (warning only guards carved stairs) — overseer caught it;
+rooms-first-stairs-last rule appended to learnings.md. Seasonal
+furniture engine verified (autumn batch fired); goblets reordered
+(sold with the mugs); rock mugs x5 recompleted day 198. Second-row
+bedroom cells + trunk digging; crypt awaiting the dog's burial.
+
+**Days 198-252 — DRAKEHALL, DRINK CLIFF, FIRST IRON ARMOR (winter
+y100 begins):** Caravan departed (bought steel anvil + malachite
+instrument; sold gems/mugs/goods + some platinum bars). THE DRAKEHALL
+built per overseer spec: 12x13 grand tavern at z=130 east
+(107-118,97-109), dry (wet pockets self-pruned outside), satellite
+stair off the 131 street (LEARNING: a flat rect silently ate the
+pending stair designation — rooms-first-stairs-last, banked),
+meeting_hall+tavern location founded CLEAN (single zone — control
+case vs the 137 phantom; overseer to eyeball client), named via
+name_place, SMOOTHING in progress (4 rects split around the carved
+stairs), food stockpile + tables/chairs going in, 8 drink varieties
+stocked. DRINK CLIFF at day 230 (2 wine/19 dwarves — consumption
+outran hand-fed brews): fixed structurally — 6 emergency brews,
+STANDING order drink x10/monthly (first batch verified vs stocks),
+still #2 at 137, two more plump plots at 137 south, 76-shrub autumn
+gather. Wave-2 housing done same-day (6 cells doored+bedded+zoned+
+assigned). FIRST IRON ARMOR: vutok forged a breastplate (verified in
+stocks; magnetite→16 iron bars); helm+gauntlets ordered — kit for
+thíkut (militia seed). Kea stole a rope (starter-teardown argument
+#2). Vault EAST ANNEX digging (104-112,96-108,132) + bins x6 + bins
+x4/seasonal per overseer. check_goals live path verified: modified
+flips [x] first time ever, but shelter UNDERCOUNTS (scan too narrow —
+012 brief updated). Wellbeing day 224: ALL 19 negative stress, oddom
+6/6 blissful.
+
+**RESUME SCRIPT — FORT #6 WILL (paused winter y100 day 258, pop 19,
+zero deaths; written at session end for the next instance):**
+1. Reconnect dance (status→pause→re-query; expect alert-replay
+   backlog — dismiss). Trust dashboard. Read this entry + goals.md.
+2. FINISH THE DRAKEHALL: smoothing (4 rects, stairs excluded) may
+   still be running; place seasonal tables/chairs as they land (west
+   side; center = dance floor); goblets stay stocked; instrument is
+   HANDHELD — stays in stockpile, performers fetch. Consider engrave
+   pass after smooth completes (idle-labor gate per fort-planning).
+3. HOUSE THE LAST THREE: olon(479), zefon(483), edóm(484) still
+   dorm — second-row cells (92-102,89-91)+(92-102,113-115,131) were
+   digging; door+bed+zone+assign each (doors: seasonal x4/season).
+4. ARMOR ARC: breastplate DONE (verified); helm+gauntlets ordered at
+   day 244 — VERIFY vs stocks before trusting; then greaves
+   (MakePants ITEM_PANTS_GREAVES) + boots + shield for thíkut
+   (MELEE 5, militia seed). assign_squad still BROKEN — overseer
+   staffs in-client, or wait for the fix wave.
+5. ECONOMY WATCHES: drink x10/monthly order holds 19 pop (retune at
+   next wave); bins x4 + furniture x4/seasonally standing; Vault EAST
+   ANNEX (104-112,96-108,132) — stockpile category=all over the new
+   floor once dug; charcoal when coal<4; iron 15 bars banked.
+6. SPRING y101 = ELVEN CARAVAN — the live-verify window for wave-7
+   trade fixes (they refuse wood/animal goods; sell stone/gem crafts).
+   Also lorbam (ENCRUSTGEM 10) + Jewelers await rough gems: CutGems
+   then EncrustWithGems on Drakehall furniture (never live-tested!) —
+   the unsold rough gems should have returned to stock post-caravan.
+7. ASK OVERSEER: did the dog get interred in the crypt coffin (dead
+   units invisible to tools)? Is the z=130 Drakehall a REAL tavern in
+   the client (A/B for the 137 phantom)?
+8. LATER ARCS in order: starter teardown (move carpenter/still#1/
+   fishery/kitchen underground; kea thefts keep proving it), mechanic
+   shop + first mechanisms (lane bridge = defense stage 4; NONE built
+   yet), second-row infill as waves land, deep pierce (aquifer #2,
+   z<123 mineral country) when population/labor allow.
+9. ENGINEERING: WAVE 7 SHIPPED SAME NIGHT (investigation + 6 impl
+   lanes, ALL passed review first-try, gate green, NOT deployed).
+   Full ledger: docs/decisions.md 2026-07-22 wave-7 entry; 12-item
+   deploy+live-verify checklist at the top of goals.md — DO THAT
+   FIRST on resume. Highlights the next instance inherits: whole-bin
+   trade staging (item_class=crafts), unmark_trade_goods,
+   set_depot_trade_flags, depot ours/theirs split, trade_agreements
+   diplomacy readout (this autumn's invisible liaison agreement
+   should be READABLE after deploy), phantom-location fix (A/B test
+   ready in the fort), dangerous-wildlife step tripwire, pending-
+   designation overwrite warning, instrument truthful refusal,
+   multi-z shelter counts, connector self-heal. A6 exchange
+   automation: verdict in the 012 brief — stays human, by evidence.
+
+**Tool notes:** connectivity hint no longer map-corner but still
+false-negatives same-z adjacency (reports cross-z tile); a
+damp-cancel wipes its tiles BEFORE cancel_designation can (ACK "No
+designations to cancel" = already self-pruned); crafts don't stock
+under any single category (verify via wealth/unfiltered).
+
+## 2026-07-22 — FORT #6 "LANEHOLD" FOUNDED (world=region13, Spring y100 day 14 →, in progress)
+
+**Days 29-58 — THE PIERCE, THE VAULT, AND THE CARNOTAURUS.** Aquifer
+pierced at the spine days 29-34: stairs 136→133 (two loud damp cancels,
+re-designate each time), 8-tile ring at 135 mined and walled same day
+(mudstone+wood, material=any) — BONE DRY throughout, zero standing
+water ever; region13's soil aquifer recorded LIGHT in learnings.md. §9
+note: catch basin never wet; spine continued straight down 133→131.
+Below-aquifer buildout per overseer direction: z=133 industry level
+(mason shop built, doors/tables/thrones queued), z=132 THE VAULT — 12x13
+hall, 11x8 all-category stockpile placed day 58 — and z=131 the BEDROOM
+LAYER: 10x 2x3 cells in a comb (wall columns between, single door gaps
+onto a 3-wide street), overseer praised the pattern ("really good
+apartment block design" — save_blueprint it once dug). Mineral bonanza
+in the dig: tetrahedrite + LIMONITE + hematite + lignite + gems (citrine,
+carnelian, plume agate, pipe opal, blue jade) — full iron chain possible
+by day 44 (vs Fort #5's day 232). East 133 block CANCELLED: aquifer is
+2 layers (135+134) SE of the spine with a damp halo at 133 — a room
+there would drizzle from its aquifer ceiling forever (§8). Bore-every-
+corner keeps paying.
+
+**Day 48 — CARNOTAURUS.** This world has DINOSAURS. One interrupted
+thob near the entrance (he fled 50 tiles SW); a stray dog fought it and
+was declared missing a week later — Lanehold's first loss, no remains
+to bury yet. Shelter-in-place doctrine executed for real: 6-level
+"Lanehold Interior" burrow painted + set_alert → ALL 7 citizens inside
+within 600 ticks (thíkut yanked off the riverbank mid-cast, "Forbidden
+area" cancel = alert working). Cleared promptly after; live-verifies
+the wave-5 burrow/alert chain end-to-end. GAP LOGGED: wildlife renders
+NO glyph in look — a carnotaurus is invisible to perception; only
+interrupt-cancel alerts betray it. Entrance hardened per overseer:
+walls flanking the door at (105,101)/(105,103) — door is now the only
+crossing in the x=105 column.
+
+**Days 59-100 — WING, GOVERNMENT, PAUSE (session end, summer day 100).**
+BEDROOM WING COMPLETE at z=131: all 10 2x3 cells dug+doored (rock doors)
++bedded+zoned; ALL SEVEN FOUNDERS OWN BEDROOMS (edzul N1, zaneg N2,
+thíkut N3, adil N4, ilral S1, oddom S2, thob S3; N5/S4/S5 furnished
+spares for migrants). Vault EXPANDED to the full 12x13 hall on overseer
+direction (all-category, 100+ items in). 133 industry level: mason +
+craftsdwarf shops built in the north hall (connector corridor was
+MISSING — overseer's client eyes caught it; floating-designation
+lesson re-learned), office zoned+assigned. FIRST GOVERNMENT: adil =
+Manager+Broker (+expedition leader), zaneg = Bookkeeper (nearest_100
+per skill-follows-holder canon). First work orders queued via manager
+path (3 rock pots — the permanent barrel-treadmill fix — + 5 goblets,
+material=rock): VALIDATED but "queued, not yet dispatched" at pause —
+adil buried in Vault-expansion hauling; the office session will come.
+Fishery + kitchen built (137 food quarter forming); refuse pile on
+the surface; second harvest banked (16 plump helmets, 24 plants);
+drinks 16; WOOD 193 logs; hematite 9 + lignite 13 + iron anvil = iron
+chain ready whenever furnaces go up. Wave 1 migrants NOT yet arrived
+by day 100 (overseer: "soon"). Fort paused clean, zero dwarf deaths,
+one dog lost to the carnotaurus.
+
+**Session tool findings (add to engineering queue):** (6)
+save_blueprint "no modifications in region" on a region this session
+demonstrably dug — reads the same broken session tile-delta journal as
+has_modified_anything/dug-tile counters (scope=fort was fixed by
+switching to MAP STATE; save_blueprint needs the same treatment). (7)
+queue_job crafts-class STILL unwired at Craftsdwarfs (MakeTool/
+MakeGoblet refused "not supported at this workshop type") — manager
+order path is canonical, confirmed again. (8) Wildlife invisible in
+look (no creature glyph except '@' dwarves) — carnotaurus threat
+assessment ran blind; only interrupt alerts betray large predators.
+(9) Manager order validation can starve behind hauling for game-WEEKS
+at 7 pop — consider surfacing "manager has not validated yet" state in
+orders output (it reads "queued, not yet dispatched" indefinitely).
+
+**SAME NIGHT — WAVES 6a+6b SHIPPED AND DEPLOYED (ultracode, all
+Sonnet agents, review-gated; investigation adversarially verified).**
+Root causes CONFIRMED and fixed: (1) name_place/save_blueprint/
+check_goals all read session-delta overlays that are reconnect-wiped
+and fed by a TILE_UPDATE stream that empirically delivers nothing —
+migrated to live MAP-STATE (name_place seeds topology from live
+map_slice; save_blueprint + predicates consume a new region_scan
+plugin query); WHY the delta stream is dead remains open — step now
+prints "tile deltas this step: N" to settle it live. (2) ZONE-DANCE
+THEORY REFUTED BY REVIEW (the gate working as designed): the
+implementer's room.extents-at-creation fix was proven a NO-OP by its
+reviewer — constructAbstract already calls checkBuildingTiles(force_
+extents=true) → init_extents, populating identical extents for every
+civzone at creation (Buildings.cpp:842-846; civzones never take the
+checkFreeTiles exclusion branch) — and the fixer verified the trace
+independently and reverted zones.cpp byte-identical. The REAL cause
+of any "no zone at coordinates" friction is OPEN, and the trace
+suggests fresh zones should resolve immediately — next session's
+designate→assign-with-NO-step test is the deciding experiment (the
+dance may be part folklore, part the farm-plot stage-0 case). Also shipped: lens=wildlife ('V' dangerous/'v' tame-
+or-harmless + species/danger footnote — the carnotaurus becomes
+visible; tripwire honestly deferred), flat-dig z-range clamp, orders
+status ladder (in progress / workshop assigned / awaiting dispatch),
+connector-hint honesty gate, stocks empty-container counts, dwarves
+verbose census + idle rollup, queue_job "(queue now N/10)" ACKs, vet
+IPv6 fix. DLL 652,800B DEPLOYED to Steam hack/plugins (DF verified
+closed first). One agent (idle-rollup) died to a network reset after
+finishing its edits — hand-reviewed, test added. All builds/tests/vet
+exit 0 at session close.
+
+**NEXT-SESSION LIVE-VERIFY CHECKLIST (do these before trusting the
+new surfaces):** (1) restart df-mcp fresh (old binary in memory
+otherwise), ai-connect; (2) FIRST STEP: read "tile deltas this step:
+N" — nonzero answers the delivery mystery, zero indicts the plugin
+push path; (3) name_place the Long Street + Lanehold anchor tiles;
+(4) save_blueprint the apartment comb (92,96,131)-(105,108,131);
+(5) designate a throwaway zone then assign_zone IMMEDIATELY, no step;
+(6) look lens=wildlife on the surface — the carnotaurus (if it still
+roams) should paint 'V' with a named footnote; (7) stocks
+category=barrel — expect "(N empty)" split; (8) queue_job anything —
+expect "(queue now N/10)"; (9) orders — pots/goblets should show the
+new ladder (and if adil ever sat, verify pot/goblet counts vs stocks
+per the trust boundary); (10) dwarves verbose=true — census + idle
+line. NOTE: zones created BEFORE this deploy still lack extents (DF
+has likely back-filled the old ones by now, but if an old zone
+misbehaves, that's why).
+
+**IF RESUMING FORT #6:** watch orders (pots/goblets dispatch → verify
+vs stocks per the order trust boundary), migrants (3 spare rooms ready,
+dorm = overflow), autumn caravan (depot built, adil is broker;
+bring_goods_to_depot/caravan_status still never live-tested), pig tail
+plot B growing over summer. NEXT ARCS, in rough order: (a) iron chain
+— wood_furnace + smelter + forge at 133 east street, hematite
+INORGANIC:HEMATITE pinned SmeltOre (proven pattern from Fort #5); (b)
+starter teardown — move still+kitchen+carpenter down into 137/133 and
+seal the surface shops (starter-then-permanent doctrine); (c) defense
+stage 3/4 at the lane mouth (mechanisms need a mechanic workshop —
+none built yet); (d) satellite stair east at z=131→128 for the 5-level
+dry band when housing wave 2 needs it; (e) name places when name_place
+is fixed. Aquifer facts: spine pierce is the ONLY safe soil crossing
+bored so far (1 wet level); SE of spine is 2-layer wet with a damp
+halo at 133 — never dig 133 east of x≈98 south of y≈105.
+
+**Economy day 58:** brewing VERIFIED (wine 4→6, fresh barrels fixed the
+empty-container cancel); 2 farm plots programmed (A: plump all seasons;
+B: pig tail summer/autumn + dimple cup spring/winter — pig tail refuses
+spring, truthful ACK); dining pair at 137 + dining_hall zone; HOSPITAL
+location founded at 137 west (meeting_hall→create_location, 2 beds in;
+NOTE: DF gives animals no hospital care — the dog question answered);
+trade depot built on the north plain; dorm zoned (7 beds); 7 more beds
+in stock for the wing; adil auto-appointed expedition leader.
+
+FIRST PROACTIVE FOUNDING. Fresh 192x192 embark, 7 dwarves, wagon at
+(97,97,138). Terrain read FIRST per doctrine: NW plain (z=138) with a
+RIVER (7/7, surface z=137) running from the north edge, bending west
+across y≈44-63 and exiting west — ~40 tiles NW of the crew at its
+closest (bend ~(70,58)). SE half is highlands. Between them: a z=139
+grass promontory (~x=88-107) split from the east plain by a natural
+SUNKEN LANE at z=138 (floor x=107, ramps both sides, y=100-106). Site
+verdict: geometry language underground, terrain-hugging at the
+threshold — fort dug INTO the promontory via the lane's west wall.
+Named LANEHOLD (name_place tool is broken, see findings — name lives
+here for now).
+
+**Stratigraphy (bore fan, 9 columns incl. all 4 spine corners):** soil
+to ~134; SOIL AQUIFER z=135 only ONE wet level at the spine site (134
+merely damp) — a 1-level pierce, cheaper than Fort #5's two. Dry soil
+138-136. Dry stone 133-131 map-wide; the EAST band (x≈108-112) is dry
+132-128 (5 levels, mineral-rich) — reachable laterally at z=131, no
+second pierce needed. DEEP STONE AQUIFER ~130/127-123 (patchy, 5-6
+levels), dry mineral-rich stone below to 118+. Plan: farming 138 /
+kitchens 137 / staging+future cistern 136 / pierce 135 / industry 133 /
+halls 132 / housing 131 / east cluster 130-128 via satellite stair /
+deep fort 122-118 someday.
+
+**Day 14-18 execution:** spine 2x2 stairs (90-91,101-102) z138→136
+(stopped one above aquifer); Long Street 3-wide (92-105,101-103,z138)
+from lane wall to spine — DUG, fort has its doorway; south cross
+street (95-97,104-110); starter hall W block (88-94,105-109) + first
+farm E block (98-101,105-109) flanking it symmetrically. Miners:
+edzul + thob + adil (3 iron picks in stock; work-details layer used,
+not set_labor). Chop x12 trees → 26 sand pear logs day 15; wagon
+deconstructed. Carpenter + still BUILT on the north grass (starter
+buildings, disposable). Queued: 7 beds, 3 doors (queue full at 10 —
+tables/chairs wait), 2x BREW_DRINK_FROM_PLANT. water_source zone on
+the river bank (64-70,54-56,z138). Embark food is LEAN: 12 drink
+stacks, 6 plump helmets, 30 seeds, meat/fish 3+3.
+
+**Findings/incidents:** (1) name_place returns "no dug/open region"
+on genuinely dug street tiles — BROKEN this fort; overseer says log
+and play on (engineering queue). (2) My own typo passed z2=109 to a
+type=default dig and the tool silently designated the 4x5 block on
+EVERY level 109-138 — punched through both aquifers on paper; caught
+via lens=designations, cleaned with 29 cancel_designation calls.
+Tool-hardening candidate: flat dig types accepting z-ranges is a
+footgun. (3) queue_job reaction path: first call timed out with the
+still's queue empty (transport, not refusal) — verify-then-retry
+worked, brews queued. (4) Brew #1 cancelled "Needs empty food storage
+item" — all 15 embark barrels are full; queue fresh barrels when the
+carpenter's bed run drains. Same as Fort #5's fresh-barrel workaround.
+(5) Plateau is narrow: west slope is ~2 tiles of wall from the spine
+at some rows — west-side rooms at z=138 must stop at x=88.
+
 ## 2026-07-19 — Fort #5, session 3 (Winter y100 day 304 → Spring y101 day 33, PAUSED mid-tavern)
 
 WAVE-5 LIVE-VERIFICATION + the overseer's tavern challenge, ending with

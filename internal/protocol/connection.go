@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 )
 
@@ -58,7 +59,7 @@ func (c *Connection) Connect(host string, port uint16) error {
 	c.state = StateConnecting
 	c.mu.Unlock()
 
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(int(port)))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		c.mu.Lock()

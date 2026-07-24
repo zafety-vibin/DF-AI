@@ -2,6 +2,39 @@
 
 (append-only; never delete)
 
+## Fort #6 (2026-07-22): a flat dig rect silently REPLACES a stair DESIGNATION it overlaps — the warning only guards carved stairs
+
+- Live sequence: designated a 2x2 stairs shaft (131→130), then designated
+  the room rect at 130 overlapping the stair tiles — the stair
+  designation was converted to plain mine with NO warning (the
+  dig-over-stairs warning fires for CARVED stairs only; a
+  designated-not-yet-carved stair is just another pending designation
+  and loses). Overseer caught it in-client.
+- Rule: designate room rects FIRST, stair shafts LAST — or exclude the
+  stair footprint from the room rect. Re-issuing the stairs designation
+  after the fact repairs it cleanly (carved tiles skip, pending tiles
+  re-convert).
+- Tool-hardening candidate: warn when any designation overwrites a
+  pending stair/ramp/channel designation of a different type.
+
+## Fort #6 "Lanehold" (2026-07-22): the region13 soil aquifer is LIGHT — and this pierce was the project's driest
+
+- Inferred per aquifer-piercing §0 from in-dig behavior (embark tag not
+  captured): 2x2 stair carved THROUGH z=135 (aquifer-flagged at all 4
+  corner bores) + all 8 ring tiles mined, and NO standing water ever
+  appeared — 5+ game-days open, zero depth digits, zero wall-job
+  suspends. Worldgen-fixed: treat region13's upper soil aquifer as
+  LIGHT for every future descent at this site.
+- Sequence that worked (single-wet-level variant): shaft frozen at 136 →
+  stairs 136→133 in one call (loud damp cancel once, re-designate, then
+  a SECOND loud cancel appeared for new tile contact — re-designate
+  again) → quarry 133 first (§3) → 8-tile orthogonal ring at 135 → 8
+  constructed walls same day (material=any: mudstone + wood mix).
+- Miners prioritize nearest jobs: the 133 quarry starved the 135 ring
+  dig until the quarry designation was temporarily cancelled — the ring
+  opened one step later. Cancel-competing-digs is a legitimate
+  scheduling lever during a pierce (re-designate after; free).
+
 ## Fort #4 (2026-07-16): a `mine` designation can silently destroy an existing stair's up-component
 
 - Designating `type=mine` over a region that overlaps an already-carved

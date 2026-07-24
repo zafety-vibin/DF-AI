@@ -175,6 +175,28 @@ func TestStepReport(t *testing.T) {
 	}
 }
 
+// TestStepReportTileDeltas locks in the G3 tile-stream-observability fix:
+// stepReport must diff Snapshot.TileDeltaCount (before vs after) and surface
+// it as its own line, independent of the entity-push "pushed" check above --
+// a dead TILE_UPDATE stream must be visible even when ENTITY_UPDATE pushes
+// keep landing normally (pushed=true, tile deltas=0).
+func TestStepReportTileDeltas(t *testing.T) {
+	before := worldmodel.Snapshot{TileDeltaCount: 100}
+	after := worldmodel.Snapshot{TileDeltaCount: 137}
+	out := stepReport(600, 1000, 1600, true, before, after, map[uint32]uint32{}, false, "")
+	if !strings.Contains(out, "tile deltas this step: 37") {
+		t.Fatalf("expected tile-delta line summing the counter delta (37):\n%s", out)
+	}
+
+	// Zero delta (TILE_UPDATE delivered nothing this step) must still render
+	// explicitly, not be omitted.
+	stale := worldmodel.Snapshot{TileDeltaCount: 100}
+	out = stepReport(600, 1000, 1600, true, before, stale, map[uint32]uint32{}, false, "")
+	if !strings.Contains(out, "tile deltas this step: 0") {
+		t.Fatalf("expected explicit zero tile-delta line:\n%s", out)
+	}
+}
+
 // TestStepReportRepeatedWarnings locks in the fix for the silent
 // damp-cancel-blindness bug: DF re-announces a repeated identical
 // cancellation by bumping repeat_count on the SAME alert ID rather than

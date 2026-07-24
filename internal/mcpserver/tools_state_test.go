@@ -340,6 +340,56 @@ func TestRenderStocksSubtypes(t *testing.T) {
 	}
 }
 
+// TestRenderStocksContainers covers the empty-vs-full container visibility
+// fix: "stocks shows 15 barrels" told a caller nothing about whether ANY of
+// them were actually free to hold a new batch, and brewing kept getting
+// cancelled ("needs empty food storage item") against a pile that was
+// invisibly all full. containers==count (the common BARREL/BUCKET/BIN/BAG
+// case) must render as the terse "(N empty)"; containers<count (TOOL, where
+// a food-storage pot shares its material key with ordinary tools like picks)
+// must render the more explicit "(N containers, M empty)" so a caller never
+// misreads "20 total, 1 empty" as "19 of 20 barrels are full" when only 2 of
+// the 20 were containers to begin with.
+func TestRenderStocksContainers(t *testing.T) {
+	raw := []byte(`{"items":[
+		{"item_type":"BARREL","material":"oak","count":15,"containers":15,"empty":4},
+		{"item_type":"BARREL","material":"willow","count":5,"containers":5,"empty":3},
+		{"item_type":"TOOL","material":"iron","count":5,"containers":2,"empty":1}
+	]}`)
+
+	detailed := renderStocks(raw, true, 0)
+	if !strings.Contains(detailed, "- BARREL: oak x15 (4 empty)\n") {
+		t.Fatalf("full-coverage container entry must render '(N empty)':\n%s", detailed)
+	}
+	if !strings.Contains(detailed, "- BARREL: willow x5 (3 empty)\n") {
+		t.Fatalf("second material's empty count wrong:\n%s", detailed)
+	}
+	if !strings.Contains(detailed, "- TOOL: iron x5 (2 containers, 1 empty)\n") {
+		t.Fatalf("partial-coverage (TOOL picks + food-storage pots sharing a material) must spell out the container subset, not just 'empty':\n%s", detailed)
+	}
+
+	agg := renderStocks(raw, false, 0)
+	if !strings.Contains(agg, "BARREL: 20 total (7 empty) across 2 materials") {
+		t.Fatalf("aggregated container line wrong (must sum empty across materials):\n%s", agg)
+	}
+	if !strings.Contains(agg, "TOOL: 5 total (2 containers, 1 empty) across 1 material") {
+		t.Fatalf("aggregated partial-coverage line wrong:\n%s", agg)
+	}
+
+	// A key with no "containers" field at all (an older plugin, or a
+	// non-vessel type) must render with no container note whatsoever —
+	// containers defaults to its Go zero value (0), which formatContainerNote
+	// must treat as "not a container-bearing key" rather than fabricating a
+	// "(0 empty)" note.
+	noContainers := []byte(`{"items":[{"item_type":"BOULDER","material":"shale","count":5}]}`)
+	if out := renderStocks(noContainers, true, 0); strings.Contains(out, "empty") {
+		t.Fatalf("a type with no container data must not print an empty-count note:\n%s", out)
+	}
+	if out := renderStocks(noContainers, false, 0); strings.Contains(out, "empty") {
+		t.Fatalf("aggregated view must also omit the note when there's no container data:\n%s", out)
+	}
+}
+
 func TestRenderStocksBadJSON(t *testing.T) {
 	if out := renderStocks([]byte(`not json`), false, 0); !strings.Contains(out, "unparseable") {
 		t.Fatalf("bad JSON must be reported, got: %q", out)
@@ -377,19 +427,37 @@ func TestRenderAlerts(t *testing.T) {
 }
 
 func TestRenderManagerOrders(t *testing.T) {
+	// Covers every rung of the C3 status ladder: queued (default) ->
+	// workshop assigned, awaiting worker -> in progress (via
+	// jobs_in_progress OR the plain active flag) -> invalid. validated is
+	// always true in real plugin output (force-set at order creation) but
+	// the invalid rung is still rendered truthfully if a future DF version
+	// ever makes that false.
 	raw := []byte(`{"orders":[
-		{"id":0,"job_type":"ConstructBed","amount_total":2,"amount_left":2,"validated":true,"active":false},
-		{"id":1,"job_type":"BrewDrink","amount_total":5,"amount_left":3,"validated":true,"active":true}
+		{"id":0,"job_type":"ConstructBed","amount_total":2,"amount_left":2,"validated":true,"active":false,"jobs_in_progress":0,"workshop_assigned":false},
+		{"id":1,"job_type":"BrewDrink","amount_total":5,"amount_left":3,"validated":true,"active":true,"jobs_in_progress":0,"workshop_assigned":true},
+		{"id":2,"job_type":"MakeRock","amount_total":1,"amount_left":1,"validated":true,"active":false,"jobs_in_progress":2,"workshop_assigned":true},
+		{"id":3,"job_type":"ForgeAnvil","amount_total":1,"amount_left":1,"validated":true,"active":false,"jobs_in_progress":0,"workshop_assigned":true},
+		{"id":4,"job_type":"CutGems","amount_total":1,"amount_left":1,"validated":false,"active":false,"jobs_in_progress":0,"workshop_assigned":false}
 	]}`)
 	out := renderManagerOrders(raw)
-	if !strings.Contains(out, "2 manager orders:") {
+	if !strings.Contains(out, "5 manager orders:") {
 		t.Fatalf("missing count header:\n%s", out)
 	}
-	if !strings.Contains(out, "id=0 ConstructBed x2 (2 left) — queued, not yet dispatched") {
-		t.Fatalf("validated-but-inactive order rendered wrong:\n%s", out)
+	if !strings.Contains(out, "id=0 ConstructBed x2 (2 left) — queued, awaiting manager dispatch") {
+		t.Fatalf("no-progress order rendered wrong:\n%s", out)
 	}
-	if !strings.Contains(out, "id=1 BrewDrink x5 (3 left) — ACTIVE") {
+	if !strings.Contains(out, "id=1 BrewDrink x5 (3 left) — in progress") {
 		t.Fatalf("active order rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "id=2 MakeRock x1 (1 left) — in progress (2 jobs)") {
+		t.Fatalf("jobs_in_progress order rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "id=3 ForgeAnvil x1 (1 left) — workshop assigned, awaiting worker") {
+		t.Fatalf("workshop-assigned-only order rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "id=4 CutGems x1 (1 left) — invalid") {
+		t.Fatalf("unvalidated order rendered wrong:\n%s", out)
 	}
 	if strings.Contains(out, "list_orders") || strings.Contains(out, "job_type\":") {
 		t.Fatalf("must not leak the raw job-type catalog or JSON:\n%s", out)
@@ -685,7 +753,7 @@ func TestRenderCaravanStatus(t *testing.T) {
 		 "liaison_meeting_active":true}
 	],"pending_events":[
 		{"type":"TributeCaravan","civ":"The Iron Assembly","season":"Autumn","season_ticks_remaining":4000}
-	],"depot":{"exists":true,"x":28,"y":52,"z":110,"built":true,"accessible":true,
+	],"depot":{"exists":true,"x":28,"y":52,"z":110,"built":true,"accessible":true,"walkable_from_edge":true,
 		"trader_requested":true,"anyone_can_trade":false}}`)
 	out := renderCaravanStatus(raw)
 	if !strings.Contains(out, "1 caravan on the map:") {
@@ -706,8 +774,11 @@ func TestRenderCaravanStatus(t *testing.T) {
 	if !strings.Contains(out, "- TributeCaravan: The Iron Assembly, Autumn season, 4000 ticks remaining in season") {
 		t.Fatalf("pending event line rendered wrong:\n%s", out)
 	}
-	if !strings.Contains(out, "Depot at (28,52,110): built=true accessible=true trader_requested=true anyone_can_trade=false") {
+	if !strings.Contains(out, "Depot at (28,52,110): built=true accessible=true walkable_from_edge=true trader_requested=true anyone_can_trade=false") {
 		t.Fatalf("depot line rendered wrong:\n%s", out)
+	}
+	if strings.Contains(out, "access diagnostic") {
+		t.Fatalf("accessible=true must not print the access diagnostic hint:\n%s", out)
 	}
 
 	// Active flags must render as a bracketed suffix; no active flags must
@@ -743,11 +814,34 @@ func TestRenderCaravanStatus(t *testing.T) {
 	}
 }
 
+func TestRenderCaravanStatusAccessDiagnostic(t *testing.T) {
+	// accessible=false + walkable_from_edge=true -> wagon-width chokepoint hint.
+	chokepoint := []byte(`{"caravans":[],"pending_events":[],
+		"depot":{"exists":true,"x":1,"y":2,"z":3,"built":true,"accessible":false,"walkable_from_edge":true,
+			"trader_requested":false,"anyone_can_trade":false}}`)
+	out := renderCaravanStatus(chokepoint)
+	if !strings.Contains(out, "wagon-corridor WIDTH chokepoint") {
+		t.Fatalf("accessible=false+walkable_from_edge=true must hint at a width chokepoint:\n%s", out)
+	}
+
+	// accessible=false + walkable_from_edge=false -> topologically cut off hint.
+	cutOff := []byte(`{"caravans":[],"pending_events":[],
+		"depot":{"exists":true,"x":1,"y":2,"z":3,"built":true,"accessible":false,"walkable_from_edge":false,
+			"trader_requested":false,"anyone_can_trade":false}}`)
+	out2 := renderCaravanStatus(cutOff)
+	if !strings.Contains(out2, "topologically cut off entirely") {
+		t.Fatalf("accessible=false+walkable_from_edge=false must hint at full disconnection:\n%s", out2)
+	}
+}
+
 func TestRenderDepotGoods(t *testing.T) {
 	raw := []byte(`{"depot":{"x":28,"y":52,"z":110,"built":true},
-		"staged":[
+		"staged_ours":[
 			{"item_type":"CRAFTS","material":"silver","count":3,"value":900,"requested":true},
 			{"item_type":"BOULDER","material":"shale","count":5,"value":50,"requested":false}
+		],
+		"staged_theirs":[
+			{"item_type":"ANVIL","material":"copper","count":1,"value":600,"requested":false}
 		],
 		"pending":[
 			{"item_type":"WEAPON","material":"iron","count":1,"value":200,"requested":false}
@@ -756,11 +850,20 @@ func TestRenderDepotGoods(t *testing.T) {
 	if !strings.Contains(out, "Depot at (28,52,110) (built=true):") {
 		t.Fatalf("depot header rendered wrong:\n%s", out)
 	}
+	if !strings.Contains(out, "staged (ours):") {
+		t.Fatalf("missing staged (ours) section header:\n%s", out)
+	}
 	if !strings.Contains(out, "silver CRAFTS x3 (value 900) (requested by liaison)") {
-		t.Fatalf("requested staged entry rendered wrong:\n%s", out)
+		t.Fatalf("requested staged_ours entry rendered wrong:\n%s", out)
 	}
 	if !strings.Contains(out, "shale BOULDER x5 (value 50)") || strings.Contains(out, "shale BOULDER x5 (value 50) (requested") {
-		t.Fatalf("non-requested staged entry must not carry the requested suffix:\n%s", out)
+		t.Fatalf("non-requested staged_ours entry must not carry the requested suffix:\n%s", out)
+	}
+	if !strings.Contains(out, "staged (theirs / merchant goods):") {
+		t.Fatalf("missing staged (theirs) section header:\n%s", out)
+	}
+	if !strings.Contains(out, "copper ANVIL x1 (value 600)") {
+		t.Fatalf("staged_theirs entry rendered wrong:\n%s", out)
 	}
 	if !strings.Contains(out, "pending (hauling, not yet arrived):") {
 		t.Fatalf("pending section header rendered wrong:\n%s", out)
@@ -769,13 +872,110 @@ func TestRenderDepotGoods(t *testing.T) {
 		t.Fatalf("pending entry rendered wrong:\n%s", out)
 	}
 
-	emptyBoth := []byte(`{"depot":{"x":1,"y":2,"z":3,"built":false},"staged":[],"pending":[]}`)
-	outEmpty := renderDepotGoods(emptyBoth)
-	if !strings.Contains(outEmpty, "staged: none") || !strings.Contains(outEmpty, "pending (hauling, not yet arrived): none") {
-		t.Fatalf("empty staged/pending must render 'none':\n%s", outEmpty)
+	emptyAll := []byte(`{"depot":{"x":1,"y":2,"z":3,"built":false},"staged_ours":[],"staged_theirs":[],"pending":[]}`)
+	outEmpty := renderDepotGoods(emptyAll)
+	if !strings.Contains(outEmpty, "staged (ours): none") ||
+		!strings.Contains(outEmpty, "staged (theirs / merchant goods): none") ||
+		!strings.Contains(outEmpty, "pending (hauling, not yet arrived): none") {
+		t.Fatalf("empty staged_ours/staged_theirs/pending must render 'none':\n%s", outEmpty)
 	}
 
 	if out := renderDepotGoods([]byte(`not json`)); !strings.Contains(out, "unparseable depot_goods response") {
+		t.Fatalf("malformed response should report unparseable, got: %q", out)
+	}
+}
+
+func TestRenderTradeAgreements(t *testing.T) {
+	// Full case: both agreement halves present, plus an open liaison
+	// meeting with one resolved topic.
+	raw := []byte(`{"civs":[
+		{"civ":"The Gray Mansion","entity_id":7,
+		 "specific_item_requests":[
+			{"item_type":"AMULET","item_subtype":-1,"material":"silver","price_percent":150},
+			{"item_type":"WEAPON","item_subtype":3,"material":"any","price_percent":200}
+		 ],
+		 "category_agreement":[
+			{"category":"Cheese","count":2,"min_percent":110,"max_percent":130},
+			{"category":"Weapons","count":1,"min_percent":100,"max_percent":100}
+		 ],
+		 "meeting_active":true,
+		 "topics_under_discussion":["GiveGift","RequestTribute"],
+		 "diplomat":"Adil Rithdolen","associate":"",
+		 "resolved_this_meeting":[
+			{"type":"AcceptAgreement","topic":"ImportAgreement","quota_total":5000,"quota_remaining":3000,"year":100,"ticks":42}
+		 ]}
+	]}`)
+	out := renderTradeAgreements(raw)
+	if !strings.Contains(out, "The Gray Mansion:") {
+		t.Fatalf("missing civ header:\n%s", out)
+	}
+	if !strings.Contains(out, "AMULET (any subtype, silver): 150% of normal value") {
+		t.Fatalf("specific item request (wildcard subtype) rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "WEAPON (subtype 3, any): 200% of normal value") {
+		t.Fatalf("specific item request (concrete subtype, any material) rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "Cheese x2: 110%-130% of normal value") {
+		t.Fatalf("category agreement with a min/max spread rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "Weapons x1: 100% of normal value") {
+		t.Fatalf("category agreement with equal min/max must render one percentage, not a range:\n%s", out)
+	}
+	if !strings.Contains(out, "liaison meeting currently OPEN") {
+		t.Fatalf("meeting_active=true must be surfaced:\n%s", out)
+	}
+	if !strings.Contains(out, "topics: GiveGift, RequestTribute") {
+		t.Fatalf("topics_under_discussion rendered wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "diplomat Adil Rithdolen") {
+		t.Fatalf("diplomat name rendered wrong:\n%s", out)
+	}
+	if strings.Contains(out, "associate ,") || strings.Contains(out, ", associate\n") {
+		t.Fatalf("empty associate must not appear in the who-line:\n%s", out)
+	}
+	if !strings.Contains(out, "AcceptAgreement (ImportAgreement) quota 3000/5000 remaining, year 100 tick 42") {
+		t.Fatalf("resolved_this_meeting entry rendered wrong:\n%s", out)
+	}
+
+	// Honest empty state: no agreement recorded, no meeting open.
+	noAgreement := []byte(`{"civs":[
+		{"civ":"The Iron Assembly","entity_id":9,"specific_item_requests":[],"category_agreement":[],
+		 "meeting_active":false,"topics_under_discussion":[],"diplomat":"","associate":"","resolved_this_meeting":[]}
+	]}`)
+	outNo := renderTradeAgreements(noAgreement)
+	if !strings.Contains(outNo, "no agreement recorded with The Iron Assembly") {
+		t.Fatalf("civ with neither agreement half must render the honest empty-state line:\n%s", outNo)
+	}
+	if strings.Contains(outNo, "liaison meeting currently OPEN") {
+		t.Fatalf("meeting_active=false must not print the open-meeting section:\n%s", outNo)
+	}
+
+	// Partial case: one agreement half present (category only), no items —
+	// must render each half's own empty state, not the combined one.
+	partial := []byte(`{"civs":[
+		{"civ":"The Copper Horizon","entity_id":3,"specific_item_requests":[],
+		 "category_agreement":[{"category":"Wood","count":1,"min_percent":120,"max_percent":120}],
+		 "meeting_active":false,"topics_under_discussion":[],"diplomat":"","associate":"","resolved_this_meeting":[]}
+	]}`)
+	outPartial := renderTradeAgreements(partial)
+	if strings.Contains(outPartial, "no agreement recorded with The Copper Horizon") {
+		t.Fatalf("a civ with a category agreement must not print the combined no-agreement line:\n%s", outPartial)
+	}
+	if !strings.Contains(outPartial, "requested imports: none") {
+		t.Fatalf("empty specific_item_requests alongside a present category_agreement must render its own 'none' line:\n%s", outPartial)
+	}
+	if !strings.Contains(outPartial, "Wood x1: 120% of normal value") {
+		t.Fatalf("category agreement rendered wrong in partial case:\n%s", outPartial)
+	}
+
+	// No civ with an active caravan_state at all.
+	empty := []byte(`{"civs":[]}`)
+	outEmpty := renderTradeAgreements(empty)
+	if !strings.Contains(outEmpty, "No civ currently has an active caravan_state") {
+		t.Fatalf("empty civs rendering wrong:\n%s", outEmpty)
+	}
+
+	if out := renderTradeAgreements([]byte(`not json`)); !strings.Contains(out, "unparseable trade_agreements response") {
 		t.Fatalf("malformed response should report unparseable, got: %q", out)
 	}
 }
@@ -1134,4 +1334,42 @@ func TestRenderDwarfListDeadTag(t *testing.T) {
 	if !strings.Contains(out, "id=2 last-known @(2,2,2) [DEAD]\n") {
 		t.Fatalf("dead dwarf must carry a last-known [DEAD] tag:\n%s", out)
 	}
+}
+
+func TestRenderIdleRollup(t *testing.T) {
+	job := func(s string) *string { return &s }
+	t.Run("some idle lists names", func(t *testing.T) {
+		details := []dwarfDetailResp{
+			{ID: 1, FirstName: "edzul"},                          // nil job -> idle
+			{ID: 2, FirstName: "zaneg", CurrentJob: job("")},     // empty job -> idle
+			{ID: 3, FirstName: "ilral", CurrentJob: job("Mine")}, // busy
+			{ID: 4, FirstName: "ghost", Dead: true},              // dead: excluded from count AND denominator
+		}
+		got := renderIdleRollup(details)
+		want := "idle: 2 of 3 (edzul, zaneg)\n"
+		if got != want {
+			t.Fatalf("renderIdleRollup = %q, want %q", got, want)
+		}
+	})
+	t.Run("none idle omits name list", func(t *testing.T) {
+		details := []dwarfDetailResp{
+			{ID: 1, FirstName: "edzul", CurrentJob: job("Mine")},
+		}
+		got := renderIdleRollup(details)
+		want := "idle: 0 of 1\n"
+		if got != want {
+			t.Fatalf("renderIdleRollup = %q, want %q", got, want)
+		}
+	})
+	t.Run("overflow falls back to count only", func(t *testing.T) {
+		var details []dwarfDetailResp
+		for i := range maxIdleNamesListed + 1 {
+			details = append(details, dwarfDetailResp{ID: i + 1, FirstName: fmt.Sprintf("d%d", i+1)})
+		}
+		got := renderIdleRollup(details)
+		want := fmt.Sprintf("idle: %d of %d\n", maxIdleNamesListed+1, maxIdleNamesListed+1)
+		if got != want {
+			t.Fatalf("renderIdleRollup = %q, want %q", got, want)
+		}
+	})
 }
