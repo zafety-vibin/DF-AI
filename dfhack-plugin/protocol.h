@@ -178,12 +178,23 @@ constexpr uint8_t COMMAND_TYPE_SET_BOOKKEEPER_PRECISION = 0x25;
 // (create/staff/order a squad), per docs/decisions.md (2026-07-19
 // military research pass). See dfhack-plugin/military.cpp for the exact
 // mutation sequences and their UNVERIFIED risk flags:
-//   CREATE_SQUAD fills (or, if none exists yet, MINTS -- highest-risk,
-//     no DFHack precedent -- see military.cpp applyCreateSquad) a vacant
-//     entity_position_assignment slot, then calls DFHack's own
-//     Military::makeSquad on it.
-//   ASSIGN_SQUAD wraps DFHack's own Military::addToSquad/removeFromSquad
-//     (both proven-safe -- real callers in scripts/autotraining.lua).
+//   CREATE_SQUAD fills a vacant entity_position_assignment slot, then
+//     calls DFHack's own Military::makeSquad on it. An EMPTY PositionCode
+//     auto-selects a squad-leader position that already has a usable
+//     assignment slot, or refuses with an actionable roll-call -- it no
+//     longer defaults to a hardcoded MILITIA_CAPTAIN. Only an explicitly
+//     named position_code can still reach the MINT path (highest-risk, no
+//     DFHack precedent -- see military.cpp applyCreateSquad).
+//   ASSIGN_SQUAD wraps DFHack's own Military::addToSquad/removeFromSquad.
+//     On add, the PLUGIN computes the target squad_pos itself (first
+//     vacant non-commander slot, bounded by the squad's real
+//     positions.size()) and passes it explicitly. addToSquad's own
+//     squad_pos == -1 auto-pick is NOT used and cannot be: per DFHack's
+//     docs/dev/Lua API.rst addToSquad entry it "will fail if squad_pos is
+//     specified as 0 or if squad_pos is specified as -1 and the squad
+//     leader position is currently vacant" -- and a freshly made squad's
+//     leader is always vacant. Filling the COMMANDER slot (position 0)
+//     remains impossible here and UNVERIFIED (see military.cpp).
 //   SQUAD_ORDER always clears the squad's existing orders queue first,
 //     then pushes AT MOST ONE new order (a squad_order_movest "station"
 //     order or a squad_order_defend_burrowsst "defend burrow" order), or

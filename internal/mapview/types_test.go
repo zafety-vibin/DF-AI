@@ -150,6 +150,59 @@ func TestDecodeColumnProfileFloorItems(t *testing.T) {
 	}
 }
 
+// The stockpile-coverage fields decode when present. StockpileTilesInView
+// is a POINTER: this test pins the distinction the renderer depends on —
+// present-and-zero decodes to a non-nil pointer at 0, absent decodes to
+// nil, and the two mean opposite things (a measured all-clear vs. a plugin
+// that never looked).
+func TestDecodeSliceStockpileCoverage(t *testing.T) {
+	raw := []byte(`{"z":110,"x1":70,"y1":80,"rows":["##"],"floor_items":[[70,80,2],[71,80,5]],` +
+		`"stockpile_tiles_in_view":0,"stockpile_tiles_occupied":0,` +
+		`"floor_items_nostock":[[71,80,5]],"floor_items_nostock_capped":true,` +
+		`"floor_item_classes":[[71,80,1]],"floor_item_class_names":["stone","food/drink"]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if s.StockpileTilesInView == nil || *s.StockpileTilesInView != 0 {
+		t.Fatalf("a present zero must decode to a non-nil pointer, got %v", s.StockpileTilesInView)
+	}
+	if s.StockpileTilesOccupied == nil || *s.StockpileTilesOccupied != 0 {
+		t.Fatalf("stockpile_tiles_occupied mismatch: %v", s.StockpileTilesOccupied)
+	}
+	if len(s.FloorItemsNoStock) != 1 || s.FloorItemsNoStock[0] != [3]int16{71, 80, 5} {
+		t.Fatalf("floor_items_nostock mismatch: %+v", s.FloorItemsNoStock)
+	}
+	if !s.FloorItemsNoStockCapped {
+		t.Fatal("floor_items_nostock_capped must decode true")
+	}
+	if len(s.FloorItemClasses) != 1 || s.FloorItemClasses[0] != [3]int16{71, 80, 1} {
+		t.Fatalf("floor_item_classes mismatch: %+v", s.FloorItemClasses)
+	}
+	if len(s.FloorItemClassNames) != 2 || s.FloorItemClassNames[1] != "food/drink" {
+		t.Fatalf("floor_item_class_names mismatch: %+v", s.FloorItemClassNames)
+	}
+}
+
+// An older plugin omits every stockpile field: the pointers must stay nil
+// (NOT zero), which is what makes the renderer disclaim the split instead
+// of asserting an all-clear the plugin never sent.
+func TestDecodeSliceStockpileCoverageAbsentIsNil(t *testing.T) {
+	raw := []byte(`{"z":110,"x1":70,"y1":80,"rows":["##"],"floor_items":[[70,80,2]]}`)
+	s, err := DecodeSlice(raw)
+	if err != nil {
+		t.Fatalf("an older-plugin payload must still decode: %v", err)
+	}
+	if s.StockpileTilesInView != nil || s.StockpileTilesOccupied != nil {
+		t.Fatalf("absent stockpile fields must decode to nil, got %v/%v",
+			s.StockpileTilesInView, s.StockpileTilesOccupied)
+	}
+	if len(s.FloorItemsNoStock) != 0 || s.FloorItemsNoStockCapped ||
+		len(s.FloorItemClasses) != 0 || len(s.FloorItemClassNames) != 0 {
+		t.Fatalf("absent optional item fields must stay empty: %+v", s)
+	}
+}
+
 // PendingBuilding decodes when present, mirroring the Smoothed/FloorItems
 // coverage above — the absent case (older plugin) is covered by
 // TestDecodeSlice, where the field stays nil.

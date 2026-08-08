@@ -16,7 +16,7 @@ Personal research project, moving fast. Multiple forts have been played end-to-e
 ## Requirements
 
 - **Steam Dwarf Fortress** (paid, [store page](https://store.steampowered.com/app/975370/Dwarf_Fortress/)) — the game DF-AI plays.
-- **[DFHack](https://github.com/DFHack/dfhack)**, matching the exact release your Steam DF version needs. Two things from it: the packaged release (installed alongside DF, for `hack/plugins/`) and a **source checkout** at the same tag (for building the plugin — DFHack ships no SDK, plugins build in-tree; see `docs/guides/plugin-build.md`).
+- **[DFHack](https://github.com/DFHack/dfhack)**, matching the exact release your Steam DF version needs. Two things from it: the packaged release (a separate Steam app, supplying the `hack/plugins/` we deploy into) and a **source checkout** at the same tag (for building the plugin — DFHack ships no SDK, plugins build in-tree; see `docs/guides/plugin-build.md`).
 - **Go 1.25+**
 - **MSVC 2022 (v143)** — the plugin's only supported toolchain right now.
 - **[Claude Code](https://claude.com/claude-code)** (or another MCP client that can run a long-lived stdio server) and Claude API access — this is what actually plays.
@@ -28,7 +28,7 @@ Personal research project, moving fast. Multiple forts have been played end-to-e
    cmake --build build --target df_ai_protocol --config Release
    ```
    Full detail, including the exact-version-match gotcha and the upgrade procedure: `docs/guides/plugin-build.md`.
-2. **Deploy it.** With DF closed, copy the built `.plug.dll` into `<Steam DF>/hack/plugins/`.
+2. **Deploy it.** With DF closed, copy the built `.plug.dll` into DFHack's `hack/plugins/` — the folder holding its stock plugins. Steam installs DFHack as its own app, so this may or may not live under the DF folder; `docs/guides/plugin-build.md` shows how to derive the current path.
 3. **Build the MCP server.**
    ```bash
    go build ./... && go test ./...

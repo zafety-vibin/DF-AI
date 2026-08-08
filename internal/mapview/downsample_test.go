@@ -114,14 +114,27 @@ func TestRenderDownsampledSlice_SmoothedCountLine(t *testing.T) {
 }
 
 // TestRenderDownsampledSlice_FloorItemsCountLine: loose floor items get a
-// count line, same convention as smoothed/aquifer — no glyph paint.
+// summary line, same convention as smoothed/aquifer — no glyph paint, and
+// no tile-exact cluster bboxes (the cells here are block-granular).
 func TestRenderDownsampledSlice_FloorItemsCountLine(t *testing.T) {
 	rows := []string{"##", "##"}
 	s := &Slice{Z: 1, X1: 0, Y1: 0, Rows: rows,
 		FloorItems: [][3]int16{{0, 0, 1}, {1, 1, 3}},
 	}
 	out := RenderDownsampledSlice(s, 2)
-	if !strings.Contains(out, "tiles with loose items on floor in source view: 2") {
-		t.Fatalf("floor items count line missing:\n%s", out)
+	if !strings.Contains(out, "loose items in source view: 4 on 2 tiles (stockpile coverage not reported by this plugin build)") {
+		t.Fatalf("floor items summary line missing:\n%s", out)
+	}
+
+	// Same tiles, but the plugin measured coverage: the split appears.
+	s.StockpileTilesInView = intPtr(4)
+	s.StockpileTilesOccupied = intPtr(1)
+	s.FloorItemsNoStock = [][3]int16{{1, 1, 3}}
+	out = RenderDownsampledSlice(s, 2)
+	if !strings.Contains(out, "loose items in source view: 4 on 2 tiles — 3 items on 1 tiles OUTSIDE stockpiles") {
+		t.Fatalf("floor items split line missing:\n%s", out)
+	}
+	if strings.Contains(out, "clusters:") {
+		t.Fatalf("downsampled render must not carry cluster bboxes:\n%s", out)
 	}
 }

@@ -69,6 +69,18 @@ func StitchSlices(grid [][]*Slice) (*Slice, error) {
 	}
 
 	out := &Slice{Z: z, X1: x1, Y1: y1, Rows: rows}
+	// Stockpile coverage sums across blocks — the blocks' windows are
+	// disjoint, so no tile is counted twice. Promoted to non-nil ONLY when
+	// every block reported it: a mixed grid means part of the region was
+	// never measured, and a partial sum presented as a whole would be a
+	// quieter version of exactly the lie the pointer sentinel exists to
+	// prevent.
+	allMeasured := true
+	spInView, spOccupied := 0, 0
+	// Each block carries its OWN first-seen class-name table, so indices
+	// are only meaningful within their block and must be re-keyed against
+	// a merged table before the arrays can be unioned.
+	classIndex := map[string]int{}
 	for _, tileRow := range grid {
 		for _, blk := range tileRow {
 			out.Designated = append(out.Designated, blk.Designated...)
@@ -77,7 +89,40 @@ func StitchSlices(grid [][]*Slice) (*Slice, error) {
 			out.DesignationKinds = append(out.DesignationKinds, blk.DesignationKinds...)
 			out.Smoothed = append(out.Smoothed, blk.Smoothed...)
 			out.FloorItems = append(out.FloorItems, blk.FloorItems...)
+			out.FloorItemsNoStock = append(out.FloorItemsNoStock, blk.FloorItemsNoStock...)
+			if blk.FloorItemsNoStockCapped {
+				out.FloorItemsNoStockCapped = true
+			}
+			if blk.StockpileTilesInView == nil {
+				allMeasured = false
+			} else {
+				spInView += *blk.StockpileTilesInView
+				if blk.StockpileTilesOccupied != nil {
+					spOccupied += *blk.StockpileTilesOccupied
+				}
+			}
+			remap := make([]int, len(blk.FloorItemClassNames))
+			for i, name := range blk.FloorItemClassNames {
+				idx, ok := classIndex[name]
+				if !ok {
+					idx = len(out.FloorItemClassNames)
+					classIndex[name] = idx
+					out.FloorItemClassNames = append(out.FloorItemClassNames, name)
+				}
+				remap[i] = idx
+			}
+			for _, fc := range blk.FloorItemClasses {
+				i := int(fc[2])
+				if i < 0 || i >= len(remap) {
+					continue
+				}
+				out.FloorItemClasses = append(out.FloorItemClasses, [3]int16{fc[0], fc[1], int16(remap[i])})
+			}
 		}
+	}
+	if allMeasured {
+		out.StockpileTilesInView = &spInView
+		out.StockpileTilesOccupied = &spOccupied
 	}
 	return out, nil
 }

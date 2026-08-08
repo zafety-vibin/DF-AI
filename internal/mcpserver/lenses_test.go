@@ -128,6 +128,144 @@ func TestMineralLetterAlphabet_SkipsReservedGlyphs(t *testing.T) {
 	}
 }
 
+// The items alphabet must skip both the three reserved lowercase glyphs
+// (d/t/u) AND the three letters whose UPPERCASE forms are base terrain
+// glyphs (x->X up/down-stair, l->L magma, f->F fortification) — this lens
+// paints both cases, so it needs the stricter exclusion list.
+// TestLensGlyphsDisjointFromBaseSet enforces the invariant generically;
+// this test names the letters so a future edit fails with a direct message.
+func TestItemLetterAlphabet_SkipsReservedAndUppercaseCollisions(t *testing.T) {
+	if len(itemLetterAlphabet) != 20 {
+		t.Fatalf("expected 20 letters (26 minus d/t/u/x/l/f), got %d: %v", len(itemLetterAlphabet), itemLetterAlphabet)
+	}
+	for _, r := range itemLetterAlphabet {
+		switch r {
+		case 'd', 't', 'u', 'x', 'l', 'f':
+			t.Fatalf("itemLetterAlphabet must not contain %q", string(r))
+		}
+	}
+	glyphs := lensGlyphSet("items")
+	if len(glyphs) != 40 {
+		t.Fatalf("items lens must declare both cases (40 glyphs), got %d", len(glyphs))
+	}
+}
+
+// The headline lens behaviour: class letters keyed to a per-view footnote,
+// UPPERCASE for tiles outside every stockpile.
+func TestBuildItemsOverlay(t *testing.T) {
+	s := &mapview.Slice{
+		Z: 132, X1: 10, Y1: 10, Rows: []string{"....", "...."},
+		FloorItems: [][3]int16{
+			{10, 10, 41}, {11, 10, 9}, // stockpiled stone + stone
+			{12, 11, 58}, // homeless food
+		},
+		FloorItemsNoStock:   [][3]int16{{12, 11, 58}},
+		FloorItemClasses:    [][3]int16{{10, 10, 0}, {11, 10, 0}, {12, 11, 1}},
+		FloorItemClassNames: []string{"stone", "food/drink"},
+	}
+	ov := buildItemsOverlay(s)
+	if got := ov.Marks[[2]int16{10, 10}]; got != 'a' {
+		t.Fatalf("stockpiled stone must paint lowercase 'a', got %q", string(got))
+	}
+	if got := ov.Marks[[2]int16{11, 10}]; got != 'a' {
+		t.Fatalf("second stockpiled stone tile must share the class letter, got %q", string(got))
+	}
+	if got := ov.Marks[[2]int16{12, 11}]; got != 'B' {
+		t.Fatalf("homeless food must paint UPPERCASE 'B', got %q", string(got))
+	}
+	if len(ov.Footnotes) != 1 {
+		t.Fatalf("expected exactly one footnote, got %q", ov.Footnotes)
+	}
+	want := "this view's item classes: a=stone (50 items/2 tiles) b=food/drink (58 items/1 tiles)"
+	if ov.Footnotes[0] != want {
+		t.Fatalf("class footnote wrong:\n got %q\nwant %q", ov.Footnotes[0], want)
+	}
+}
+
+// A class present in the name table but with no tiles inside the crop
+// (possible after a stitched merge) must not pad the footnote.
+func TestBuildItemsOverlay_SkipsUnusedClasses(t *testing.T) {
+	s := &mapview.Slice{
+		FloorItems:          [][3]int16{{1, 1, 2}},
+		FloorItemClasses:    [][3]int16{{1, 1, 1}},
+		FloorItemClassNames: []string{"stone", "wood"},
+	}
+	ov := buildItemsOverlay(s)
+	if strings.Contains(ov.Footnotes[0], "a=stone") {
+		t.Fatalf("a class with no tiles must not appear: %q", ov.Footnotes[0])
+	}
+	if !strings.Contains(ov.Footnotes[0], "b=wood (2 items/1 tiles)") {
+		t.Fatalf("used class missing: %q", ov.Footnotes[0])
+	}
+}
+
+// The plugin caps its class array at 200 tiles while floor_items stays
+// uncapped — the difference is reported, not silently unpainted.
+func TestBuildItemsOverlay_ReportsUnlabeledTiles(t *testing.T) {
+	s := &mapview.Slice{
+		FloorItems:          [][3]int16{{1, 1, 2}, {5, 5, 3}, {6, 6, 1}},
+		FloorItemClasses:    [][3]int16{{1, 1, 0}},
+		FloorItemClassNames: []string{"stone"},
+	}
+	ov := buildItemsOverlay(s)
+	if len(ov.Footnotes) != 2 || !strings.Contains(ov.Footnotes[1], "+2 item-bearing tile(s) past the plugin's 200-tile class cap") {
+		t.Fatalf("unlabeled-tile footnote missing: %q", ov.Footnotes)
+	}
+}
+
+// This lens encodes homelessness in letter CASE, so a truncated homeless
+// list makes lowercase ("inside a stockpile") an assertion nothing
+// verified. When the plugin flags its 200-tile cap, the render must say so
+// — self-disclosure that holds even if the plugin's two caps are ever
+// changed out from under the ordering invariant that protects it today.
+func TestBuildItemsOverlay_NoStockCapDisclosed(t *testing.T) {
+	s := &mapview.Slice{
+		FloorItems:              [][3]int16{{1, 1, 2}},
+		FloorItemsNoStock:       [][3]int16{{1, 1, 2}},
+		FloorItemsNoStockCapped: true,
+		FloorItemClasses:        [][3]int16{{1, 1, 0}},
+		FloorItemClassNames:     []string{"stone"},
+	}
+	ov := buildItemsOverlay(s)
+	joined := strings.Join(ov.Footnotes, "\n")
+	if !strings.Contains(joined, "outside-stockpile tile list hit its 200-tile cap") {
+		t.Fatalf("capped homeless list must be disclosed: %q", ov.Footnotes)
+	}
+	// Uncapped views must not carry the warning at all.
+	s.FloorItemsNoStockCapped = false
+	if joined := strings.Join(buildItemsOverlay(s).Footnotes, "\n"); strings.Contains(joined, "200-tile cap") {
+		t.Fatalf("an uncapped view must not warn about truncation: %q", joined)
+	}
+}
+
+// VERSION SKEW: an older plugin sends floor_items but no class table and
+// no homeless split. Every tile gets one uniform letter, and the footnote
+// states outright that case carries no meaning — a case-encoded glyph
+// whose case is unknown must never read as an assertion.
+func TestBuildItemsOverlay_OldPluginFallback(t *testing.T) {
+	s := &mapview.Slice{FloorItems: [][3]int16{{3, 3, 1}, {4, 4, 9}}}
+	ov := buildItemsOverlay(s)
+	for _, pos := range [][2]int16{{3, 3}, {4, 4}} {
+		if got := ov.Marks[pos]; got != 'i' {
+			t.Fatalf("old-plugin fallback must paint 'i' at %v, got %q", pos, string(got))
+		}
+	}
+	if len(ov.Footnotes) != 1 || !strings.Contains(ov.Footnotes[0], "case carries NO meaning") {
+		t.Fatalf("fallback footnote must disclaim the case split: %q", ov.Footnotes)
+	}
+	if strings.Contains(ov.Footnotes[0], "this view's item classes") {
+		t.Fatalf("fallback must not fabricate a class table: %q", ov.Footnotes[0])
+	}
+}
+
+// A view with no loose items paints nothing and says nothing.
+func TestBuildItemsOverlay_Empty(t *testing.T) {
+	ov := buildItemsOverlay(&mapview.Slice{})
+	if len(ov.Marks) != 0 || len(ov.Footnotes) != 0 {
+		t.Fatalf("empty view must produce no marks/footnotes: %+v", ov)
+	}
+}
+
 func TestLensNamesErrorMessage(t *testing.T) {
 	names := strings.Join(lensNames(), ", ")
 	if !strings.Contains(names, "buildings") || !strings.Contains(names, "designations") {

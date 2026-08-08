@@ -40,7 +40,9 @@ go run ./cmd/df-smoke -cmd repl -port 5001       # manual plugin driver (port = 
 # Plugin (from the DFHack source checkout, e.g. ../dfhack-build):
 cmake --build build --target df_ai_protocol --config Release
 # Deploy: copy build/plugins/df_ai_protocol/Release/df_ai_protocol.plug.dll
-#         into <Steam DF>/hack/plugins/ with DF closed. In-game: `ai-connect`.
+#         into DFHack's hack/plugins/ with DF closed. In-game: `ai-connect`.
+#         Derive that path from Steam (appmanifest_2346660.acf installdir) — DFHack
+#         is its own Steam app and has MOVED out of the DF folder before.
 ```
 
 ## Key patterns (details in docs/guides/)

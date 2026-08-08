@@ -229,6 +229,31 @@ func ackText(res *commands.CommandResult, err error, what string) string {
 	}
 }
 
+// ackDesignated reports whether a designation command's ack means "the tiles
+// WERE designated", which is a strictly wider question than
+// CommandResult.Success. commands/tracker.go sets Success only for
+// ACK_STATUS_SUCCESS, but the plugin also answers ACK_STATUS_PARTIAL for a
+// designation it fully applied while destroying something in the process —
+// the dig-over-an-existing-carved-stair case (designations.cpp: "N designated
+// (M will remove existing stairs: vertical connection lost)"). That is a
+// caveat on a completed designation, not a failed one, and callers that
+// record or count designated tiles must treat it as done:
+//   - designate_dig feeds b.Digs (pendingDigs) off this, so the very dig the
+//     stair warning exists for still counts as connected-in-progress for the
+//     NEXT adjacent designation's connector hint (digrects.go's invariant is
+//     "every dig rectangle the plugin ACKed this session");
+//   - applyBlueprintCmds counts a PARTIAL run into okCount instead of
+//     reporting every tile in a fully-designated run as FAILED.
+// The warning text itself is never swallowed — both callers still render the
+// full ackText, which prefixes PARTIAL and carries the plugin's message
+// verbatim.
+func ackDesignated(res *commands.CommandResult, err error) bool {
+	if err != nil || res == nil {
+		return false
+	}
+	return res.Success || res.Status == protocol.AckStatusPartial
+}
+
 // resultDetail extracts a command result's raw truthful detail text with no
 // SUCCESS/PARTIAL/FAILED prefix — for callers (like queue_job's retry loop)
 // that build their own single outer prefix and would otherwise double it up
@@ -653,9 +678,11 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		if clampNote != "" {
 			ack = ack + "\n" + clampNote
 		}
-		// Reachability guidance: only meaningful after a successful dig
-		// designation, and only against a live topology overlay.
-		if err == nil && res != nil && res.Success {
+		// Reachability guidance: only meaningful after a dig the plugin
+		// actually designated (SUCCESS, or PARTIAL — a fully-applied
+		// designation carrying a stair-destruction caveat; see
+		// ackDesignated), and only against a live topology overlay.
+		if ackDesignated(res, err) {
 			if topo := b.Topo(); topo != nil {
 				if suggestion := connectorSuggestion(ctx, b, topo, b.Digs, int16(in.X1), int16(in.Y1), int16(in.Z1), int16(in.X2), int16(in.Y2), int16(in.Z2)); suggestion != "" {
 					ack = ack + "\n" + suggestion
@@ -1275,10 +1302,15 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		if in.DryRun {
 			return withDash(b, ctx, summarizeDryRun(b.Topo(), cmds)), nil, nil
 		}
-		ok, fail, firstErr := applyBlueprintCmds(ctx, b, cmds)
+		ok, fail, firstErr, partialWarn := applyBlueprintCmds(ctx, b, cmds)
 		body := fmt.Sprintf("applied %q: %d tiles designated, %d failed", in.Name, ok, fail)
 		if firstErr != "" {
 			body += " — first failure: " + firstErr
+		}
+		// A PARTIAL run counted into `ok` (it WAS designated) but its warning
+		// must not be swallowed — see applyBlueprintCmds.
+		if partialWarn != "" {
+			body += "\n" + partialWarn
 		}
 		return withDash(b, ctx, body), nil, nil
 	})

@@ -25,7 +25,15 @@ cmake --build build --target df_ai_protocol --config Release
 
 ## Deploy
 
-Copy the `.plug.dll` into `<Steam DF>/hack/plugins/` with DF closed (or the plugin unloaded — the file is locked while loaded). In the DFHack console: `load df_ai_protocol`, then `ai-connect`. The plugin dials the port in `config/orchestrator.yaml` (`listen_port`).
+Copy the `.plug.dll` into DFHack's `hack/plugins/` with DF closed (or the plugin unloaded — the file is locked while loaded). In the DFHack console: `load df_ai_protocol`, then `ai-connect`. The plugin dials the port in `config/orchestrator.yaml` (`listen_port`).
+
+**Never assume the deploy path — derive it.** Steam DFHack is its own app (2346660) and its `installdir` has changed before: it used to install *into* the DF folder, and now installs to a sibling folder with its own launcher (`launchdf.exe`), leaving the DF folder's `hack/` orphaned. Deploying to the stale path looks like a successful copy and then the plugin simply never loads. Read the current location out of Steam's own manifest rather than trusting memory:
+
+```bash
+grep installdir "<SteamLibrary>/steamapps/appmanifest_2346660.acf"
+```
+
+The correct target is the `hack/plugins/` under that `installdir` — the one holding DFHack's stock plugins. Sanity-check by confirming the folder already contains dozens of `.plug.dll` files; if it holds only ours, it is the orphaned copy.
 
 ## Upgrading DFHack versions
 

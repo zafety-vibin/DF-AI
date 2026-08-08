@@ -146,18 +146,44 @@ func TestRenderCropSmoothed(t *testing.T) {
 	}
 }
 
-// TestRenderCropFloorItems: loose floor items get a count line, not a
+// TestRenderCropFloorItems: loose floor items get a text footer, not a
 // glyph — same convention as smoothed/aquifer, since the base terrain
-// classifier renders such a tile as plain clean floor.
+// classifier renders such a tile as plain clean floor. Against a plugin
+// that never measured stockpile coverage the footer reports totals and
+// cluster positions only, and says so.
 func TestRenderCropFloorItems(t *testing.T) {
 	s := &Slice{Z: 100, X1: 10, Y1: 20, Rows: []string{"##"},
 		FloorItems: [][3]int16{{10, 20, 2}}}
 	out := RenderCrop(s, nil, "")
-	if !strings.Contains(out, "tiles with loose items on floor: 1") {
-		t.Fatalf("floor items count line missing:\n%s", out)
+	if !strings.Contains(out, "loose items in view: 2 on 1 tiles (stockpile coverage not reported by this plugin build) — clusters: (10,20) 2 items") {
+		t.Fatalf("floor items footer missing:\n%s", out)
 	}
 	if !strings.Contains(out, "  20 ##") {
 		t.Fatalf("floor items must not draw a glyph on y=20 row:\n%s", out)
+	}
+}
+
+// TestRenderCropFloorItemsSplit: with a plugin that measured stockpile
+// coverage, the same view splits homeless clutter out of the total and
+// hands back its cluster bbox — the line that would have made a live
+// session notice a stockpile shortage on its own.
+func TestRenderCropFloorItemsSplit(t *testing.T) {
+	inView, occupied := 12, 1
+	s := &Slice{Z: 100, X1: 10, Y1: 20, Rows: []string{"####", "####"},
+		FloorItems:             [][3]int16{{10, 20, 2}, {12, 21, 30}, {13, 21, 25}},
+		FloorItemsNoStock:      [][3]int16{{12, 21, 30}, {13, 21, 25}},
+		StockpileTilesInView:   &inView,
+		StockpileTilesOccupied: &occupied}
+	out := RenderCrop(s, nil, "")
+	want := "loose items OUTSIDE stockpiles: 55 items on 2 tiles (view total 57 on 3 tiles) — clusters: (12,21)-(13,21) 55 items (lens=items for classes)"
+	if !strings.Contains(out, want) {
+		t.Fatalf("homeless split line missing:\n%s", out)
+	}
+	if !strings.Contains(out, "stockpile tiles in view: 12, 1 with items on them (8% of tiles taken)") {
+		t.Fatalf("stockpile fill line missing:\n%s", out)
+	}
+	if strings.Contains(out, "tiles with loose items on floor") {
+		t.Fatalf("the legacy count line must be gone:\n%s", out)
 	}
 }
 

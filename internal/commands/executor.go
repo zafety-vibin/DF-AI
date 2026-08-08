@@ -775,9 +775,12 @@ func (e *CommandExecutor) SendSetBookkeeperPrecision(precision uint8) (*CommandR
 // SendCreateSquad fills (or, if none exists yet, mints -- see
 // protocol.CreateSquadDesignation's doc comment for the UNVERIFIED risk
 // flag on that path) a vacant entity_position_assignment slot for
-// positionCode ("" defaults to "MILITIA_CAPTAIN") and calls DFHack's own
-// Military::makeSquad on it. Discover other valid position codes (with
-// squad_size > 0) via the position_vacancies tool.
+// positionCode and calls DFHack's own Military::makeSquad on it. An empty
+// positionCode makes the plugin auto-select a squad-leader position that
+// already has a usable assignment slot, or refuse with an actionable
+// roll-call -- it does NOT default to "MILITIA_CAPTAIN" any more, and the
+// mint path is reachable only via an explicitly named code. Discover valid
+// position codes (with squad_size > 0) via the position_vacancies tool.
 func (e *CommandExecutor) SendCreateSquad(positionCode string) (*CommandResult, error) {
 	cmd := &protocol.CommandMessage{
 		CommandID:   e.tracker.GenerateCommandID(),
@@ -789,8 +792,9 @@ func (e *CommandExecutor) SendCreateSquad(positionCode string) (*CommandResult, 
 
 // SendAssignSquad adds (add=true) or removes (add=false) unitID from
 // squadID's membership -- see protocol.AssignSquadDesignation for the
-// exact semantics (first-free-non-commander-slot auto-pick on add;
-// civilian labors are not auto-disabled).
+// exact semantics (the PLUGIN picks the first free non-commander slot and
+// passes it explicitly on add -- addToSquad's own -1 auto-pick cannot be
+// used; civilian labors are not auto-disabled).
 func (e *CommandExecutor) SendAssignSquad(squadID, unitID int32, add bool) (*CommandResult, error) {
 	cmd := &protocol.CommandMessage{
 		CommandID:   e.tracker.GenerateCommandID(),

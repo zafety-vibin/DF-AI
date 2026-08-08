@@ -93,6 +93,10 @@
 #include "df/work_detail_mode.h"
 #include "df/work_detail_icon_type.h"
 #include "df/building_civzonest.h"
+#include "df/building_stockpilest.h"
+#include "df/stockpile_settings.h"
+#include "df/stockpile_group_set.h"
+#include "df/buildings_other.h"
 #include "df/world_site.h"
 #include "df/abstract_building.h"
 #include "df/abstract_building_inn_tavernst.h"
@@ -158,6 +162,7 @@
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 // Builds the set of tile coords with an in-flight dig-designation job
 // (implemented in tile_extractor.cpp; also forward-declared the same way
@@ -510,6 +515,120 @@ static std::string handleListReactions(const std::string &args, uint8_t &status)
     return os.str();
 }
 
+// resolveOrderLabor maps a manager order's job_type (plus the order's own
+// pinned material, when it has one) to the single df::unit_labor a citizen
+// must have ENABLED before DF will ever hand a job of that type to anyone.
+// Returns unit_labor::NONE when it cannot resolve one -- callers MUST treat
+// NONE as "unknown", never as "no labor needed" (see handleManagerOrders'
+// labor_available emission, which degrades to true in that case rather than
+// asserting a blocker it cannot prove).
+//
+// Three tiers, in order:
+//   (a) DF's own direct job_type->labor enum-attr (df.job.xml:76). Free, but
+//       DF only populates it for ~17 haul/mine/lever-class job types -- none
+//       of the manufacturing ones a manager order usually carries.
+//   (b) The skill chain: job_type->skill (df.job.xml:80), or, when that is
+//       NONE and the order's material resolves to craft class
+//       Wood/Stone/Metal, the matching job_type->skill_wood/skill_stone/
+//       skill_metal (df.job.xml:81-83); then job_skill->labor
+//       (df.skill_enum.xml:6). Covers the plain-skill job types
+//       (mining/woodcutting/herbalism/fishing/trapping/stonecutting) and the
+//       generic multi-material craft/tool/ammo/jewelry job types whenever the
+//       order's own material is known -- see the craftClass block below for
+//       the two DIFFERENT ways DF encodes that (pinned mat_type vs. the
+//       material_category bitfield), only one of which MaterialInfo can see.
+//   (c) A tiny hardcoded override for the furniture job types DF's own
+//       attribute tables leave completely unmapped -- ConstructBed
+//       (df.job.xml:439-443), ConstructBin (:469-473) and MakeBarrel (:782-786)
+//       carry neither `labor` nor any `skill*` attr at all. ConstructBed is
+//       wood-exclusive and maps unconditionally; ConstructBin/MakeBarrel are
+//       NOT (metal bins and metal barrels are real forge orders) and only map
+//       when the order is actually wood.
+//
+// Deliberately NOT extended to the material-ambiguous furniture job types
+// (ConstructTable/ConstructChair/ConstructCabinet/...), which can be wood,
+// stone or metal and whose actual required labor depends on which workshop DF's
+// manager eventually picks -- those degrade to NONE (unresolved) rather than
+// guess a labor and produce a confident wrong blocker. Metal ConstructBin /
+// MakeBarrel orders land in that same unresolved bucket by design.
+static df::unit_labor resolveOrderLabor(df::job_type jt, MaterialInfo &mi,
+                                        df::job_material_category matCat)
+{
+    // (a) direct job_type -> unit_labor
+    df::unit_labor direct = ENUM_ATTR(job_type, labor, jt);
+    if (direct != df::unit_labor::NONE)
+        return direct;
+
+    // Effective craft class. DF encodes a manager order's material in two
+    // mutually exclusive ways and MaterialInfo only sees one of them:
+    //   - metal/stone orders PIN an exact material (mat_type=0,
+    //     mat_index=<inorganic raw id> -- stockflow.lua:437-441), which
+    //     MaterialInfo decodes and getCraftClass() classifies;
+    //   - wood/bone/cloth/leather/... orders leave mat_type=-1 and set a
+    //     material_category bit instead (stockflow.lua:265-272, and the whole
+    //     wooden-items block at :576-609 uses materials.wood). MaterialInfo
+    //     (-1,-1) has a null material, so getCraftClass() returns None
+    //     (Materials.cpp:362-365) and the skill_wood branch below would be
+    //     unreachable for exactly the wooden orders that motivated this.
+    // Only wood has a job_material_category flag-bit that maps to a craft
+    // class (df.d_basics.xml:2902-2916 -- there is no stone or metal bit), so
+    // this category fallback is wood-only by construction.
+    df::craft_material_class craftClass = mi.getCraftClass();
+    bool isWoodOrder = (craftClass == df::craft_material_class::Wood) ||
+                       matCat.bits.wood || matCat.bits.wood2;
+    if (craftClass == df::craft_material_class::None && isWoodOrder)
+        craftClass = df::craft_material_class::Wood;
+
+    // (b) job_type -> job_skill -> unit_labor, with the material-class
+    // fallback for the generic craft job types.
+    df::job_skill skill = ENUM_ATTR(job_type, skill, jt);
+    if (skill == df::job_skill::NONE) {
+        switch (craftClass) {
+            case df::craft_material_class::Wood:
+                skill = ENUM_ATTR(job_type, skill_wood, jt);
+                break;
+            case df::craft_material_class::Stone:
+                skill = ENUM_ATTR(job_type, skill_stone, jt);
+                break;
+            case df::craft_material_class::Metal:
+                skill = ENUM_ATTR(job_type, skill_metal, jt);
+                break;
+            default:
+                break;
+        }
+    }
+    if (skill != df::job_skill::NONE) {
+        df::unit_labor fromSkill = ENUM_ATTR(job_skill, labor, skill);
+        if (fromSkill != df::unit_labor::NONE)
+            return fromSkill;
+    }
+
+    // (c) unmapped furniture override
+    switch (jt) {
+        case df::job_type::ConstructBed:
+            // Wood-only: stockflow.lua:681-682 spells it out ("-- Bed,
+            // specified as wooden") and ConstructBed is absent from the
+            // IS_METAL/ITEMS_HARD forge list. ASSUMPTION: it has been
+            // wood-only for the game's whole history; if DF ever adds a
+            // stone/metal bed, this entry must go.
+            return df::unit_labor::CARPENTER;
+        case df::job_type::ConstructBin:
+        case df::job_type::MakeBarrel:
+            // NOT wood-exclusive: stockflow.lua lists both inside the
+            // IS_METAL / ITEMS_HARD block too ({MakeBarrel,"Forge","Barrel"}
+            // at :523, {ConstructBin,"Construct","Bin"} at :525), so a forged
+            // metal barrel or bin is a real, orderable job done at a
+            // Metalsmith's Forge under a metal labor -- claiming CARPENTER
+            // for one would be a confident lie AND would outrank the weaker
+            // but true workshop_assigned rung on the Go side.
+            return isWoodOrder ? df::unit_labor::CARPENTER : df::unit_labor::NONE;
+        default:
+            break;
+    }
+
+    return df::unit_labor::NONE;
+}
+
 static std::string handleManagerOrders(const std::string &args, uint8_t &status) {
     if (!df::global::world) {
         status = QUERY_STATUS_ERROR;
@@ -533,6 +652,30 @@ static std::string handleManagerOrders(const std::string &args, uint8_t &status)
         df::job *job = cur->item;
         if (job && job->order_id >= 0) {
             jobsInProgressByOrder[job->order_id]++;
+        }
+    }
+
+    // Missing-labor fix: an order whose required labor is enabled on NOBODY
+    // in the fort can never be dispatched, but every status the ladder above
+    // reports ("queued, awaiting manager dispatch") reads as a healthy
+    // pending order -- a live fort watched wood furniture orders sit for
+    // game-weeks with no work detail holding CARPENTER and the tool never
+    // said so. One extra single pass over the citizen roster (Units::isCitizen
+    // -- the same filter work_details.cpp and handleWellbeing use) ORs every
+    // citizen's enabled labors into a fort-wide bitmap, O(citizens * labors)
+    // total instead of a per-order re-walk.
+    //
+    // Reading status.labors here is correct per docs/decisions.md
+    // (2026-07-18): it is DF's own recomputed cache
+    // (Units::setAutomaticProfessions) and is what DF's job dispatcher
+    // actually consults, so it reflects BOTH explicit work-detail membership
+    // AND DF's automatic-profession fallback -- exactly the two mechanisms
+    // that made this bug survivable for masonry but fatal for carpentry.
+    std::array<bool, LABOR_MAX_INDEX + 1> laborAvailable{};
+    for (auto *unit : df::global::world->units.active) {
+        if (!unit || !Units::isCitizen(unit)) continue;
+        for (int i = 0; i <= LABOR_MAX_INDEX; i++) {
+            if (unit->status.labors[i]) laborAvailable[i] = true;
         }
     }
 
@@ -564,6 +707,22 @@ static std::string handleManagerOrders(const std::string &args, uint8_t &status)
         // constraint at all).
         MaterialInfo mi((int16_t)o->mat_type, (int32_t)o->mat_index);
 
+        // required_labor/labor_available: the empty-string sentinel for
+        // required_labor follows the SAME convention material/
+        // material_category above already use -- "" means "could not be
+        // decoded", not "none needed". When the labor is unresolved,
+        // labor_available is emitted as true so the Go-side status ladder
+        // keeps falling through to its existing rungs instead of claiming a
+        // blocker this side cannot prove (see resolveOrderLabor's doc
+        // comment for exactly which job types stay unresolved by design).
+        df::unit_labor requiredLabor = resolveOrderLabor(o->job_type, mi, o->material_category);
+        bool laborAvail = true;
+        if (requiredLabor != df::unit_labor::NONE) {
+            int laborIdx = (int)requiredLabor;
+            if (laborIdx >= 0 && laborIdx <= LABOR_MAX_INDEX)
+                laborAvail = laborAvailable[laborIdx];
+        }
+
         os << "{"
            << "\"id\":" << jsonInt(o->id)
            << ",\"job_type\":" << jsonStr(ENUM_KEY_STR(job_type, o->job_type))
@@ -579,6 +738,9 @@ static std::string handleManagerOrders(const std::string &args, uint8_t &status)
            << ",\"active\":" << (o->status.bits.active ? "true" : "false")
            << ",\"jobs_in_progress\":" << jsonInt(jobsInProgress)
            << ",\"workshop_assigned\":" << (o->workshop_id >= 0 ? "true" : "false")
+           << ",\"required_labor\":" << jsonStr(requiredLabor == df::unit_labor::NONE
+                                                    ? "" : ENUM_KEY_STR(unit_labor, requiredLabor))
+           << ",\"labor_available\":" << (laborAvail ? "true" : "false")
            << "}";
     }
     os << "]}";
@@ -1688,6 +1850,83 @@ static std::string handleWorkshopJobs(const std::string &args, uint8_t &status) 
     return os.str();
 }
 
+// stockpileCategoryList: the accepted-item groups of one stockpile, as a
+// comma-joined list of the SAME 17 names the `stockpile` creation tool
+// already speaks (df::stockpile_group_set's bitfield, mirrored Go-side by
+// tools_action.go's stockpileGroups map) -- so what a roster reports back
+// reads in the same vocabulary a caller would use to make another one.
+// "all" and "none" are collapsed: 17 comma-separated names is noise, and a
+// stockpile accepting nothing is a real state worth naming outright (it is
+// the answer to "why is nothing being hauled here").
+static std::string stockpileCategoryList(df::building_stockpilest *sp) {
+    const auto &f = sp->settings.flags.bits;
+    const std::pair<const char *, bool> groups[] = {
+        {"animals", f.animals != 0},     {"food", f.food != 0},
+        {"furniture", f.furniture != 0}, {"corpses", f.corpses != 0},
+        {"refuse", f.refuse != 0},       {"stone", f.stone != 0},
+        {"ammo", f.ammo != 0},           {"coins", f.coins != 0},
+        {"bars_blocks", f.bars_blocks != 0}, {"gems", f.gems != 0},
+        {"finished_goods", f.finished_goods != 0}, {"leather", f.leather != 0},
+        {"cloth", f.cloth != 0},         {"wood", f.wood != 0},
+        {"weapons", f.weapons != 0},     {"armor", f.armor != 0},
+        {"sheet", f.sheet != 0},
+    };
+    const int kGroupCount = (int)(sizeof(groups) / sizeof(groups[0]));
+    int on = 0;
+    std::string out;
+    for (const auto &g : groups) {
+        if (!g.second) continue;
+        on++;
+        if (!out.empty()) out += ",";
+        out += g.first;
+    }
+    if (on == kGroupCount) return "all";
+    if (on == 0) return "none";
+    return out;
+}
+
+// stockpileFillCounts: how full one stockpile actually is -- distinct tiles
+// holding at least one loose item, and the total item count on them.
+//
+// Membership is PURE GEOMETRY. No item flag says "stockpiled": DFHack's own
+// Buildings::StockpileIterator resolves it as on_ground + containsTile, and
+// this mirrors that test (minus the iterator's skip of empty containers
+// assigned to the pile, which would make an empty-bin tile read as
+// unoccupied when it is physically taken). Buildings::containsTile is
+// extent-bitmap aware, so an L-shaped stockpile is measured by its real
+// tiles, not its bounding rectangle.
+//
+// Cost: the map blocks covering ONE stockpile's bbox, reading each block's
+// own item-id vector -- the same cheap tier as floorItemCountAt below, and
+// never world->items.all (that is stocks' price, paid on explicit call).
+//
+// Items inside a bin/barrel are excluded automatically: contained items are
+// not on_ground. The container itself counts as one item, which is why
+// every render of these numbers carries the "containers count as 1" caveat.
+static void stockpileFillCounts(df::building *sp, int &occupiedTiles, int &itemCount) {
+    occupiedTiles = 0;
+    itemCount = 0;
+    if (!sp) return;
+    std::set<std::pair<int16_t, int16_t>> occupied;
+    int32_t z = sp->z;
+    for (int32_t by = sp->y1 & ~15; by <= sp->y2; by += 16) {
+        for (int32_t bx = sp->x1 & ~15; bx <= sp->x2; bx += 16) {
+            df::map_block *blk = Maps::getTileBlock(bx, by, z);
+            if (!blk) continue;
+            for (int32_t id : blk->items) {
+                df::item *item = df::item::find(id);
+                if (!item || !item->flags.bits.on_ground) continue;
+                if (item->flags.bits.in_building || item->flags.bits.construction) continue;
+                if ((int32_t)item->pos.z != z) continue;
+                if (!Buildings::containsTile(sp, df::coord2d(item->pos.x, item->pos.y))) continue;
+                itemCount++;
+                occupied.insert(std::make_pair(item->pos.x, item->pos.y));
+            }
+        }
+    }
+    occupiedTiles = (int)occupied.size();
+}
+
 static std::string handleListBuildings(const std::string &args, uint8_t &status) {
     if (!df::global::world) {
         status = QUERY_STATUS_ERROR;
@@ -1738,6 +1977,34 @@ static std::string handleListBuildings(const std::string &args, uint8_t &status)
                                          : bridge->gate_flags.bits.raised ? "raised"
                                          : "lowered";
                 os << ",\"bridge_state\":" << jsonStr(bridgeState);
+            }
+        }
+
+        // Stockpile identity + fill. A bare "Stockpile at (x,y,z)" line told
+        // a caller nothing about whether the pile was empty, full, or
+        // accepting anything at all -- a live session had to be TOLD by a
+        // human that the fort needed more stockpile room. These fields turn
+        // the periodic buildings sweep into a stockpile health check, with
+        // enough identity (number, custom name) to tell two overlapping
+        // piles apart. Additive JSON: an older Go client ignores them, and
+        // an older plugin simply omits them.
+        if (b->getType() == df::building_type::Stockpile) {
+            auto *sp = strict_virtual_cast<df::building_stockpilest>(b);
+            if (sp) {
+                // countExtentTiles walks the extent bitmap (an L-shaped or
+                // obstruction-pocked stockpile has fewer usable tiles than
+                // its rectangle); the bbox area is the defval for a
+                // stockpile with no extent structure.
+                int bboxArea = (b->x2 - b->x1 + 1) * (b->y2 - b->y1 + 1);
+                int tiles = Buildings::countExtentTiles(b, bboxArea);
+                int occupied = 0, items = 0;
+                stockpileFillCounts(b, occupied, items);
+                os << ",\"sp_number\":" << jsonInt(sp->stockpile_number)
+                   << ",\"sp_name\":" << jsonStr(b->name)
+                   << ",\"sp_categories\":" << jsonStr(stockpileCategoryList(sp))
+                   << ",\"sp_tiles\":" << jsonInt(tiles)
+                   << ",\"sp_occupied\":" << jsonInt(occupied)
+                   << ",\"sp_items\":" << jsonInt(items);
             }
         }
 
@@ -2431,6 +2698,16 @@ static std::string handleStockpileInventory(const std::string &args, uint8_t &st
     }
     os << "]";
 
+    // O(1) self-describing capability flag, same sibling-of-the-payload
+    // convention the truncated flags elsewhere in this file use. The Go
+    // renderer's own no-data detection is a nil scan over the items (it must
+    // keep working against plugin builds that predate this flag), but a
+    // single explicit top-level "yes, this build measures stack sizes" is
+    // both cheaper to read and immune to a future regression that stops
+    // populating "units" for some new item type without removing the field
+    // wholesale.
+    os << ",\"stack_units\":true";
+
     os << "}";
     status = QUERY_STATUS_SUCCESS;
     return os.str();
@@ -2573,14 +2850,170 @@ static bool isSmoothedAt(df::tiletype tt) {
 // MapExtras::Block::itemCountAt) via the Block's raw item list, so a
 // map_slice/column_profile call only ever scans the blocks it actually
 // visits -- never world->items.all.
-using FloorItemBlockCache = std::map<MapExtras::Block *, std::array<int, 256>>;
+// Coarse item classes for the items lens. DF has ~90 df::item_type values;
+// a per-view footnote can afford roughly a dozen names, so types collapse
+// into the families a fort actually reasons about ("that pile is stone" /
+// "that pile is food"). This mapping is editorial by construction -- a
+// class carved wrong costs a mislabeled letter, never data loss -- and the
+// per-tile item COUNT is always exact regardless of how it classifies.
+enum FloorItemClass {
+    ITEMCLASS_STONE = 0,
+    ITEMCLASS_WOOD,
+    ITEMCLASS_FOOD,
+    ITEMCLASS_FURNITURE,
+    ITEMCLASS_BARS_BLOCKS,
+    ITEMCLASS_CLOTH_LEATHER,
+    ITEMCLASS_WEAPON_ARMOR,
+    ITEMCLASS_FINISHED_GOODS,
+    ITEMCLASS_REFUSE,
+    ITEMCLASS_GEMS,
+    ITEMCLASS_CONTAINERS,
+    ITEMCLASS_TOOLS,
+    ITEMCLASS_OTHER,
+    ITEMCLASS_COUNT
+};
 
-static int floorItemCountAt(MapExtras::MapCache &cache, FloorItemBlockCache &blockCache, df::coord pos) {
+static const char *kFloorItemClassNames[ITEMCLASS_COUNT] = {
+    "stone", "wood", "food/drink", "furniture", "bars/blocks", "cloth/leather",
+    "weapons/armor", "finished goods", "refuse/corpse", "gems", "containers",
+    "tools", "other"
+};
+
+static int floorItemClassOf(df::item *it) {
+    switch (it->getType()) {
+        case df::item_type::BOULDER:
+        case df::item_type::ROCK:
+            return ITEMCLASS_STONE;
+        case df::item_type::WOOD:
+        case df::item_type::BRANCH:
+            return ITEMCLASS_WOOD;
+        case df::item_type::MEAT:
+        case df::item_type::FISH:
+        case df::item_type::FISH_RAW:
+        case df::item_type::EGG:
+        case df::item_type::CHEESE:
+        case df::item_type::FOOD:
+        case df::item_type::DRINK:
+        case df::item_type::PLANT:
+        case df::item_type::PLANT_GROWTH:
+        case df::item_type::SEEDS:
+        case df::item_type::POWDER_MISC:
+        case df::item_type::LIQUID_MISC:
+        case df::item_type::GLOB:
+            return ITEMCLASS_FOOD;
+        case df::item_type::DOOR:
+        case df::item_type::FLOODGATE:
+        case df::item_type::HATCH_COVER:
+        case df::item_type::GRATE:
+        case df::item_type::BED:
+        case df::item_type::CHAIR:
+        case df::item_type::TABLE:
+        case df::item_type::COFFIN:
+        case df::item_type::STATUE:
+        case df::item_type::CABINET:
+        case df::item_type::ARMORSTAND:
+        case df::item_type::WEAPONRACK:
+        case df::item_type::WINDOW:
+        case df::item_type::CAGE:
+        case df::item_type::ANIMALTRAP:
+        case df::item_type::CHAIN:
+        case df::item_type::QUERN:
+        case df::item_type::MILLSTONE:
+        case df::item_type::SLAB:
+        case df::item_type::TRACTION_BENCH:
+        case df::item_type::ANVIL:
+        case df::item_type::PIPE_SECTION:
+            return ITEMCLASS_FURNITURE;
+        case df::item_type::BAR:
+        case df::item_type::BLOCKS:
+            return ITEMCLASS_BARS_BLOCKS;
+        case df::item_type::CLOTH:
+        case df::item_type::THREAD:
+        case df::item_type::SKIN_TANNED:
+            return ITEMCLASS_CLOTH_LEATHER;
+        case df::item_type::WEAPON:
+        case df::item_type::ARMOR:
+        case df::item_type::SHOES:
+        case df::item_type::SHIELD:
+        case df::item_type::HELM:
+        case df::item_type::GLOVES:
+        case df::item_type::PANTS:
+        case df::item_type::AMMO:
+        case df::item_type::QUIVER:
+        case df::item_type::TRAPCOMP:
+        case df::item_type::TRAPPARTS:
+        case df::item_type::SIEGEAMMO:
+        case df::item_type::BALLISTAARROWHEAD:
+        case df::item_type::CATAPULTPARTS:
+        case df::item_type::BALLISTAPARTS:
+        case df::item_type::BOLT_THROWER_PARTS:
+            return ITEMCLASS_WEAPON_ARMOR;
+        case df::item_type::FIGURINE:
+        case df::item_type::AMULET:
+        case df::item_type::SCEPTER:
+        case df::item_type::CROWN:
+        case df::item_type::RING:
+        case df::item_type::EARRING:
+        case df::item_type::BRACELET:
+        case df::item_type::TOTEM:
+        case df::item_type::TOY:
+        case df::item_type::INSTRUMENT:
+        case df::item_type::FLASK:
+        case df::item_type::GOBLET:
+        case df::item_type::BOOK:
+        case df::item_type::SHEET:
+        case df::item_type::COIN:
+            return ITEMCLASS_FINISHED_GOODS;
+        case df::item_type::CORPSE:
+        case df::item_type::CORPSEPIECE:
+        case df::item_type::REMAINS:
+        case df::item_type::VERMIN:
+            return ITEMCLASS_REFUSE;
+        case df::item_type::ROUGH:
+        case df::item_type::SMALLGEM:
+        case df::item_type::GEM:
+            return ITEMCLASS_GEMS;
+        case df::item_type::BARREL:
+        case df::item_type::BUCKET:
+        case df::item_type::BIN:
+        case df::item_type::BAG:
+        case df::item_type::BOX:
+        case df::item_type::BACKPACK:
+            return ITEMCLASS_CONTAINERS;
+        case df::item_type::TOOL:
+        case df::item_type::SPLINT:
+        case df::item_type::CRUTCH:
+        case df::item_type::ORTHOPEDIC_CAST:
+            return ITEMCLASS_TOOLS;
+        default:
+            return ITEMCLASS_OTHER;
+    }
+}
+
+// FloorItemTileInfo is one map block's per-tile loose-item summary: the
+// count (the always-on footer's raw material) and the DOMINANT class on
+// that tile (the items lens's letter). One tile can hold several classes;
+// the letter names the class with the most items there, ties breaking to
+// the lower class id so repeated calls over unchanged terrain paint the
+// same picture.
+struct FloorItemTileInfo {
+    std::array<int, 256> counts;
+    std::array<int8_t, 256> topClass;  // -1 = no items on this tile
+    FloorItemTileInfo() : counts{} { topClass.fill(-1); }
+};
+
+using FloorItemBlockCache = std::map<MapExtras::Block *, FloorItemTileInfo>;
+
+static const FloorItemTileInfo *floorItemBlockInfo(MapExtras::MapCache &cache,
+                                                   FloorItemBlockCache &blockCache,
+                                                   df::coord pos) {
     MapExtras::Block *b = cache.BlockAtTile(pos);
-    if (!b) return 0;
+    if (!b) return nullptr;
     auto found = blockCache.find(b);
     if (found == blockCache.end()) {
-        std::array<int, 256> counts{};
+        FloorItemTileInfo info;
+        // Per-tile per-class tallies, transient: only the winner is cached.
+        std::vector<std::array<uint16_t, ITEMCLASS_COUNT>> classCounts(256);
         if (df::map_block *raw = b->getRaw()) {
             for (int32_t id : raw->items) {
                 df::item *item = df::item::find(id);
@@ -2588,12 +3021,72 @@ static int floorItemCountAt(MapExtras::MapCache &cache, FloorItemBlockCache &blo
                 if (item->flags.bits.in_building || item->flags.bits.construction) continue;
                 df::coord tidx = item->pos - raw->map_pos;
                 if (!is_valid_tile_coord(tidx) || tidx.z != 0) continue;
-                counts[tidx.y * 16 + tidx.x]++;
+                int idx = tidx.y * 16 + tidx.x;
+                info.counts[idx]++;
+                int cls = floorItemClassOf(item);
+                if (cls >= 0 && cls < ITEMCLASS_COUNT) classCounts[idx][cls]++;
             }
         }
-        found = blockCache.emplace(b, counts).first;
+        for (int i = 0; i < 256; i++) {
+            if (info.counts[i] == 0) continue;
+            int best = -1;
+            uint16_t bestN = 0;
+            for (int c = 0; c < ITEMCLASS_COUNT; c++) {
+                if (classCounts[i][c] > bestN) { bestN = classCounts[i][c]; best = c; }
+            }
+            info.topClass[i] = (int8_t)best;
+        }
+        // std::map never invalidates references on insert, so the pointer
+        // handed back here stays valid for the rest of the call.
+        found = blockCache.emplace(b, std::move(info)).first;
     }
-    return found->second[(pos.y & 15) * 16 + (pos.x & 15)];
+    return &found->second;
+}
+
+static int floorItemCountAt(MapExtras::MapCache &cache, FloorItemBlockCache &blockCache, df::coord pos) {
+    const FloorItemTileInfo *info = floorItemBlockInfo(cache, blockCache, pos);
+    if (!info) return 0;
+    return info->counts[(pos.y & 15) * 16 + (pos.x & 15)];
+}
+
+// floorItemClassAt: the dominant FloorItemClass on this tile, or -1 when
+// the tile holds no loose items.
+static int floorItemClassAt(MapExtras::MapCache &cache, FloorItemBlockCache &blockCache, df::coord pos) {
+    const FloorItemTileInfo *info = floorItemBlockInfo(cache, blockCache, pos);
+    if (!info) return -1;
+    return info->topClass[(pos.y & 15) * 16 + (pos.x & 15)];
+}
+
+// collectStockpileCoverage: every tile inside the queried window that some
+// stockpile's extents cover, at this z.
+//
+// Built from world->buildings.other.STOCKPILE (a typed vector, one entry
+// per stockpile -- forts have single digits to dozens) plus
+// Buildings::containsTile, which is DFHack's own membership test and is
+// extent-bitmap aware. Buildings::findAtTile is deliberately NOT used: it
+// is gated on tile occupancy + isSettingOccupancy(), a game-binary vmethod
+// whose behavior for abstract buildings like stockpiles could not be
+// verified from source -- and applyRemoveBuilding already had to work
+// around findAtTile being blind to stockpiles for exactly that reason.
+static void collectStockpileCoverage(int16_t x1, int16_t y1, int16_t x2, int16_t y2, int16_t z,
+                                     std::unordered_set<df::coord> &out) {
+    if (!df::global::world) return;
+    // df::building's x1/y1/x2/y2/z are int32_t; the slice window is int16_t
+    // tile coords -- clamp in int32_t, then narrow once for the coord keys.
+    for (auto *sp : df::global::world->buildings.other.STOCKPILE) {
+        if (!sp) continue;
+        if (sp->z != (int32_t)z) continue;
+        if (sp->x2 < (int32_t)x1 || sp->x1 > (int32_t)x2 ||
+            sp->y2 < (int32_t)y1 || sp->y1 > (int32_t)y2) continue;
+        int32_t ix1 = std::max(sp->x1, (int32_t)x1), ix2 = std::min(sp->x2, (int32_t)x2);
+        int32_t iy1 = std::max(sp->y1, (int32_t)y1), iy2 = std::min(sp->y2, (int32_t)y2);
+        for (int16_t yy = (int16_t)iy1; yy <= (int16_t)iy2; yy++) {
+            for (int16_t xx = (int16_t)ix1; xx <= (int16_t)ix2; xx++) {
+                if (Buildings::containsTile(sp, df::coord2d(xx, yy)))
+                    out.insert(df::coord(xx, yy, z));
+            }
+        }
+    }
 }
 
 static std::string queryMapSlice(const std::string &args, uint8_t &status) {
@@ -2640,6 +3133,29 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
     int mineralTileCount = 0;
     std::vector<std::string> mineralNames;
     std::map<int16_t, int> veinMatIndex;
+    // Stockpile coverage over this window, built once per call (same
+    // pattern as digJobTargets above). DF marks no item as "stockpiled",
+    // so the homeless/stored split below is pure geometry -- see
+    // collectStockpileCoverage.
+    std::unordered_set<df::coord> stockpileTiles;
+    collectStockpileCoverage((int16_t)x1, (int16_t)y1, (int16_t)x2, (int16_t)y2, (int16_t)z,
+                             stockpileTiles);
+    int stockpileTilesInView = 0, stockpileTilesOccupied = 0;
+    // The homeless subset of floor_items. Capped at 200 (sibling
+    // convention) with an explicit flag, unlike the uncapped floor_items
+    // array it is drawn from: homeless clutter is normally small, and when
+    // it is not, "200+, and here is where" is already a complete signal.
+    std::string floorItemsNoStock = "[";
+    int noStockCount = 0;
+    bool noStockCapped = false;
+    // Per-tile item class, keyed to a per-call name table -- the exact
+    // minerals/mineral_names convention, including registering a class name
+    // the first time it is SEEN (so the footnote stays complete) while
+    // emitting per-tile entries only under the 200-tile cap.
+    std::string floorItemClasses = "[";
+    int classTileCount = 0;
+    std::vector<std::string> floorItemClassNames;
+    std::map<int, int> floorItemClassIndex;
     for (int16_t y = (int16_t)y1; y <= (int16_t)y2; y++) {
         std::string row;
         for (int16_t x = (int16_t)x1; x <= (int16_t)x2; x++) {
@@ -2784,11 +3300,67 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
             // classifier above (a tile with a stray item still renders as
             // plain floor) but can silently block a new building placement.
             // See floorItemCountAt.
+            //
+            // The stockpile split matters as much as the count: a bare
+            // tile tally cannot tell a well-organized full stockpile from
+            // a floor buried in junk, and that ambiguity is what left a
+            // live session blind to a stockpile shortage.
+            bool inStockpile = stockpileTiles.count(pos) > 0;
+            if (inStockpile) stockpileTilesInView++;
             int itemCount = floorItemCountAt(cache, itemBlockCache, pos);
             if (itemCount > 0) {
                 if (floorItemTiles) floorItems += ",";
                 floorItems += "[" + jsonInt(x) + "," + jsonInt(y) + "," + jsonInt(itemCount) + "]";
                 floorItemTiles++;
+                if (inStockpile) {
+                    stockpileTilesOccupied++;
+                } else if (noStockCount < 200) {
+                    // CAP INVARIANT: this 200 must stay >= the
+                    // floor_item_classes cap below. Both counters advance in
+                    // the same row-major scan, but this one counts ONLY
+                    // homeless tiles while the class cap counts EVERY item
+                    // tile, so the k-th homeless tile is at most the k-th
+                    // item tile -- the class cap is always reached first, and
+                    // every tile the items lens paints is therefore present
+                    // in this array. Lower this cap (or raise the class cap)
+                    // and lenses.go's buildItemsOverlay starts painting
+                    // genuinely homeless tiles LOWERCASE, i.e. asserting
+                    // "inside a stockpile" -- the exact lie this whole split
+                    // exists to prevent. The Go render discloses
+                    // floor_items_nostock_capped either way, so breaking this
+                    // costs precision rather than truthfulness; do not break
+                    // it regardless.
+                    if (noStockCount) floorItemsNoStock += ",";
+                    floorItemsNoStock += "[" + jsonInt(x) + "," + jsonInt(y) + "," + jsonInt(itemCount) + "]";
+                    noStockCount++;
+                } else {
+                    noStockCapped = true;
+                }
+                int cls = floorItemClassAt(cache, itemBlockCache, pos);
+                if (cls >= 0 && cls < ITEMCLASS_COUNT) {
+                    auto foundClass = floorItemClassIndex.find(cls);
+                    int idx;
+                    if (foundClass == floorItemClassIndex.end()) {
+                        idx = (int)floorItemClassNames.size();
+                        floorItemClassNames.push_back(kFloorItemClassNames[cls]);
+                        floorItemClassIndex.emplace(cls, idx);
+                    } else {
+                        idx = foundClass->second;
+                    }
+                    if (classTileCount < 200) {
+                        // CAP INVARIANT (mirror of floor_items_nostock
+                        // above): this cap must stay <= the homeless-list
+                        // cap. It counts EVERY item tile while that one
+                        // counts only homeless tiles, so it is always
+                        // reached first and every lettered tile's homeless
+                        // status is known to the renderer. Raise it past the
+                        // other and the items lens would paint some homeless
+                        // tiles lowercase -- reading as "inside a stockpile".
+                        if (classTileCount) floorItemClasses += ",";
+                        floorItemClasses += "[" + jsonInt(x) + "," + jsonInt(y) + "," + jsonInt(idx) + "]";
+                        classTileCount++;
+                    }
+                }
             }
         }
         if (y != (int16_t)y1) rows += ",";
@@ -2796,6 +3368,7 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
     }
     rows += "]"; designated += "]"; water += "]"; aquifer += "]"; designationKinds += "]"; smoothed += "]";
     floorItems += "]"; pendingBuilding += "]"; minerals += "]";
+    floorItemsNoStock += "]"; floorItemClasses += "]";
     // mineralNames table: one entry per distinct vein material seen in this
     // call, indexed by the third element of each minerals[] triple.
     std::string mineralNamesJSON = "[";
@@ -2804,13 +3377,32 @@ static std::string queryMapSlice(const std::string &args, uint8_t &status) {
         mineralNamesJSON += jsonStr(mineralNames[i]);
     }
     mineralNamesJSON += "]";
+    // floor_item_class_names: same shape as mineral_names -- one entry per
+    // distinct item class seen in THIS call, indexed by the third element
+    // of each floor_item_classes triple.
+    std::string floorItemClassNamesJSON = "[";
+    for (size_t i = 0; i < floorItemClassNames.size(); i++) {
+        if (i) floorItemClassNamesJSON += ",";
+        floorItemClassNamesJSON += jsonStr(floorItemClassNames[i]);
+    }
+    floorItemClassNamesJSON += "]";
     status = QUERY_STATUS_SUCCESS;
+    // stockpile_tiles_in_view is emitted UNCONDITIONALLY (even at zero):
+    // it is the new-plugin sentinel the Go renderer keys on, and a plain
+    // int that is sometimes absent would let "never measured" decode as
+    // "measured zero" -- the stockItem Units lesson, on the wire.
     return "{\"z\":" + jsonInt(z) + ",\"x1\":" + jsonInt(x1) + ",\"y1\":" + jsonInt(y1) +
            ",\"rows\":" + rows + ",\"designated\":" + designated +
            ",\"water\":" + water + ",\"aquifer\":" + aquifer +
            ",\"designation_kinds\":" + designationKinds +
            ",\"smoothed\":" + smoothed +
            ",\"floor_items\":" + floorItems +
+           ",\"stockpile_tiles_in_view\":" + jsonInt(stockpileTilesInView) +
+           ",\"stockpile_tiles_occupied\":" + jsonInt(stockpileTilesOccupied) +
+           ",\"floor_items_nostock\":" + floorItemsNoStock +
+           (noStockCapped ? std::string(",\"floor_items_nostock_capped\":true") : std::string()) +
+           ",\"floor_item_classes\":" + floorItemClasses +
+           ",\"floor_item_class_names\":" + floorItemClassNamesJSON +
            ",\"pending_building\":" + pendingBuilding +
            ",\"minerals\":" + minerals +
            ",\"mineral_names\":" + mineralNamesJSON + "}";

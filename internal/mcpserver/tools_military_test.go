@@ -1,9 +1,86 @@
 package mcpserver
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// militaryToolByName lists tools over a real in-memory MCP session (the
+// same path a real client uses) and returns the named one, mirroring
+// TestLookDescriptionDocumentsPendingBuildingMarker's setup.
+func militaryToolByName(t *testing.T, name string) *mcp.Tool {
+	t.Helper()
+	ctx := context.Background()
+	srv := New(nil)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := srv.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	res, err := clientSession.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name == name {
+			return tool
+		}
+	}
+	t.Fatalf("%s tool not found", name)
+	return nil
+}
+
+// TestCreateSquadDescriptionDropsMilitiaCaptainDefault pins the model-facing
+// half of the 2026-08-07 squad fix. The plugin no longer rewrites an empty
+// position_code to "MILITIA_CAPTAIN" -- it auto-selects a squad-leader
+// position that actually has an unlocked assignment slot, and refuses when
+// none does. A schema still promising a MILITIA_CAPTAIN default would be
+// promising a default the plugin may now refuse to honour, which is exactly
+// the kind of untruthful surface this project forbids.
+func TestCreateSquadDescriptionDropsMilitiaCaptainDefault(t *testing.T) {
+	tool := militaryToolByName(t, "create_squad")
+	if strings.Contains(tool.Description, "MILITIA_CAPTAIN") {
+		t.Fatalf("create_squad description must not promise a MILITIA_CAPTAIN default: %q", tool.Description)
+	}
+	if !strings.Contains(tool.Description, "auto-select") {
+		t.Fatalf("create_squad description must document the auto-select behavior for an omitted position_code: %q", tool.Description)
+	}
+	if !strings.Contains(tool.Description, "refuse") {
+		t.Fatalf("create_squad description must say auto-selection can refuse rather than silently minting: %q", tool.Description)
+	}
+	schema, err := json.Marshal(tool.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal create_squad input schema: %v", err)
+	}
+	if strings.Contains(string(schema), "MILITIA_CAPTAIN") {
+		t.Fatalf("create_squad position_code schema must not promise a MILITIA_CAPTAIN default: %s", schema)
+	}
+}
+
+// TestAssignSquadDescriptionKeepsCommanderLimit guards the one claim the
+// squad fix did NOT make true: the commander slot (position 0) is still
+// unreachable, and it is still UNVERIFIED whether DF binds it on its own.
+// assign_squad's description must keep saying so.
+func TestAssignSquadDescriptionKeepsCommanderLimit(t *testing.T) {
+	tool := militaryToolByName(t, "assign_squad")
+	if !strings.Contains(tool.Description, "commander slot (position 0) cannot be filled") {
+		t.Fatalf("assign_squad description must keep documenting the unfillable commander slot: %q", tool.Description)
+	}
+}
 
 func TestRenderSquads_NoSquads(t *testing.T) {
 	out := renderSquads([]byte(`{"squads":[]}`))

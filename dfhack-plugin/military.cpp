@@ -7,15 +7,16 @@
 // UNVERIFIED flag inline, per this project's house rule of documenting
 // real limitations instead of papering over them:
 //
-//   1. applyCreateSquad's assignment-minting path: no DFHack code
-//      anywhere in this checkout mints a brand-new
-//      entity_position_assignment. The recipe here is inferred from the
-//      struct shape and df::create_squad_interfacest's own candidate-list
-//      field (proving the closed DF binary treats "mint a fresh
-//      assignment from this position template" as a real, distinct
-//      step) -- NOT confirmed against any known-working DFHack script.
-//      Needs a live check (DF's own Squads/Nobles screen) before this
-//      path is fully trusted; the success ACK says so explicitly.
+//   1. applyCreateSquad's assignment-minting path (reachable ONLY when
+//      the caller names position_code explicitly -- the default-selection
+//      path never mints): no DFHack code anywhere in this checkout mints
+//      a brand-new entity_position_assignment. The recipe here is
+//      inferred from the struct shape and df::create_squad_interfacest's
+//      own candidate-list field (proving the closed DF binary treats
+//      "mint a fresh assignment from this position template" as a real,
+//      distinct step) -- NOT confirmed against any known-working DFHack
+//      script. Needs a live check (DF's own Squads/Nobles screen) before
+//      this path is fully trusted; the success ACK says so explicitly.
 //   2. applySquadOrder's Station case (squad_order_movest): the
 //      pos/point_id field pairing with no saved Notes-screen waypoint is
 //      inferred from field shape only -- no code in this checkout ever
@@ -25,11 +26,42 @@
 //      -- mitigated by always clearing the queue before pushing exactly
 //      one new order, never depending on queue semantics.
 //
-// Everything else here -- Military::addToSquad/removeFromSquad, the
-// defend-burrow order's burrows list, and (per Military.cpp's own source)
-// makeSquad itself -- mirrors proven-safe DFHack patterns 1:1 (real
-// callers in scripts/autotraining.lua for the first two; Military.cpp is
-// DFHack's own module implementation for the third).
+// CORRECTED 2026-08-07 (this comment previously claimed addToSquad
+// "mirrors proven-safe DFHack patterns 1:1" and, in message.go, that it
+// "auto-picks the first free NON-commander slot" -- that misreading IS the
+// root cause of assign_squad failing on every squad this plugin created):
+// Military::addToSquad is NEVER called here with its default
+// squad_pos == -1. That auto-pick path is broken for any freshly made
+// squad. Military.cpp's loop (`for (int p = 0; p < 10; p++)`) selects
+// p == 0 the instant the commander slot is vacant -- which is ALWAYS true
+// on a squad Military::makeSquad just built, since makeSquad allocates
+// every squad_position but never writes positions[0].occupant (the
+// codegen ctor leaves it at -1) -- and the very next line then refuses
+// squad_pos == 0 outright. DFHack's own docs state this failure mode in
+// prose: docs/dev/Lua API.rst's addToSquad entry says it "will fail if
+// squad_pos is specified as 0 or if squad_pos is specified as -1 and the
+// squad leader position is currently vacant". DFHack's only real caller,
+// scripts/autotraining.lua, dodges it by looping i=1..9 and ALWAYS
+// passing an explicit index -- that explicit-index call, not the -1
+// default, is the pattern this file now mirrors: applyAssignSquad
+// computes the slot itself via findFreeNonCommanderSlot (bounded by the
+// squad's real positions.size(), never a hardcoded 10) and passes it.
+//
+// Still accurate, and still the basis for the rest of this file:
+// Military::removeFromSquad and Military::makeSquad are DFHack's own
+// module implementations (makeSquad additionally pushes the new squad
+// into BOTH fort->squads and world->squads.all unconditionally), and the
+// defend-burrow order's burrows list carries real in-tree precedent.
+//
+// STILL UNSOLVED -- do not read this file as "military is fixed": nothing
+// here can fill a squad's COMMANDER slot (position 0). Across the whole
+// DFHack checkout exactly two writers of squad_position::occupant exist,
+// addToSquad (which refuses index 0) and removeFromSquad (which clears
+// it), so whether DF's own per-tick simulation binds the leader on its
+// own after ticks run is UNVERIFIED. A live tick-test must answer that
+// before any commander-binding write is attempted here; assign_squad's
+// full-squad ACK says so out loud rather than implying the slot is
+// reachable.
 //
 // Deliberately OUT OF SCOPE (see docs/decisions.md for the full
 // reasoning):
@@ -64,6 +96,7 @@
 #include "df/unit.h"
 #include "df/historical_entity.h"
 #include "df/entity_position.h"
+#include "df/entity_position_flags.h"
 #include "df/entity_position_assignment.h"
 #include "df/squad.h"
 #include "df/squad_position.h"
@@ -113,24 +146,129 @@ static bool findPositionAndVacantAssignment(df::historical_entity *entity, const
     return true;
 }
 
-// applyCreateSquad fills (or mints -- see file comment, risk item 1) a
-// vacant entity_position_assignment for positionCode ("" defaults to
-// "MILITIA_CAPTAIN", the position vanilla DF's own [SQUAD:...] raw token
-// attaches to -- confirmed against the live Steam install's
-// data/vanilla/vanilla_entities/objects/entity_default.txt [ENTITY:MOUNTAIN]
-// block), then calls Military::makeSquad on it.
+// selectDefaultSquadLeaderPosition picks which entity_position a new squad
+// should be led by when the caller named none. It replaces an older
+// hardcoded "MILITIA_CAPTAIN" default that silently fell through to the
+// UNVERIFIED minting path (file comment, risk item 1) on young forts,
+// where MILITIA_CAPTAIN typically has no assignment slot yet while
+// MILITIA_COMMANDER already does.
+//
+// Preference order (both tiers require squad_size > 0, i.e. the position
+// can actually lead a squad):
+//   1. a position with an assignment whose holder is appointed
+//      (histfig >= 0) AND which is not already leading a squad
+//      (squad_id == -1) -- ready to go, nothing to mint.
+//   2. a position with any assignment not already leading a squad,
+//      appointed or not -- still avoids the mint path.
+// Returns false when neither tier matches, filling outWhy with an
+// actionable roll-call of every squad_size > 0 position seen and its
+// population-gate state, so applyCreateSquad can refuse truthfully
+// instead of minting behind the caller's back.
+//
+// UNVERIFIED preference ordering: DF's own vanilla precedence semantics
+// for competing squad-leader positions are not modelled here.
+// entity_position::precedence exists, but nothing in this checkout (DF-AI
+// or DFHack) sorts by it, so it is deliberately NOT used as a tiebreak --
+// with two simultaneously-eligible positions the pick may differ from
+// what a human would choose in DF's own UI. Likewise, the observation
+// motivating this helper (that MILITIA_COMMANDER unlocks before
+// MILITIA_CAPTAIN on a young fort) is general DF community knowledge plus
+// one live observation, NOT confirmed against this checkout's bundled
+// raws -- which is exactly why this scans runtime assignment state rather
+// than hardcoding any position code's unlock order.
+static bool selectDefaultSquadLeaderPosition(df::historical_entity *fort,
+                                             std::string &outCode,
+                                             std::string &outReason,
+                                             std::string &outWhy)
+{
+    df::entity_position *ready = nullptr;    // tier 1: appointed holder, no squad yet
+    df::entity_position *unbound = nullptr;  // tier 2: assignment exists, no squad yet
+    std::string rollCall;
+    int leaderPositions = 0;
+
+    for (auto *p : fort->positions.own) {
+        if (!p || p->squad_size <= 0) continue;
+        leaderPositions++;
+
+        int slots = 0, freeSlots = 0, readySlots = 0;
+        for (auto *a : fort->positions.assignments) {
+            if (!a || a->position_id != p->id) continue;
+            slots++;
+            if (a->squad_id != -1) continue;
+            freeSlots++;
+            if (a->histfig >= 0) readySlots++;
+        }
+
+        if (!rollCall.empty()) rollCall += "; ";
+        rollCall += "'" + p->code + "' (squad_size=" + std::to_string(p->squad_size) +
+                    ", assignment slots=" + std::to_string(slots) +
+                    ", not-yet-leading-a-squad=" + std::to_string(freeSlots) +
+                    ", requires_population=" + std::to_string(p->requires_population) +
+                    ", has_met_pop_req=" +
+                    (p->flags.is_set(df::entity_position_flags::HAS_MET_POP_REQ) ? "true" : "false") + ")";
+
+        if (readySlots > 0 && !ready) ready = p;
+        if (freeSlots > 0 && !unbound) unbound = p;
+    }
+
+    if (ready) {
+        outCode = ready->code;
+        outReason = " -- position auto-selected (no position_code given): it already has an "
+                    "appointed holder and an assignment slot not yet leading a squad, so no "
+                    "assignment had to be minted";
+        return true;
+    }
+    if (unbound) {
+        outCode = unbound->code;
+        outReason = " -- position auto-selected (no position_code given): it has an assignment "
+                    "slot not yet leading a squad, but NO appointed holder yet (use "
+                    "appoint_position); no assignment had to be minted";
+        return true;
+    }
+
+    if (leaderPositions == 0) {
+        outWhy = "this fort's entity defines no squad-leader position at all (none with "
+                 "squad_size > 0) -- nothing to create a squad under; inspect position_vacancies";
+        return false;
+    }
+    outWhy = "no squad-leader position on this fort has an assignment slot available to lead a "
+             "new squad, so create_squad refuses rather than minting one behind your back "
+             "(minting is UNVERIFIED -- see military.cpp risk item 1). Positions seen: " +
+             rollCall +
+             ". Wait for the population gate (requires_population vs has_met_pop_req above) to "
+             "unlock a slot, free an existing squad's leader assignment, or pass position_code "
+             "explicitly to take the UNVERIFIED mint path deliberately";
+    return false;
+}
+
+// applyCreateSquad fills (or, only when positionCodeIn is explicitly
+// given, mints -- see file comment, risk item 1) a vacant
+// entity_position_assignment for positionCode, then calls
+// Military::makeSquad on it. An empty positionCodeIn no longer defaults to
+// a hardcoded "MILITIA_CAPTAIN"; it runs selectDefaultSquadLeaderPosition
+// instead, which either names a position that already has a usable
+// assignment slot or refuses with an actionable roll-call.
 bool applyCreateSquad(const std::string &positionCodeIn, std::string &error)
 {
     if (!df::global::world || !df::global::plotinfo) {
         error = "world or plotinfo is null";
         return false;
     }
-    std::string positionCode = positionCodeIn.empty() ? "MILITIA_CAPTAIN" : positionCodeIn;
 
     df::historical_entity *fort = df::historical_entity::find(df::global::plotinfo->group_id);
     if (!fort) {
         error = "fort entity (plotinfo->group_id) not found";
         return false;
+    }
+
+    std::string positionCode = positionCodeIn;
+    std::string autoReason;
+    if (positionCode.empty()) {
+        std::string why;
+        if (!selectDefaultSquadLeaderPosition(fort, positionCode, autoReason, why)) {
+            error = why;
+            return false;
+        }
     }
 
     df::entity_position *position = nullptr;
@@ -171,7 +309,9 @@ bool applyCreateSquad(const std::string &positionCodeIn, std::string &error)
 
     error = "squad #" + std::to_string(squad->id) + " created, led by position '" + positionCode +
             "' (" + position->name[0] + "), " + std::to_string(squad->positions.size()) +
-            " total slots, leader vacant";
+            " total slots, leader (position 0) vacant -- this plugin cannot fill the commander "
+            "slot and it is UNVERIFIED whether DF's own simulation binds it on its own; staff "
+            "positions 1+ with assign_squad" + autoReason;
     if (minted) {
         error += " -- NOTE: this position had no assignment slot yet, so one was newly minted; "
                  "this exact write has no DFHack precedent in this checkout and is UNVERIFIED -- "
@@ -180,10 +320,53 @@ bool applyCreateSquad(const std::string &positionCodeIn, std::string &error)
     return true;
 }
 
+// findFreeNonCommanderSlot returns the index of squad's first vacant
+// NON-commander position, or -1 if every soldier slot is occupied (or the
+// squad has no soldier slot at all). *outFilled/*outTotal report the
+// occupied/total SOLDIER slot counts (index 0, the commander, is excluded
+// from both) so callers can fail with a truthful fullness message.
+//
+// This exists to replace Military::addToSquad's own squad_pos == -1
+// auto-pick, which cannot work on a squad this plugin created -- see the
+// file header comment for the full mechanism and DFHack's own
+// documentation of the failure.
+//
+// MEMORY SAFETY, deliberate divergence from upstream: this loop is bounded
+// by squad->positions.size(), NOT by a hardcoded 10 the way DFHack's own
+// auto-pick loop is. That upstream bound is a latent out-of-bounds risk
+// for any squad whose squad_size (and therefore positions.size(), fixed
+// once in makeSquad and never resized elsewhere in this checkout) is under
+// 10: vector_get returns nullptr past the end, which upstream cannot
+// distinguish from a legitimately vacant slot, and its follow-up
+// `squad->positions[squad_pos] = ...` write then indexes past the end.
+// Fixing that is upstream's business; not importing the pattern is ours.
+// Every index this function returns is < positions.size() by
+// construction, so the explicit squad_pos we hand addToSquad only ever
+// reaches its already-safe path.
+static int32_t findFreeNonCommanderSlot(df::squad *squad, int32_t *outFilled, int32_t *outTotal)
+{
+    int32_t filled = 0;
+    int32_t freeIdx = -1;
+    size_t count = squad->positions.size();
+    for (size_t i = 1; i < count; i++) {
+        df::squad_position *pos = squad->positions[i];
+        if (pos && pos->occupant != -1) {
+            filled++;
+            continue;
+        }
+        if (freeIdx < 0) freeIdx = (int32_t)i;
+    }
+    if (outFilled) *outFilled = filled;
+    if (outTotal) *outTotal = (count > 0) ? (int32_t)(count - 1) : 0;
+    return freeIdx;
+}
+
 // applyAssignSquad adds (add=true) or removes (add=false) unitID from
 // squadID's membership via DFHack's own Military::addToSquad/
-// removeFromSquad -- both proven-safe (real callers in
-// scripts/autotraining.lua at this exact tag).
+// removeFromSquad. On add, the squad_pos is computed HERE
+// (findFreeNonCommanderSlot) and passed explicitly -- mirroring
+// scripts/autotraining.lua's real, working call pattern rather than
+// addToSquad's broken -1 default. See the file header comment.
 bool applyAssignSquad(int32_t squadID, int32_t unitID, bool add, std::string &error)
 {
     df::squad *squad = df::squad::find(squadID);
@@ -203,10 +386,23 @@ bool applyAssignSquad(int32_t squadID, int32_t unitID, bool add, std::string &er
                     std::to_string(unit->military.squad_id) + " -- remove it first";
             return false;
         }
-        if (!Military::addToSquad(unitID, squadID)) {
+        int32_t filled = 0, total = 0;
+        int32_t squadPos = findFreeNonCommanderSlot(squad, &filled, &total);
+        if (squadPos < 0) {
+            error = "squad #" + std::to_string(squadID) + " has no free soldier slot (" +
+                    std::to_string(filled) + "/" + std::to_string(total) +
+                    " non-commander slots filled). Position 0 is the commander slot: DFHack's "
+                    "Military::addToSquad refuses it outright, and this plugin implements no "
+                    "commander-binding write at all (UNVERIFIED whether DF's own simulation "
+                    "fills it on its own) -- remove a member (add=false) or create another squad";
+            return false;
+        }
+        if (!Military::addToSquad(unitID, squadID, squadPos)) {
             error = "Military::addToSquad failed for unit#" + std::to_string(unitID) +
-                    " -> squad #" + std::to_string(squadID) +
-                    " (squad may be full, or the unit has no historical figure)";
+                    " -> squad #" + std::to_string(squadID) + " at position " +
+                    std::to_string(squadPos) +
+                    " (the unit has no historical figure, or the squad's state changed under "
+                    "this call -- the slot was vacant when this plugin picked it)";
             return false;
         }
         error = "unit#" + std::to_string(unitID) + " assigned to squad #" + std::to_string(squadID) +
@@ -341,7 +537,16 @@ static std::string jsonEscapeSquad(const std::string &s) {
 static std::string jsonStrSquad(const std::string &s) { return "\"" + jsonEscapeSquad(s) + "\""; }
 static std::string jsonIntSquad(int64_t v) { char buf[32]; snprintf(buf, sizeof(buf), "%lld", (long long)v); return std::string(buf); }
 
-// handleListSquads reports every squad in world->squads.all: id, DF's own
+// handleListSquads reports THIS FORT'S squads -- world->squads.all is a
+// WORLD-wide vector that also holds every other historical entity's squads
+// (hostile civs, visiting groups), so it is filtered by
+// squad->entity_id == plotinfo->group_id, exactly as DFHack's own
+// scripts/autotraining.lua does before touching a squad. Without that
+// filter, foreign squads' member histfigs never resolve against this
+// fort's units.active map and every member renders as unit#-1. entity_id
+// is still emitted per squad for debugging.
+//
+// Per squad it reports: id, DF's own
 // display name (Military::getSquadName -- alias-or-translated-name
 // lookup, a proven-safe DFHack call with real callers in
 // scripts/fix/stuck-squad.lua), membership (position index, commander
@@ -354,10 +559,11 @@ static std::string jsonIntSquad(int64_t v) { char buf[32]; snprintf(buf, sizeof(
 // reported generically as "other" rather than guessed at).
 std::string handleListSquads(const std::string & /*args*/, uint8_t &status)
 {
-    if (!df::global::world) {
+    if (!df::global::world || !df::global::plotinfo) {
         status = QUERY_STATUS_ERROR;
-        return "{\"error\":\"world is null\"}";
+        return "{\"error\":\"world or plotinfo is null\"}";
     }
+    const int32_t fortEntityID = df::global::plotinfo->group_id;
 
     std::map<int32_t, int32_t> histfigToUnit;
     for (auto *u : df::global::world->units.active) {
@@ -368,6 +574,7 @@ std::string handleListSquads(const std::string & /*args*/, uint8_t &status)
     bool first = true;
     for (auto *squad : df::global::world->squads.all) {
         if (!squad) continue;
+        if (squad->entity_id != fortEntityID) continue; // other entities' squads -- not ours
         if (!first) out += ",";
         first = false;
 

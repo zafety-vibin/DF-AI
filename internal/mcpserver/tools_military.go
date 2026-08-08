@@ -109,11 +109,11 @@ func renderSquads(raw []byte) string {
 // rescue/retrieve order family).
 func registerMilitaryTools(srv *mcp.Server, b *Bridge) {
 	type createSquadIn struct {
-		PositionCode string `json:"position_code,omitempty" jsonschema:"entity_position code to lead the new squad (default MILITIA_CAPTAIN) -- discover others (any with squad_size > 0) via position_vacancies"`
+		PositionCode string `json:"position_code,omitempty" jsonschema:"entity_position code to lead the new squad; omit to auto-select one -- discover codes (any with squad_size > 0) via position_vacancies"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "create_squad",
-		Description: "Create a new squad led by an entity_position (default MILITIA_CAPTAIN). Fills an existing vacant leader slot if one exists, or -- for this fort's first-ever squad under that position -- mints a fresh one; the ack names which happened and flags the mint path as unverified (no DFHack precedent for that exact write). The new squad starts empty with no orders -- use assign_squad to staff it and squad_order to give it a task.",
+		Description: "Create a new squad led by an entity_position. Omitting position_code auto-selects a squad-leader position that already has an unlocked assignment slot, and refuses with an actionable roll-call if none does. Naming position_code explicitly instead fills that position's vacant slot, or -- if it has none yet -- mints a fresh one; the ack names which happened and flags the mint path as unverified (no DFHack precedent for that exact write). The new squad starts empty, with no orders and a vacant commander slot that cannot be filled by any tool here -- use assign_squad to staff positions 1+ and squad_order to give it a task.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in createSquadIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil

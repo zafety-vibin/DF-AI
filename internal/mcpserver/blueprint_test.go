@@ -1,13 +1,18 @@
 package mcpserver
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/df-ai/orchestrator/internal/blueprints"
+	"github.com/df-ai/orchestrator/internal/commands"
+	"github.com/df-ai/orchestrator/internal/logging"
 	"github.com/df-ai/orchestrator/internal/modifications"
+	"github.com/df-ai/orchestrator/internal/protocol"
 	"github.com/df-ai/orchestrator/internal/topology"
 )
 
@@ -173,5 +178,103 @@ func TestCoalesceDigRuns(t *testing.T) {
 	}
 	if total != 6 { // 7 input tiles minus 1 duplicate
 		t.Errorf("total tile count across runs = %d, want 6", total)
+	}
+}
+
+// cannedAckClient is a commands.DFHackClient that answers every command it is
+// handed with one canned ACK status/message. It is the only seam available
+// for driving applyBlueprintCmds without a live plugin: Bridge.Exec is a
+// concrete *commands.CommandExecutor, but that executor is constructed from
+// this interface, so a fake client reaches the real send/ack/track path.
+type cannedAckClient struct {
+	ackCh  chan *protocol.CommandAckMessage
+	status uint8
+	errMsg string
+	sent   int
+}
+
+func (c *cannedAckClient) IsConnected() bool { return true }
+
+func (c *cannedAckClient) SubscribeCommandAcks() <-chan *protocol.CommandAckMessage {
+	return c.ackCh
+}
+
+func (c *cannedAckClient) SendCommand(cmd *protocol.CommandMessage) error {
+	c.sent++
+	ack := &protocol.CommandAckMessage{CommandID: cmd.CommandID, Status: c.status, ErrorMsg: c.errMsg}
+	go func() { c.ackCh <- ack }()
+	return nil
+}
+
+// TestApplyBlueprintCmdsPartialRun: a blueprint dig run that crosses an
+// existing carved stair now ACKs ACK_STATUS_PARTIAL — the run WAS fully
+// designated, with a warning. commands/tracker.go sets Success only for
+// ACK_STATUS_SUCCESS, so the old `!res.Success` gate counted every tile of
+// that run as FAILED, surfaced the stair warning as the run's "first
+// failure", and skipped the b.Digs record whose whole purpose is to stop a
+// later designate_dig beside those tiles from hinting "not yet connected".
+// A PARTIAL run must count as ok, be recorded, and still speak its warning.
+func TestApplyBlueprintCmdsPartialRun(t *testing.T) {
+	const warning = "3 designated (2 will remove existing stairs: vertical connection lost)"
+	client := &cannedAckClient{
+		ackCh:  make(chan *protocol.CommandAckMessage, 8),
+		status: protocol.AckStatusPartial,
+		errMsg: warning,
+	}
+	exec := commands.NewCommandExecutor(logging.NewStderrTextLogger("error"), client, 2*time.Second)
+	defer exec.Stop()
+
+	b := &Bridge{Exec: exec, Digs: &pendingDigs{}}
+	cmds := []blueprints.DigCommand{
+		{X: 10, Y: 20, Z: 100, DigType: "default"},
+		{X: 11, Y: 20, Z: 100, DigType: "default"},
+		{X: 12, Y: 20, Z: 100, DigType: "default"},
+	}
+
+	ok, fail, firstErr, partialWarn := applyBlueprintCmds(context.Background(), b, cmds)
+	if ok != 3 || fail != 0 {
+		t.Fatalf("a fully-designated PARTIAL run must count as ok: ok=%d fail=%d", ok, fail)
+	}
+	if firstErr != "" {
+		t.Fatalf("a PARTIAL run is not a failure and must not populate firstErr: %q", firstErr)
+	}
+	if !strings.Contains(partialWarn, warning) {
+		t.Fatalf("the plugin's stair warning must not be swallowed: %q", partialWarn)
+	}
+	if !b.Digs.contains(11, 20, 100) {
+		t.Fatal("a PARTIAL run's rectangle must still be recorded in pendingDigs")
+	}
+}
+
+// TestApplyBlueprintCmdsFailedRun is the other half of the same gate: a real
+// ACK_STATUS_FAILURE must still count every tile of the run as failed, report
+// the plugin's text as the first failure, and leave no pendingDigs record.
+func TestApplyBlueprintCmdsFailedRun(t *testing.T) {
+	client := &cannedAckClient{
+		ackCh:  make(chan *protocol.CommandAckMessage, 8),
+		status: protocol.AckStatusFailure,
+		errMsg: "designation rejected",
+	}
+	exec := commands.NewCommandExecutor(logging.NewStderrTextLogger("error"), client, 2*time.Second)
+	defer exec.Stop()
+
+	b := &Bridge{Exec: exec, Digs: &pendingDigs{}}
+	cmds := []blueprints.DigCommand{
+		{X: 10, Y: 20, Z: 100, DigType: "default"},
+		{X: 11, Y: 20, Z: 100, DigType: "default"},
+	}
+
+	ok, fail, firstErr, partialWarn := applyBlueprintCmds(context.Background(), b, cmds)
+	if ok != 0 || fail != 2 {
+		t.Fatalf("a FAILED run must count every tile as failed: ok=%d fail=%d", ok, fail)
+	}
+	if !strings.Contains(firstErr, "designation rejected") {
+		t.Fatalf("the plugin's failure text must reach firstErr: %q", firstErr)
+	}
+	if partialWarn != "" {
+		t.Fatalf("a FAILED run must not produce a partial caveat: %q", partialWarn)
+	}
+	if b.Digs.contains(10, 20, 100) {
+		t.Fatal("a FAILED run must not be recorded in pendingDigs")
 	}
 }

@@ -108,12 +108,134 @@ func TestRenderBuildingsBridgeState(t *testing.T) {
 	}
 }
 
+// TestRenderBuildingsStockpileFill: a Stockpile line must answer "is this
+// full?" and "why is nothing hauled here?" from the buildings sweep the
+// model already does — identity, extents, accepted categories, tile-fill.
+// Non-stockpile lines stay byte-identical to the pre-feature format.
+func TestRenderBuildingsStockpileFill(t *testing.T) {
+	raw := []byte(`{"buildings":[
+		{"type":"Stockpile","x":108,"y":102,"z":132,"x1":104,"y1":96,"x2":112,"y2":108,"stage":0,"max_stage":0,"done":true,
+		 "sp_number":1,"sp_name":"","sp_categories":"all","sp_tiles":117,"sp_occupied":102,"sp_items":184},
+		{"type":"Stockpile","x":95,"y":97,"z":132,"x1":90,"y1":95,"x2":100,"y2":99,"stage":0,"max_stage":0,"done":true,
+		 "sp_number":2,"sp_name":"FoodHall","sp_categories":"food","sp_tiles":52,"sp_occupied":47,"sp_items":209},
+		{"type":"Door","x":5,"y":5,"z":132,"x1":5,"y1":5,"x2":5,"y2":5,"stage":1,"max_stage":1,"done":true}
+	]}`)
+	out := renderBuildings(raw)
+	if !strings.Contains(out, "- Stockpile #1 at (104,96)-(112,108) z=132 — accepts all, 102/117 tiles occupied (87%), 184 items\n") {
+		t.Fatalf("unnamed stockpile line wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "- Stockpile #2 \"FoodHall\" at (90,95)-(100,99) z=132 — accepts food, 47/52 tiles occupied (90%), 209 items\n") {
+		t.Fatalf("named stockpile line wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "- Door at (5,5,132) — built\n") {
+		t.Fatalf("non-stockpile lines must be unchanged:\n%s", out)
+	}
+	if !strings.Contains(out, "(stockpile items count a bin/barrel as 1") {
+		t.Fatalf("the container caveat must render once:\n%s", out)
+	}
+	if strings.Count(out, "count a bin/barrel as 1") != 1 {
+		t.Fatalf("the container caveat must render ONCE, not per stockpile:\n%s", out)
+	}
+	if strings.Contains(out, "do not sum") {
+		t.Fatalf("disjoint stockpiles must not claim an overlap:\n%s", out)
+	}
+}
+
+// Two stockpiles over the same ground each count the shared tiles and the
+// same items on them (the plugin measures each pile independently), so the
+// per-pile numbers are individually right and DO NOT SUM. The `look` footer
+// is set-deduped and reports the smaller, correct total for the same
+// ground; a caller comparing the two surfaces would otherwise hit a bare
+// contradiction. Disclose it on the existing caveat line — no second line.
+func TestRenderBuildingsStockpileOverlapDisclosed(t *testing.T) {
+	raw := []byte(`{"buildings":[
+		{"type":"Stockpile","x":90,"y":89,"z":132,"x1":88,"y1":88,"x2":92,"y2":91,"done":true,
+		 "sp_number":1,"sp_categories":"stone","sp_tiles":20,"sp_occupied":18,"sp_items":84},
+		{"type":"Stockpile","x":90,"y":89,"z":132,"x1":88,"y1":88,"x2":92,"y2":91,"done":true,
+		 "sp_number":2,"sp_categories":"wood","sp_tiles":18,"sp_occupied":18,"sp_items":84},
+		{"type":"Stockpile","x":10,"y":10,"z":132,"x1":9,"y1":9,"x2":11,"y2":11,"done":true,
+		 "sp_number":3,"sp_categories":"food","sp_tiles":9,"sp_occupied":1,"sp_items":2}
+	]}`)
+	out := renderBuildings(raw)
+	want := "; 2 stockpile footprint rectangles overlap — shared tiles and their items are counted once per pile, so these numbers do not sum)"
+	if !strings.Contains(out, want) {
+		t.Fatalf("overlap clause missing from the caveat line:\n%s", out)
+	}
+	if strings.Count(out, "do not sum") != 1 {
+		t.Fatalf("the overlap clause must render ONCE, not per stockpile:\n%s", out)
+	}
+}
+
+// Same rectangles, different z: not an overlap. The disclosure must not
+// fire on piles stacked vertically, which share no ground at all.
+func TestRenderBuildingsStockpileOverlapIsPerZ(t *testing.T) {
+	raw := []byte(`{"buildings":[
+		{"type":"Stockpile","x":90,"y":89,"z":132,"x1":88,"y1":88,"x2":92,"y2":91,"done":true,
+		 "sp_number":1,"sp_categories":"stone","sp_tiles":20,"sp_occupied":18,"sp_items":84},
+		{"type":"Stockpile","x":90,"y":89,"z":131,"x1":88,"y1":88,"x2":92,"y2":91,"done":true,
+		 "sp_number":2,"sp_categories":"wood","sp_tiles":20,"sp_occupied":0,"sp_items":0}
+	]}`)
+	if out := renderBuildings(raw); strings.Contains(out, "do not sum") {
+		t.Fatalf("stockpiles on different z-levels do not overlap:\n%s", out)
+	}
+}
+
+// A stockpile accepting nothing is a real state and the direct answer to
+// "why is nothing being hauled here" — it must be named, not blanked.
+func TestRenderBuildingsStockpileAcceptsNothing(t *testing.T) {
+	raw := []byte(`{"buildings":[
+		{"type":"Stockpile","x":10,"y":10,"z":100,"x1":9,"y1":9,"x2":11,"y2":11,"done":true,
+		 "sp_number":7,"sp_categories":"none","sp_tiles":9,"sp_occupied":0,"sp_items":0}
+	]}`)
+	out := renderBuildings(raw)
+	if !strings.Contains(out, "- Stockpile #7 at (9,9)-(11,11) z=100 — accepts none, 0/9 tiles occupied (0%), 0 items\n") {
+		t.Fatalf("empty/no-category stockpile line wrong:\n%s", out)
+	}
+}
+
+// VERSION SKEW: against the plugin build deployed before this feature the
+// sp_* fields are absent. The line must still upgrade the useless center
+// coordinate to the real extents (x1..y2 have shipped for a long time) and
+// must NOT print fabricated "0/0 tiles occupied" numbers.
+func TestRenderBuildingsStockpileOldPlugin(t *testing.T) {
+	raw := []byte(`{"buildings":[
+		{"type":"Stockpile","x":108,"y":102,"z":132,"x1":104,"y1":96,"x2":112,"y2":108,"stage":0,"max_stage":0,"done":true}
+	]}`)
+	out := renderBuildings(raw)
+	if !strings.Contains(out, "- Stockpile at (104,96)-(112,108) z=132 — built (fill not reported by this plugin build)\n") {
+		t.Fatalf("old-plugin stockpile line wrong:\n%s", out)
+	}
+	if strings.Contains(out, "occupied") || strings.Contains(out, "accepts") {
+		t.Fatalf("an old plugin must not produce invented fill/category text:\n%s", out)
+	}
+	if strings.Contains(out, "count a bin/barrel as 1") {
+		t.Fatalf("the fill caveat must not appear when no fill was reported:\n%s", out)
+	}
+}
+
+// An even older plugin sends no extents at all, and an unfinished
+// stockpile plan has no fill to speak of — both fall through to the
+// generic building line rather than rendering a half-formed rectangle.
+func TestRenderBuildingsStockpileFallsThroughWithoutExtents(t *testing.T) {
+	raw := []byte(`{"buildings":[
+		{"type":"Stockpile","x":50,"y":50,"z":100,"stage":0,"max_stage":0,"done":true}
+	]}`)
+	if out := renderBuildings(raw); !strings.Contains(out, "- Stockpile at (50,50,100) — built\n") {
+		t.Fatalf("extent-less stockpile must use the generic line:\n%s", out)
+	}
+}
+
+// Fixtures across this file's stocks tests carry "units" equal to "count" —
+// modelling a current plugin build that measured stack sizes and found no
+// extra stacking for these types. That keeps each test exercising only its
+// own feature instead of incidentally asserting against renderStocks'
+// no-stack-data caveat (see TestRenderStocksUnits).
 func TestRenderStocksAggregated(t *testing.T) {
 	raw := []byte(`{"items":[
-		{"item_type":"BOULDER","material":"shale","count":20,"economic":false},
-		{"item_type":"BOULDER","material":"chalk","count":11,"economic":false},
-		{"item_type":"BOULDER","material":"bauxite","count":9,"economic":true},
-		{"item_type":"WOOD","material":"oak","count":3}
+		{"item_type":"BOULDER","material":"shale","count":20,"units":20,"economic":false},
+		{"item_type":"BOULDER","material":"chalk","count":11,"units":11,"economic":false},
+		{"item_type":"BOULDER","material":"bauxite","count":9,"units":9,"economic":true},
+		{"item_type":"WOOD","material":"oak","count":3,"units":3}
 	]}`)
 	out := renderStocks(raw, false, 0)
 	if !strings.Contains(out, "2 item types, 4 item/material entries total") {
@@ -132,8 +254,8 @@ func TestRenderStocksAggregated(t *testing.T) {
 
 func TestRenderStocksDetailed(t *testing.T) {
 	raw := []byte(`{"items":[
-		{"item_type":"BOULDER","material":"shale","count":20,"economic":false},
-		{"item_type":"BOULDER","material":"bauxite","count":9,"economic":true}
+		{"item_type":"BOULDER","material":"shale","count":20,"units":20,"economic":false},
+		{"item_type":"BOULDER","material":"bauxite","count":9,"units":9,"economic":true}
 	]}`)
 	out := renderStocks(raw, true, 0)
 	if !strings.Contains(out, "2 item/material entries:") {
@@ -149,8 +271,8 @@ func TestRenderStocksDetailed(t *testing.T) {
 
 func TestRenderStocksInUse(t *testing.T) {
 	raw := []byte(`{"items":[
-		{"item_type":"BED","material":"oak","count":1,"in_use":3},
-		{"item_type":"DOOR","material":"bronze","count":0,"in_use":2}
+		{"item_type":"BED","material":"oak","count":1,"units":1,"in_use":3,"in_use_units":3},
+		{"item_type":"DOOR","material":"bronze","count":0,"units":0,"in_use":2,"in_use_units":2}
 	]}`)
 
 	detailed := renderStocks(raw, true, 0)
@@ -169,7 +291,7 @@ func TestRenderStocksInUse(t *testing.T) {
 		t.Fatalf("aggregated in_use note for an all-built-in type wrong:\n%s", agg)
 	}
 
-	noInUse := []byte(`{"items":[{"item_type":"TABLE","material":"granite","count":5}]}`)
+	noInUse := []byte(`{"items":[{"item_type":"TABLE","material":"granite","count":5,"units":5}]}`)
 	if out := renderStocks(noInUse, true, 0); strings.Contains(out, "built-in") {
 		t.Fatalf("absent in_use must not print a note:\n%s", out)
 	}
@@ -204,15 +326,111 @@ func TestRenderStocksUnits(t *testing.T) {
 		t.Fatalf("a non-stacking type must render without a units note in aggregate view:\n%s", agg)
 	}
 
-	// An older-plugin payload (or any fixture) that omits "units"/
-	// "in_use_units" entirely must decode as "no unit data" (see the ">"
-	// comparison in renderStocks), never a fabricated "0 units" note.
+	// An older-plugin payload that omits "units"/"in_use_units" entirely
+	// must SAY SO. The superseded assertion here required the opposite —
+	// that such a response render with no mention of units at all — which
+	// is precisely the bug: a stale plugin build's struct count (8 barrels)
+	// then read as a fully-verified serving count, and a live session
+	// undersold ~80 servings of wine on that silence. Units is a *int now,
+	// so "plugin never spoke" and "plugin measured, no extra stacking" are
+	// distinguishable, and only the former gets the caveat.
 	noUnits := []byte(`{"items":[{"item_type":"DRINK","material":"ale","count":4}]}`)
-	if out := renderStocks(noUnits, true, 0); strings.Contains(out, "units") {
-		t.Fatalf("a payload with no units data must not print a units note:\n%s", out)
+	for _, tc := range []struct {
+		name     string
+		detailed bool
+	}{{"detailed", true}, {"aggregate", false}} {
+		out := renderStocks(noUnits, tc.detailed, 0)
+		if !strings.Contains(out, "did not report per-item stack sizes") {
+			t.Fatalf("%s view must carry the no-stack-data caveat:\n%s", tc.name, out)
+		}
+		if strings.Contains(out, "(4 units)") || strings.Contains(out, "= 4 units") {
+			t.Fatalf("%s view must not fabricate a per-item units figure from the struct count:\n%s", tc.name, out)
+		}
 	}
-	if out := renderStocks(noUnits, false, 0); strings.Contains(out, "units") {
-		t.Fatalf("a payload with no units data must not print a units note in aggregate view either:\n%s", out)
+}
+
+// TestRenderStocksUnitsUnsupportedVsConfirmed pins the distinction the *int
+// fields exist for: a response where the plugin measured every item and found
+// no extra stacking (Units == Count, e.g. an all-boulder pile) is a POSITIVE
+// confirmation and must render clean, while a response where the plugin never
+// sent the field at all must carry the caveat. Before the pointer change both
+// decoded identically and both rendered clean.
+func TestRenderStocksUnitsUnsupportedVsConfirmed(t *testing.T) {
+	confirmed := []byte(`{"items":[
+		{"item_type":"BOULDER","material":"shale","count":5,"units":5},
+		{"item_type":"WOOD","material":"oak","count":3,"units":3}
+	]}`)
+	for _, tc := range []struct {
+		name     string
+		detailed bool
+	}{{"detailed", true}, {"aggregate", false}} {
+		out := renderStocks(confirmed, tc.detailed, 0)
+		if strings.Contains(out, "did not report per-item stack sizes") {
+			t.Fatalf("%s view must NOT caveat a response where every item carries measured units:\n%s", tc.name, out)
+		}
+	}
+
+	// A partially-populated response still counts as "this plugin measures
+	// stack sizes" — the caveat is a per-response capability statement, not
+	// a per-item one, so one measured item suppresses it for the whole
+	// response.
+	//
+	// INVARIANT THIS DEPENDS ON: the plugin emits "units"/"in_use_units"
+	// UNCONDITIONALLY for every entry (queries.cpp:2477-2478), so a real
+	// response is all-or-nothing and this mixed shape is unreachable from a
+	// live plugin. If that ever becomes conditional, the response-level
+	// check would understate a partly-measured payload — which is why the
+	// second half below pins that no aggregate figure is FABRICATED for the
+	// unmeasured entry even in this synthetic shape.
+	mixed := []byte(`{"items":[
+		{"item_type":"DRINK","material":"ale","count":4,"units":80},
+		{"item_type":"BOULDER","material":"shale","count":5}
+	]}`)
+	if out := renderStocks(mixed, true, 0); strings.Contains(out, "did not report per-item stack sizes") {
+		t.Fatalf("one measured item must suppress the response-level caveat:\n%s", out)
+	}
+	aggMixed := renderStocks(mixed, false, 0)
+	if !strings.Contains(aggMixed, "- DRINK: 4 total = 80 units") {
+		t.Fatalf("the measured type must still report its real unit total:\n%s", aggMixed)
+	}
+	for _, line := range strings.Split(aggMixed, "\n") {
+		if strings.HasPrefix(line, "- BOULDER") && strings.Contains(line, "units") {
+			t.Fatalf("an unmeasured entry must not get a fabricated aggregate units figure: %q", line)
+		}
+	}
+}
+
+// TestRenderStocksStackUnitsFlag: the plugin's explicit top-level
+// "stack_units" capability flag (queries.cpp) is authoritative when present,
+// and the pre-flag item scan is the fallback when it is not — a flag saying
+// the build does NOT measure must caveat even if some item happens to carry
+// a "units" key, and a pre-flag payload must behave exactly as before.
+func TestRenderStocksStackUnitsFlag(t *testing.T) {
+	// Flag present and true: no caveat, even though this is the same
+	// all-measured payload the scan would also accept.
+	withFlag := []byte(`{"items":[
+		{"item_type":"BOULDER","material":"shale","count":5,"units":5}
+	],"stack_units":true}`)
+	if out := renderStocks(withFlag, true, 0); strings.Contains(out, "did not report per-item stack sizes") {
+		t.Fatalf("an explicit stack_units:true must suppress the caveat:\n%s", out)
+	}
+
+	// Flag present and false OUTRANKS a stray "units" key: the build itself
+	// says it does not measure, which is exactly the regression shape the
+	// flag exists to catch (one surviving units field would fool the scan).
+	flagFalse := []byte(`{"items":[
+		{"item_type":"BOULDER","material":"shale","count":5,"units":5}
+	],"stack_units":false}`)
+	if out := renderStocks(flagFalse, true, 0); !strings.Contains(out, "did not report per-item stack sizes") {
+		t.Fatalf("an explicit stack_units:false must caveat regardless of stray units keys:\n%s", out)
+	}
+
+	// No flag at all (pre-flag plugin build): fall back to the item scan.
+	noFlag := []byte(`{"items":[
+		{"item_type":"BOULDER","material":"shale","count":5}
+	]}`)
+	if out := renderStocks(noFlag, true, 0); !strings.Contains(out, "did not report per-item stack sizes") {
+		t.Fatalf("a pre-flag payload with no units data must still caveat via the scan:\n%s", out)
 	}
 }
 
@@ -236,8 +454,8 @@ func TestRenderStocksUnitsInUse(t *testing.T) {
 
 func TestRenderStocksMinCount(t *testing.T) {
 	raw := []byte(`{"items":[
-		{"item_type":"BOULDER","material":"shale","count":20},
-		{"item_type":"BOULDER","material":"chalk","count":2}
+		{"item_type":"BOULDER","material":"shale","count":20,"units":20},
+		{"item_type":"BOULDER","material":"chalk","count":2,"units":2}
 	]}`)
 	out := renderStocks(raw, false, 5)
 	if strings.Contains(out, "chalk") {
@@ -247,7 +465,7 @@ func TestRenderStocksMinCount(t *testing.T) {
 		t.Fatalf("entry at/above min_count must survive:\n%s", out)
 	}
 
-	if out := renderStocks([]byte(`{"items":[{"item_type":"BOULDER","material":"chalk","count":2}]}`), false, 5); out != "No stock items (or all below min_count)." {
+	if out := renderStocks([]byte(`{"items":[{"item_type":"BOULDER","material":"chalk","count":2,"units":2}]}`), false, 5); out != "No stock items (or all below min_count)." {
 		t.Fatalf("all-filtered response wrong: %q", out)
 	}
 }
@@ -259,8 +477,8 @@ func TestRenderStocksMinCount(t *testing.T) {
 // "this fort has some of these, all built in."
 func TestRenderStocksMinCountSurfacesInUse(t *testing.T) {
 	raw := []byte(`{"items":[
-		{"item_type":"TABLE","material":"granite","count":0,"in_use":3},
-		{"item_type":"TABLE","material":"oak","count":1}
+		{"item_type":"TABLE","material":"granite","count":0,"units":0,"in_use":3,"in_use_units":3},
+		{"item_type":"TABLE","material":"oak","count":1,"units":1}
 	]}`)
 
 	detailed := renderStocks(raw, true, 5)
@@ -286,8 +504,8 @@ func TestRenderStocksMinCountSurfacesInUse(t *testing.T) {
 // with no quality entry at all.
 func TestRenderStocksQuality(t *testing.T) {
 	raw := []byte(`{"items":[
-		{"item_type":"BED","material":"oak","count":4},
-		{"item_type":"TABLE","material":"granite","count":2}
+		{"item_type":"BED","material":"oak","count":4,"units":4},
+		{"item_type":"TABLE","material":"granite","count":2,"units":2}
 	],"quality":[
 		{"item_type":"BED","quality":"Ordinary","count":2},
 		{"item_type":"BED","quality":"FinelyCrafted","count":1},
@@ -318,7 +536,7 @@ func TestRenderStocksQuality(t *testing.T) {
 // compact as before (no subtype text at all).
 func TestRenderStocksSubtypes(t *testing.T) {
 	raw := []byte(`{"items":[
-		{"item_type":"WEAPON","material":"iron","count":3}
+		{"item_type":"WEAPON","material":"iron","count":3,"units":3}
 	],"subtypes":[
 		{"item_type":"WEAPON","material":"iron","subtype_name":"pick","count":1},
 		{"item_type":"WEAPON","material":"iron","subtype_name":"battle axe","count":2}
@@ -334,7 +552,7 @@ func TestRenderStocksSubtypes(t *testing.T) {
 		t.Fatalf("aggregated default view must stay compact, no subtype text:\n%s", agg)
 	}
 
-	noSubtypes := []byte(`{"items":[{"item_type":"BOULDER","material":"shale","count":5}]}`)
+	noSubtypes := []byte(`{"items":[{"item_type":"BOULDER","material":"shale","count":5,"units":5}]}`)
 	if out := renderStocks(noSubtypes, true, 0); strings.Contains(out, "subtypes") {
 		t.Fatalf("a type with no subtype entry must not print a breakdown line:\n%s", out)
 	}
@@ -352,9 +570,9 @@ func TestRenderStocksSubtypes(t *testing.T) {
 // the 20 were containers to begin with.
 func TestRenderStocksContainers(t *testing.T) {
 	raw := []byte(`{"items":[
-		{"item_type":"BARREL","material":"oak","count":15,"containers":15,"empty":4},
-		{"item_type":"BARREL","material":"willow","count":5,"containers":5,"empty":3},
-		{"item_type":"TOOL","material":"iron","count":5,"containers":2,"empty":1}
+		{"item_type":"BARREL","material":"oak","count":15,"units":15,"containers":15,"empty":4},
+		{"item_type":"BARREL","material":"willow","count":5,"units":5,"containers":5,"empty":3},
+		{"item_type":"TOOL","material":"iron","count":5,"units":5,"containers":2,"empty":1}
 	]}`)
 
 	detailed := renderStocks(raw, true, 0)
@@ -381,7 +599,7 @@ func TestRenderStocksContainers(t *testing.T) {
 	// containers defaults to its Go zero value (0), which formatContainerNote
 	// must treat as "not a container-bearing key" rather than fabricating a
 	// "(0 empty)" note.
-	noContainers := []byte(`{"items":[{"item_type":"BOULDER","material":"shale","count":5}]}`)
+	noContainers := []byte(`{"items":[{"item_type":"BOULDER","material":"shale","count":5,"units":5}]}`)
 	if out := renderStocks(noContainers, true, 0); strings.Contains(out, "empty") {
 		t.Fatalf("a type with no container data must not print an empty-count note:\n%s", out)
 	}
@@ -464,6 +682,76 @@ func TestRenderManagerOrders(t *testing.T) {
 	}
 	if out := renderManagerOrders([]byte(`{"orders":[]}`)); out != "No manager orders queued." {
 		t.Fatalf("empty orders rendering wrong: %q", out)
+	}
+}
+
+// TestRenderManagerOrdersNoLaborForJob covers the missing-labor rung added to
+// the same C3 ladder above. Live incident: a fort's wood-furniture orders read
+// "queued, awaiting manager dispatch" for game-weeks because no work detail
+// held CARPENTER and no citizen had it via automatic professions either — the
+// order was permanently undispatchable and the tool said it was fine.
+// Precedence matters as much as the message: observed progress outranks this
+// static prediction, but this outranks the much weaker "workshop assigned,
+// awaiting worker" (DF assigns a workshop provisionally even when nobody can
+// ever take the job).
+func TestRenderManagerOrdersNoLaborForJob(t *testing.T) {
+	// (a) fires: labor resolved, nobody in the fort holds it.
+	blocked := []byte(`{"orders":[
+		{"id":0,"job_type":"ConstructBed","amount_total":2,"amount_left":2,"validated":true,"active":false,
+		 "jobs_in_progress":0,"workshop_assigned":false,"required_labor":"CARPENTER","labor_available":false}
+	]}`)
+	out := renderManagerOrders(blocked)
+	if !strings.Contains(out, "id=0 ConstructBed x2 (2 left) — no citizen on-site currently has CARPENTER enabled") {
+		t.Fatalf("labor-starved order must name the missing labor:\n%s", out)
+	}
+
+	// (b) does not misfire: same shape, a citizen genuinely has the labor.
+	staffed := []byte(`{"orders":[
+		{"id":1,"job_type":"ConstructBed","amount_total":2,"amount_left":2,"validated":true,"active":false,
+		 "jobs_in_progress":0,"workshop_assigned":false,"required_labor":"CARPENTER","labor_available":true}
+	]}`)
+	outStaffed := renderManagerOrders(staffed)
+	if !strings.Contains(outStaffed, "id=1 ConstructBed x2 (2 left) — queued, awaiting manager dispatch") {
+		t.Fatalf("a staffed labor must fall through to the plain queued rung:\n%s", outStaffed)
+	}
+	if strings.Contains(outStaffed, "no citizen on-site") {
+		t.Fatalf("the missing-labor rung must not fire when labor_available is true:\n%s", outStaffed)
+	}
+
+	// (c) precedence: real observed progress outranks the static prediction.
+	inProgress := []byte(`{"orders":[
+		{"id":2,"job_type":"ConstructBed","amount_total":2,"amount_left":2,"validated":true,"active":false,
+		 "jobs_in_progress":2,"workshop_assigned":true,"required_labor":"CARPENTER","labor_available":false}
+	]}`)
+	outProgress := renderManagerOrders(inProgress)
+	if !strings.Contains(outProgress, "id=2 ConstructBed x2 (2 left) — in progress (2 jobs)") {
+		t.Fatalf("observed jobs_in_progress must outrank the missing-labor prediction:\n%s", outProgress)
+	}
+
+	// (d) precedence: the missing-labor blocker outranks "workshop assigned,
+	// awaiting worker", which is the weaker and more misleading claim.
+	assigned := []byte(`{"orders":[
+		{"id":3,"job_type":"ConstructBin","amount_total":1,"amount_left":1,"validated":true,"active":false,
+		 "jobs_in_progress":0,"workshop_assigned":true,"required_labor":"CARPENTER","labor_available":false}
+	]}`)
+	outAssigned := renderManagerOrders(assigned)
+	if !strings.Contains(outAssigned, "id=3 ConstructBin x1 (1 left) — no citizen on-site currently has CARPENTER enabled") {
+		t.Fatalf("the missing-labor rung must outrank 'workshop assigned, awaiting worker':\n%s", outAssigned)
+	}
+	if strings.Contains(outAssigned, "awaiting worker") {
+		t.Fatalf("the weaker workshop-assigned claim must not also print:\n%s", outAssigned)
+	}
+
+	// (e) old-plugin degrade: an order carrying neither field decodes to
+	// ""/false and must keep falling through to the pre-existing rungs
+	// rather than claiming a blocker nothing proved.
+	legacy := []byte(`{"orders":[
+		{"id":4,"job_type":"ConstructTable","amount_total":1,"amount_left":1,"validated":true,"active":false,
+		 "jobs_in_progress":0,"workshop_assigned":true}
+	]}`)
+	outLegacy := renderManagerOrders(legacy)
+	if !strings.Contains(outLegacy, "id=4 ConstructTable x1 (1 left) — workshop assigned, awaiting worker") {
+		t.Fatalf("a payload with no labor fields must render exactly as before:\n%s", outLegacy)
 	}
 }
 

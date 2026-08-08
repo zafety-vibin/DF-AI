@@ -18,7 +18,9 @@
 #include "df/unit.h"
 #include "df/unit_labor.h"
 #include "df/tile_dig_designation.h"
+#include "df/building.h"
 #include "df/building_civzonest.h"
+#include "df/building_stockpilest.h"
 #include "df/building_type.h"
 
 #include "protocol.h"
@@ -42,7 +44,8 @@ DFHACK_PLUGIN("df_ai_protocol");
 DFHACK_PLUGIN_IS_ENABLED(is_enabled);
 
 // Forward declarations for functions from designations.cpp
-bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error);
+bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error,
+                         bool &destroysExistingStairs);
 bool applyCancelDesignation(const std::vector<uint8_t> &payload, std::string &error);
 bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &error);
 bool applySmoothDesignation(const std::vector<uint8_t> &payload, std::string &error);
@@ -411,6 +414,115 @@ bool applyUnsuspend(int16_t x, int16_t y, int16_t z, std::string &error)
 // knows whether to expect a delay. Rationale from live play: a dead
 // building plan (e.g. a wall plan on a stair tile) blocks the tile forever
 // with no way to clear it.
+// collectRemovalCandidates: every building remove_building could mean at
+// one tile.
+//
+// findAtTile only ever returns occupancy-setting ("real") buildings --
+// Stockpile is abstract (isSettingOccupancy()==false, same bucket as
+// Civzone) and is architecturally invisible to it, even when the
+// stockpile's designated rectangle shares this tile with a real building's
+// footprint (an ordinary layout: a stockpile ring around an enclosed
+// workshop). Civzone overlap is deliberately left out of this scan --
+// remove_zone is the correct, already-working tool for that case, and
+// stockpile has no equivalent removal command of its own.
+//
+// Split into two halves so a caller testing MANY tiles at one z pays the
+// world->buildings.all walk ONCE instead of once per tile (see
+// findUnambiguousTileFor): the stockpile set at a given z is invariant
+// across such a loop, while findAtTile/containsTile are per-tile by nature.
+// The membership rule itself still has exactly one definition.
+static void collectStockpilesAtZ(int32_t z, std::vector<df::building*> &out)
+{
+    out.clear();
+    if (!df::global::world) return;
+    for (auto *b : df::global::world->buildings.all) {
+        if (!b || b->getType() != df::building_type::Stockpile) continue;
+        if (b->z != z) continue;
+        out.push_back(b);
+    }
+}
+
+static void collectRemovalCandidatesFrom(df::coord pos,
+                                         const std::vector<df::building*> &stockpilesAtZ,
+                                         std::vector<df::building*> &out)
+{
+    using namespace DFHack;
+    out.clear();
+    if (df::building *real = Buildings::findAtTile(pos)) {
+        out.push_back(real);
+    }
+    df::coord2d pos2d(pos.x, pos.y);
+    for (auto *b : stockpilesAtZ) {
+        if (!Buildings::containsTile(b, pos2d)) continue;
+        out.push_back(b);
+    }
+}
+
+static void collectRemovalCandidates(df::coord pos, std::vector<df::building*> &out)
+{
+    std::vector<df::building*> stockpilesAtZ;
+    collectStockpilesAtZ(pos.z, stockpilesAtZ);
+    collectRemovalCandidatesFrom(pos, stockpilesAtZ, out);
+}
+
+// describeRemovalCandidate: enough identity to tell two overlapping
+// buildings apart in the ACK, cross-referenceable against the `buildings`
+// tool's own stockpile lines (which carry the same #number and name).
+// Bounding rectangles alone are NOT identity -- two stockpiles in a live
+// fort shared the exact rectangle (88,88)-(92,91), which made the previous
+// ACK's advice ("reissue at a tile covered by only the one you want")
+// unfollowable: the two candidates were textually indistinguishable.
+static std::string describeRemovalCandidate(df::building *b)
+{
+    using namespace DFHack;
+    std::ostringstream os;
+    os << ENUM_KEY_STR(building_type, b->getType());
+    if (b->getType() == df::building_type::Stockpile) {
+        if (auto *sp = strict_virtual_cast<df::building_stockpilest>(b))
+            os << " #" << sp->stockpile_number;
+    }
+    if (!b->name.empty()) os << " \"" << b->name << "\"";
+    os << " id=" << b->id
+       << " spanning (" << b->x1 << "," << b->y1 << ")-(" << b->x2 << "," << b->y2 << ")";
+    int bboxArea = (b->x2 - b->x1 + 1) * (b->y2 - b->y1 + 1);
+    os << ", " << Buildings::countExtentTiles(b, bboxArea) << " tiles";
+    return os.str();
+}
+
+// findUnambiguousTileFor: a tile inside target's own footprint where
+// collectRemovalCandidates resolves to target ALONE -- i.e. a coordinate
+// the caller can reissue remove_building at and hit exactly what it means.
+// Returns false when no such tile exists (fully-enclosed or
+// identically-shaped overlaps), which is itself the answer the caller
+// needs: "there is no disambiguating tile, stop looking for one."
+//
+// Cost is the target's bbox area x the candidate scan, on an error path
+// only -- never on a success path or a query. The z's stockpile list is
+// hoisted out of the tile loop for that scan: collectRemovalCandidates
+// walks world->buildings.all on every call, so a fort-wide 40x40 pile in a
+// 1000-building fort would otherwise run millions of iterations on the main
+// thread under CoreSuspender for one error message.
+static bool findUnambiguousTileFor(df::building *target, int16_t &ux, int16_t &uy)
+{
+    using namespace DFHack;
+    // df::building's x1/y1/x2/y2/z are int32_t; tile coords are int16_t.
+    std::vector<df::building*> stockpilesAtZ;
+    collectStockpilesAtZ(target->z, stockpilesAtZ);
+    std::vector<df::building*> cands;
+    for (int16_t ty = (int16_t)target->y1; ty <= (int16_t)target->y2; ty++) {
+        for (int16_t tx = (int16_t)target->x1; tx <= (int16_t)target->x2; tx++) {
+            if (!Buildings::containsTile(target, df::coord2d(tx, ty))) continue;
+            collectRemovalCandidatesFrom(df::coord(tx, ty, (int16_t)target->z), stockpilesAtZ, cands);
+            if (cands.size() == 1 && cands[0] == target) {
+                ux = tx;
+                uy = ty;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error)
 {
     using namespace DFHack;
@@ -421,26 +533,9 @@ bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error)
     }
 
     df::coord pos(x, y, z);
-    df::coord2d pos2d(x, y);
 
-    // findAtTile only ever returns occupancy-setting ("real") buildings --
-    // Stockpile is abstract (isSettingOccupancy()==false, same bucket as
-    // Civzone) and is architecturally invisible to it, even when the
-    // stockpile's designated rectangle shares this tile with a real
-    // building's footprint (an ordinary layout: a stockpile ring around an
-    // enclosed workshop). Civzone overlap is deliberately left out of this
-    // scan -- remove_zone is the correct, already-working tool for that
-    // case, and stockpile has no equivalent removal command of its own.
     std::vector<df::building*> candidates;
-    if (df::building *real = Buildings::findAtTile(pos)) {
-        candidates.push_back(real);
-    }
-    for (auto *b : df::global::world->buildings.all) {
-        if (!b || b->getType() != df::building_type::Stockpile) continue;
-        if (b->z != z) continue;
-        if (!Buildings::containsTile(b, pos2d)) continue;
-        candidates.push_back(b);
-    }
+    collectRemovalCandidates(pos, candidates);
 
     if (candidates.empty()) {
         std::ostringstream os;
@@ -450,28 +545,42 @@ bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error)
     }
 
     if (candidates.size() > 1) {
+        // remove_building selects by TILE, so an ambiguous coordinate can
+        // only be resolved by naming a different one. Do that arithmetic
+        // here instead of telling the caller to go find such a tile
+        // itself: the previous ACK's "reissue at a tile covered by only
+        // the one you want" was unfollowable in a live fort where two
+        // stockpiles shared an identical rectangle -- the two candidates
+        // printed as the same text and neither had a stated unique tile.
         std::ostringstream os;
-        os << "multiple buildings overlap (" << x << "," << y << "," << z << "): ";
+        os << candidates.size() << " buildings overlap (" << x << "," << y << "," << z
+           << ") and remove_building selects by tile -- pick the tile that means the one you want:";
         bool hasStockpile = false;
         bool hasRealBuilding = false;
+        bool anyUnresolvable = false;
         for (size_t i = 0; i < candidates.size(); i++) {
-            if (i) os << "; ";
             df::building *b = candidates[i];
-            os << ENUM_KEY_STR(building_type, b->getType())
-               << " spanning (" << b->x1 << "," << b->y1 << ")-("
-               << b->x2 << "," << b->y2 << ")";
+            os << " [" << (i + 1) << "] " << describeRemovalCandidate(b);
+            int16_t ux = 0, uy = 0;
+            if (findUnambiguousTileFor(b, ux, uy)) {
+                os << " -- reissue at (" << ux << "," << uy << "," << z << ") to remove ONLY this one;";
+            } else {
+                os << " -- NO tile in its footprint belongs to it alone;";
+                anyUnresolvable = true;
+            }
             if (b->getType() == df::building_type::Stockpile) hasStockpile = true;
             else hasRealBuilding = true;
         }
-        os << " -- reissue remove_building at a tile covered by only the one you want removed";
-        if (hasStockpile && hasRealBuilding) {
-            os << ". A stockpile's rectangle has no hole punched out for buildings inside it, so every tile of an "
-                  "enclosed building can be ambiguous with its surrounding stockpile and no tile-only-covered-by-it "
-                  "may exist. To remove the stockpile: reissue here if such a tile exists, or accept that removing "
-                  "it deletes its ENTIRE designated rectangle as collateral. To remove the real building instead: "
-                  "first remove the overlapping stockpile (again, its whole rectangle is deleted, not just the "
+        if (anyUnresolvable && hasStockpile && hasRealBuilding) {
+            os << " A stockpile's rectangle has no hole punched out for buildings inside it, so an enclosed "
+                  "building can be ambiguous on every one of its tiles. To remove the stockpile: accept that "
+                  "removing it deletes its ENTIRE designated rectangle as collateral. To remove the real building "
+                  "instead: remove the overlapping stockpile first (again, its whole rectangle goes, not just the "
                   "shared tiles), then reissue remove_building at this same coordinate to reach the now-unambiguous "
-                  "building";
+                  "building.";
+        } else if (anyUnresolvable) {
+            os << " A candidate with no tile of its own is fully covered by the others (identical or enclosing "
+                  "footprints); remove an overlapping one first, then reissue here.";
         }
         error = os.str();
         return false;
@@ -746,7 +855,23 @@ void executeCommand(const std::vector<uint8_t> &payload)
     switch (cmdType) {
         case 0x01: {  // DIG
             // Call the fixed version from designations.cpp (not the old one below)
-            success = applyDigDesignation(payload, error);
+            // FOLLOW-UP CLEANUP: the commented-out `applyDigDesignation(uint8_t
+            // digType, ...)` overload further down this file is dead and only
+            // exists to confuse a future reader -- delete it in a wave that is
+            // already touching this file.
+            bool digDestroysStairs = false;
+            success = applyDigDesignation(payload, error, digDestroysStairs);
+            // Same short-circuit shape as the STOCKPILE case below: the
+            // generic tail only ever sends SUCCESS or FAILURE
+            // (success ? 0x00 : 0x02), so a dig that succeeded WHILE removing
+            // existing carved stairs (vertical connection severed -- the
+            // Fort #4 incident) would otherwise report a clean SUCCESS and
+            // bury its own warning text under it. The message is unchanged;
+            // only the status byte differs.
+            if (success && digDestroysStairs) {
+                sendCommandAck(cmdID, ACK_STATUS_PARTIAL, error);
+                return;
+            }
             break;
         }
         case 0x02: {  // BUILD

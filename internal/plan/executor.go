@@ -288,7 +288,12 @@ func (e *Executor) executeDig(n Node) {
 		e.markFailed(n.ID, err.Error())
 		return
 	}
-	if res == nil || !res.Success {
+	// ACK_STATUS_PARTIAL is a DESIGNATED result carrying a caveat (the
+	// dig-over-an-existing-carved-stair warning), not a rejection —
+	// commands/tracker.go only sets Success for ACK_STATUS_SUCCESS, so
+	// gating on Success alone would markFailed a dig the plugin fully
+	// applied. Mirrors mcpserver.ackDesignated.
+	if res == nil || (!res.Success && res.Status != protocol.AckStatusPartial) {
 		msg := "ack rejected"
 		if res != nil && res.ErrorMsg != "" {
 			msg = res.ErrorMsg
@@ -299,9 +304,15 @@ func (e *Executor) executeDig(n Node) {
 
 	predictions := e.writeDigPredictionsForRegion(n)
 
+	result := fmt.Sprintf("ack accepted, %d predictions", predictions)
+	if !res.Success {
+		// PARTIAL: designated, but the plugin's warning must reach the
+		// node's result verbatim rather than being swallowed by "accepted".
+		result = fmt.Sprintf("ack accepted WITH A CAVEAT, %d predictions — %s", predictions, res.ErrorMsg)
+	}
 	e.dag.Update(n.ID, func(n *Node) {
 		n.PredictionCount = predictions
-		n.Result = fmt.Sprintf("ack accepted, %d predictions", predictions)
+		n.Result = result
 	})
 
 	if e.logger != nil {

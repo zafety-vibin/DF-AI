@@ -198,8 +198,26 @@ static std::string checkBuildingFootprintOverlap(int16_t x1, int16_t y1, int16_t
            " -- DF may silently cancel affected tiles (\"Inappropriate dig square\")";
 }
 
-// Apply dig designation to a region
-bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error)
+// Apply dig designation to a region.
+//
+// destroysExistingStairs is an OUT-param, set true only when this call
+// actually converted one or more ALREADY-CARVED stair tiles to something
+// with no vertical connection (convertedStairs below) -- i.e. a real shaft
+// was severed. df_ai_protocol.cpp's DIG case uses it to send
+// ACK_STATUS_PARTIAL instead of the generic tail's clean SUCCESS, because
+// that outcome is a success (the tiles ARE designated) whose consequence a
+// caller must not miss: it cost Fort #4 a fort's descent. Deliberately NOT
+// set for the other informational notes assembled alongside it
+// (skippedCarved/promotedCarved/joinedAbove/joinedBelow/overwrittenPending):
+// those are benign or not-yet-physically-destructive (overwrittenPending
+// replaces a PENDING, never-dug designation), and folding them in would
+// dilute the one warning that has actually cost a fort something.
+//
+// The out-param is left untouched on every early `return false;` path --
+// nothing was designated there, and the caller's own `false` initializer is
+// the correct value.
+bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error,
+                         bool &destroysExistingStairs)
 {
     // Parse: [4:CmdID] [1:CmdType] [1:DigType] [2:X1] [2:Y1] [2:Z1] [2:X2] [2:Y2] [2:Z2]
     if (payload.size() < 18) {  // 4(cmdID) + 1(type) + 1(digType) + 12(region)
@@ -492,6 +510,12 @@ bool applyDigDesignation(const std::vector<uint8_t> &payload, std::string &error
         if (joinedBelow)
             stairText += ", bottom joined to existing shaft below";
     }
+
+    // Set once here, after stairText is fully assembled and before either of
+    // the two `return true;` exits below, so both success paths report it
+    // identically. See the function's doc comment for why only
+    // convertedStairs feeds this.
+    destroysExistingStairs = (convertedStairs > 0);
 
     // Computed once against the requested rectangle regardless of what the
     // designation loop above did with it -- see the function's doc comment.

@@ -183,9 +183,21 @@ func coalesceDigRuns(cmds []blueprints.DigCommand) []digRun {
 // count is attributed wholesale from its single ack — DFHack's dig
 // designation either accepts a rectangle or it doesn't; there's no
 // partial-tile failure mode to split out.
-func applyBlueprintCmds(ctx context.Context, b *Bridge, cmds []blueprints.DigCommand) (int, int, string) {
+//
+// "Designated" here means ackDesignated, not res.Success: an ACK_STATUS_
+// PARTIAL run is one the plugin fully designated while warning that it
+// destroys something (the dig-over-a-carved-stair case). Counting those as
+// failures would report every tile of a completed run as FAILED and skip the
+// b.Digs record, so the returned partialWarn carries the plugin's warning
+// text to the tool output instead of dropping it — the run is ok AND the
+// caveat is spoken.
+//
+// Returns (okCount, failCount, firstErr, partialWarn).
+func applyBlueprintCmds(ctx context.Context, b *Bridge, cmds []blueprints.DigCommand) (int, int, string, string) {
 	okCount, failCount := 0, 0
 	var firstErr string
+	var firstPartial string
+	partialRuns := 0
 	for _, run := range coalesceDigRuns(cmds) {
 		dt, err := digTypeFromName(run.DigType)
 		if err != nil {
@@ -196,17 +208,28 @@ func applyBlueprintCmds(ctx context.Context, b *Bridge, cmds []blueprints.DigCom
 			continue
 		}
 		res, err := b.Exec.SendDigRegion(dt, run.X1, run.Y, run.Z, run.X2, run.Y, run.Z)
-		if err != nil || res == nil || !res.Success {
+		what := fmt.Sprintf("run %s (%d,%d,%d)-(%d,%d,%d)", run.DigType, run.X1, run.Y, run.Z, run.X2, run.Y, run.Z)
+		if !ackDesignated(res, err) {
 			failCount += run.Count
 			if firstErr == "" {
-				firstErr = ackText(res, err, fmt.Sprintf("run %s (%d,%d,%d)-(%d,%d,%d)", run.DigType, run.X1, run.Y, run.Z, run.X2, run.Y, run.Z))
+				firstErr = ackText(res, err, what)
 			}
 			continue
+		}
+		if !res.Success {
+			partialRuns++
+			if firstPartial == "" {
+				firstPartial = ackText(res, err, what)
+			}
 		}
 		okCount += run.Count
 		// Feed the session dig record so a later designate_dig beside this
 		// blueprint's still-solid tiles doesn't hint "not yet connected".
 		b.Digs.add(run.X1, run.Y, run.Z, run.X2, run.Y, run.Z)
 	}
-	return okCount, failCount, firstErr
+	partialWarn := ""
+	if partialRuns > 0 {
+		partialWarn = fmt.Sprintf("%d run%s designated WITH A CAVEAT — first: %s", partialRuns, plural(partialRuns), firstPartial)
+	}
+	return okCount, failCount, firstErr, partialWarn
 }

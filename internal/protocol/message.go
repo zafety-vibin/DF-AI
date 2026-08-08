@@ -1540,8 +1540,17 @@ type SetBookkeeperPrecisionDesignation struct {
 // code token on the fort's own historical_entity, e.g. "MILITIA_CAPTAIN" --
 // discover other codes with squad_size > 0 via the existing
 // position_vacancies tool) and calls DFHack's own Military::makeSquad on
-// it. PositionCode == "" defaults to "MILITIA_CAPTAIN", the position
-// vanilla DF's own [SQUAD:...] raw token attaches to.
+// it.
+//
+// PositionCode == "" no longer defaults to a hardcoded "MILITIA_CAPTAIN".
+// It makes the plugin AUTO-SELECT a squad_size > 0 position that already
+// has an assignment slot not yet leading a squad (preferring one whose
+// holder is already appointed), or REFUSE with an actionable roll-call of
+// every squad-leader position it saw and that position's population-gate
+// state. The old hardcoded default silently fell through to the UNVERIFIED
+// minting path below on young forts, where MILITIA_CAPTAIN is typically
+// still population-gated while MILITIA_COMMANDER already has a real slot.
+// Only an explicitly named PositionCode can still reach the mint path.
 //
 // Two-phase per docs/decisions.md (2026-07-19 military research pass):
 //  1. If an entity_position_assignment already exists for this position
@@ -1565,12 +1574,31 @@ type CreateSquadDesignation struct {
 }
 
 // AssignSquadDesignation adds (Add=true) or removes (Add=false) UnitID
-// from SquadID's membership -- thin wrapper around DFHack's own
-// Military::addToSquad/removeFromSquad, both proven-safe (real callers in
-// scripts/autotraining.lua at this exact tag). Add auto-picks the first
-// free NON-commander slot (position 0 is never auto-assignable via this
-// path -- addToSquad itself refuses it; assigning a commander is out of
-// scope for this minimal surface). Remove only needs the unit id
+// from SquadID's membership via DFHack's own Military::addToSquad/
+// removeFromSquad.
+//
+// On Add, the PLUGIN computes the target slot itself -- the first vacant
+// NON-commander position, scanning indices 1..len(squad.positions)-1 and
+// bounded by that real vector length -- and passes it to addToSquad as an
+// explicit squad_pos. This is the same call shape DFHack's own only real
+// caller uses (scripts/autotraining.lua loops i=1..9 and always passes an
+// index). addToSquad's squad_pos == -1 auto-pick is NOT used and must not
+// be: per DFHack's docs/dev/Lua API.rst, addToSquad "will fail if
+// squad_pos is specified as 0 or if squad_pos is specified as -1 and the
+// squad leader position is currently vacant" -- and Military::makeSquad
+// never writes positions[0].occupant, so EVERY freshly created squad is
+// in exactly that failing state. (This comment previously claimed the -1
+// path "auto-picks the first free NON-commander slot"; it does not, and
+// that wrong belief is why assign_squad failed on every squad this
+// project created. Corrected 2026-08-07.)
+//
+// Position 0, the commander, still cannot be filled: addToSquad refuses
+// it, and the plugin implements no commander-binding write at all -- it is
+// UNVERIFIED whether DF's own simulation binds a squad's leader on its own
+// once ticks run. A full squad now fails with a truthful slot count saying
+// so, instead of the old generic guess-message.
+//
+// Remove only needs the unit id
 // (Military::removeFromSquad's own signature) -- SquadID is still carried
 // so the plugin can cross-check the unit is actually in the squad the
 // caller thinks it's in, not because the underlying DFHack call requires

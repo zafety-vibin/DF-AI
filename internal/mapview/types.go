@@ -43,6 +43,38 @@ type Slice struct {
 	// in Rows but can still block a new building placement. Optional: an
 	// older plugin simply omits it.
 	FloorItems [][3]int16 `json:"floor_items"`
+	// StockpileTilesInView / StockpileTilesOccupied count the tiles in
+	// THIS window covered by some stockpile's extents, and the subset of
+	// those holding at least one loose item. Membership is pure geometry:
+	// DF marks no item as "stockpiled", so the plugin resolves it through
+	// world->buildings.other.STOCKPILE + Buildings::containsTile.
+	//
+	// They are POINTERS on purpose, following the stockItem Units lesson:
+	// a plain int cannot distinguish "the plugin never measured this"
+	// from "it measured zero stockpile tiles here", and those two demand
+	// opposite renders — the first must say nothing about stockpiles at
+	// all, the second is a real, reportable all-clear. nil means NO DATA;
+	// StockpileTilesInView is emitted by every plugin build that
+	// understands stockpile coverage, so it doubles as the new-plugin
+	// sentinel for every field below.
+	StockpileTilesInView   *int `json:"stockpile_tiles_in_view"`
+	StockpileTilesOccupied *int `json:"stockpile_tiles_occupied"`
+	// FloorItemsNoStock is the subset of FloorItems whose tile is NOT
+	// covered by any stockpile — the homeless clutter. Capped plugin-side
+	// at 200 entries; FloorItemsNoStockCapped reports the cap was hit, in
+	// which case every number derived from this array is a lower bound.
+	// Optional: an older plugin omits both.
+	FloorItemsNoStock       [][3]int16 `json:"floor_items_nostock"`
+	FloorItemsNoStockCapped bool       `json:"floor_items_nostock_capped"`
+	// FloorItemClasses is per-item-tile coarse class identity as
+	// [x,y,idx] where idx indexes FloorItemClassNames — a per-slice
+	// table, exactly like Minerals/MineralNames, so a cluttered quarter
+	// doesn't repeat "finished goods" on every tile. The class is the
+	// dominant one on that tile (most items; ties break to the lower
+	// class id). Reachable only via lens=items. Optional: an older plugin
+	// simply omits both fields.
+	FloorItemClasses    [][3]int16 `json:"floor_item_classes"`
+	FloorItemClassNames []string   `json:"floor_item_class_names"`
 	// PendingBuilding tiles as [x,y] in absolute map coords — DF's
 	// tile_building_occ::Planned occupancy value, set the instant a
 	// building of ANY type (including a wall/floor/ramp Construction) is

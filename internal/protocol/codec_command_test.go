@@ -1485,9 +1485,11 @@ func TestCreateSquadRoundTrip(t *testing.T) {
 }
 
 func TestCreateSquadEmptyCodeRoundTrip(t *testing.T) {
-	// PositionCode == "" is legal (the plugin defaults it to
-	// "MILITIA_CAPTAIN") -- must round-trip as a zero-length string, not
-	// panic on a nil-length read.
+	// PositionCode == "" is legal and meaningful on the wire: it is how the
+	// caller asks the plugin to auto-select a squad-leader position (it is
+	// NOT rewritten to "MILITIA_CAPTAIN" any more, on either side). So it
+	// must round-trip as a zero-length string, not panic on a nil-length
+	// read and not acquire a default here.
 	orig := &CommandMessage{
 		CommandID:   22,
 		CommandType: CommandTypeCreateSquad,

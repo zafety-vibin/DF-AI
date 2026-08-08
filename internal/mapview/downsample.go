@@ -170,8 +170,8 @@ func RenderDownsampledSlice(s *Slice, block int) string {
 	if len(s.Smoothed) > 0 {
 		fmt.Fprintf(&sb, "smoothed tiles in source view: %d\n", len(s.Smoothed))
 	}
-	if len(s.FloorItems) > 0 {
-		fmt.Fprintf(&sb, "tiles with loose items on floor in source view: %d\n", len(s.FloorItems))
+	if line := FloorItemSummaryLine(s); line != "" {
+		sb.WriteString(line + "\n")
 	}
 	return sb.String()
 }

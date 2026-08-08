@@ -47,6 +47,11 @@ var lenses = map[string]LensDef{
 		Legend: "lens=wildlife: V dangerous animal, v harmless — tame/wild, species, and reason listed in a footnote below",
 		Gather: gatherWildlifeLens,
 	},
+	"items": {
+		Name:   "items",
+		Legend: "lens=items: tiles holding loose items painted a,b,c... keyed to THIS view's item classes (footnote below); UPPERCASE = tile is NOT inside any stockpile, lowercase = inside one",
+		Gather: gatherItemsLens,
+	},
 }
 
 // lensNames returns the registered lens names, sorted, for error messages.
@@ -75,6 +80,16 @@ func lensGlyphSet(name string) []rune {
 		return mineralLetterAlphabet
 	case "wildlife":
 		return []rune{'V', 'v'}
+	case "items":
+		// Both cases: the items lens encodes stockpile membership in case
+		// (uppercase = homeless), so its uppercase forms need the same
+		// disjointness guarantee as its lowercase ones.
+		out := make([]rune, 0, 2*len(itemLetterAlphabet))
+		out = append(out, itemLetterAlphabet...)
+		for _, r := range itemLetterAlphabet {
+			out = append(out, toUpperASCII(r))
+		}
+		return out
 	default:
 		return nil
 	}
@@ -101,6 +116,36 @@ var mineralLetterAlphabet = func() []rune {
 	}
 	return out
 }()
+
+// itemLetterAlphabet is the minerals alphabet's stricter sibling: a-z
+// minus 'd'/'t'/'u' (the three lowercase letters reserved outside any lens
+// — see mineralLetterAlphabet) AND minus 'x'/'l'/'f', because this lens
+// paints BOTH cases and their uppercase forms X (up/down-stair), L (magma)
+// and F (fortification) are base terrain glyphs. 20 letters × 2 cases
+// remain, far past the ~13 coarse classes the plugin emits; a view with
+// more distinct classes than letters simply stops labeling beyond the cap,
+// exactly like minerals.
+var itemLetterAlphabet = func() []rune {
+	var out []rune
+	for c := 'a'; c <= 'z'; c++ {
+		switch c {
+		case 'd', 't', 'u', 'x', 'l', 'f':
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}()
+
+// toUpperASCII uppercases a lowercase ASCII letter; everything else passes
+// through. The items lens's case split is pure ASCII by construction (its
+// alphabet is a-z), so this avoids pulling in unicode for one rune.
+func toUpperASCII(r rune) rune {
+	if r >= 'a' && r <= 'z' {
+		return r - ('a' - 'A')
+	}
+	return r
+}
 
 // buildingCategoryGlyph maps a DFHack building_type enum key name (as
 // returned by list_buildings' "type" field) to one of 8 category
@@ -299,6 +344,96 @@ func gatherMineralsLens(ctx context.Context, b *Bridge, s *mapview.Slice, z int1
 		fmt.Fprintf(&legend, " (+%d more mineral(s) in view, unlabeled)", len(s.MineralNames)-shown)
 	}
 	return mapview.Overlay{Marks: marks, Footnotes: []string{legend.String()}}, nil
+}
+
+// buildItemsOverlay paints every item-bearing tile with a per-view class
+// letter, uppercased when the tile sits outside every stockpile. It reads
+// ONLY the slice — no Bridge round trip — like the designations and
+// minerals lenses; the always-on look footer already establishes THAT a
+// pile exists, and this lens answers "what IS all this, and which of it is
+// homeless?" in the same call that drew the grid.
+//
+// Split out from gatherItemsLens so the paint/footnote logic is directly
+// unit-testable (see buildWildlifeOverlay for the same seam).
+func buildItemsOverlay(s *mapview.Slice) mapview.Overlay {
+	marks := map[[2]int16]rune{}
+	if s == nil || len(s.FloorItems) == 0 {
+		return mapview.Overlay{Marks: marks}
+	}
+	homeless := make(map[[2]int16]bool, len(s.FloorItemsNoStock))
+	for _, t := range s.FloorItemsNoStock {
+		homeless[[2]int16{t[0], t[1]}] = true
+	}
+
+	// Old plugin: no class table and no homeless split. Paint a single
+	// uniform letter and say plainly that BOTH the classes and the
+	// UPPER/lower stockpile split are missing — a case-encoded glyph whose
+	// case means nothing would otherwise read as an assertion.
+	if len(s.FloorItemClassNames) == 0 {
+		for _, t := range s.FloorItems {
+			marks[[2]int16{t[0], t[1]}] = 'i'
+		}
+		return mapview.Overlay{Marks: marks, Footnotes: []string{fmt.Sprintf(
+			"item classes not reported by this plugin build — all %d item-bearing tile(s) painted 'i'; the UPPERCASE/lowercase stockpile split is unavailable here (case carries NO meaning in this render)",
+			len(s.FloorItems))}}
+	}
+
+	counts := make(map[[2]int16]int, len(s.FloorItems))
+	for _, t := range s.FloorItems {
+		counts[[2]int16{t[0], t[1]}] = int(t[2])
+	}
+	classItems := make([]int, len(s.FloorItemClassNames))
+	classTiles := make([]int, len(s.FloorItemClassNames))
+	labeled := 0
+	for _, fc := range s.FloorItemClasses {
+		idx := int(fc[2])
+		if idx < 0 || idx >= len(s.FloorItemClassNames) || idx >= len(itemLetterAlphabet) {
+			continue // beyond the lettered cap — tile keeps its base glyph
+		}
+		pos := [2]int16{fc[0], fc[1]}
+		g := itemLetterAlphabet[idx]
+		if homeless[pos] {
+			g = toUpperASCII(g)
+		}
+		marks[pos] = g
+		classItems[idx] += counts[pos]
+		classTiles[idx]++
+		labeled++
+	}
+
+	var legend strings.Builder
+	legend.WriteString("this view's item classes:")
+	for i, name := range s.FloorItemClassNames {
+		if i >= len(itemLetterAlphabet) || classTiles[i] == 0 {
+			continue
+		}
+		fmt.Fprintf(&legend, " %c=%s (%d items/%d tiles)", itemLetterAlphabet[i], name, classItems[i], classTiles[i])
+	}
+	footnotes := []string{legend.String()}
+	// The plugin caps its per-tile class array at 200 (minerals
+	// precedent); the uncapped floor_items array is what proves tiles were
+	// dropped, so the gap is reported rather than silently unpainted.
+	if unlabeled := len(s.FloorItems) - labeled; unlabeled > 0 {
+		footnotes = append(footnotes, fmt.Sprintf(
+			"+%d item-bearing tile(s) past the plugin's 200-tile class cap are unlabeled (they keep their terrain glyph)", unlabeled))
+	}
+	// The homeless list has its OWN 200-tile cap, and this lens encodes
+	// homelessness in letter case: a tile the plugin dropped from that list
+	// looks identical to a tile it measured as stockpiled, so lowercase
+	// silently becomes an assertion nothing verified. The plugin's cap sites
+	// are ordered so this cannot bite today (the class cap is reached first
+	// — see the INVARIANT comments in queries.cpp queryMapSlice), but the
+	// render discloses the truncation anyway so a later cap change can only
+	// cost precision, never truthfulness.
+	if s.FloorItemsNoStockCapped {
+		footnotes = append(footnotes,
+			"the plugin's outside-stockpile tile list hit its 200-tile cap in this view — past that cap homelessness is not marked, so lowercase (inside a stockpile) may under-report it here")
+	}
+	return mapview.Overlay{Marks: marks, Footnotes: footnotes}
+}
+
+func gatherItemsLens(ctx context.Context, b *Bridge, s *mapview.Slice, z int16) (mapview.Overlay, error) {
+	return buildItemsOverlay(s), nil
 }
 
 func gatherZonesLens(ctx context.Context, b *Bridge, s *mapview.Slice, z int16) (mapview.Overlay, error) {

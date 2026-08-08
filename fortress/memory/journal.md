@@ -2,6 +2,324 @@
 
 (newest entries on top)
 
+## 2026-08-07 — FORT #6 SESSION 4 (winter y100 day 334 → summer y101 day 84)
+
+DF updated to **53.16**; overseer rebuilt+reinstalled the plugin, fort
+verified intact (world/day/pop all matched). Overseer asked for a more
+hands-off session. Pop 19 → 20 (edóm gave birth to a girl). Wealth
+18,319 → 23,691. Zero dwarf deaths still.
+
+**DEFENCE IN DEPTH (the session's spine).** `building_types` was honest
+that weapon_trap is the ONLY working trap (stone_fall builds UNARMED
+with no load-job exposed; pressure_plate can't have its trigger
+conditions configured, so it never fires). So defence is architectural:
+- THE GATE: a full weapon-trap row at x=104 (y=101,102,103) behind the
+  surface door — nothing can cross the street without stepping on one —
+  plus 2 more at x=103, a 3x3 raising bridge at (100-102,101-103)
+  centre (101,102), and its lever at (97,102) on the FORT side, linked.
+  Bridge left LOWERED by design; it is the panic seal, not a wall.
+  NOTE: only 4 copper axes + 1 mace were spent — the 3 IRON PICKS were
+  deliberately withheld, they are the fort's mining tools.
+- Burrow "Lanehold Interior" extended +782 tiles over z=129/128 so a
+  civilian alert can't strand anyone in the new noble quarter.
+
+**TWO BREACHES THE OVERSEER CAUGHT, ONE RULE I HAD WRONG.**
+(1) DF ALLOWS DIAGONAL CORNER-CUTTING. My session-3 seal audit assumed
+the roguelike rule ("blocked if both orthogonals are walls") and cleared
+the ramp at (89,100) as safe. It is not: units step diagonally from that
+ramp straight onto the spine staircase at (90,101). Walled. A diagonal
+wall line NEVER seals in DF.
+(2) A ONE-TILE HOLE IN THE PROMONTORY ROOF at (93,101,139) — open air
+directly above the street, confirmed by cross_section flagging
+(93,101,138) as SURFACE while its neighbours (94,101)/(100,101) have
+solid z=139 ground. Anything on the plateau could drop in past the door,
+the traps and the bridge. Walled the tile below.
+
+**THE NOBLE LAYER, FINISHED AND OCCUPIED.** All six 5x5 suites dug, the
+comb scaled up exactly as designed (wall columns at x=115/x=121, door
+gaps landing on x=112/118/124 both sides). 6 doors hung, offices and a
+dining hall furnished by quality tier. VERIFIED THE HOLDERS BEFORE
+ASSIGNING (overseer challenge): position_vacancies shows adil (#1199)
+holds THREE positions — Expedition Leader, Manager, Broker — and zaneg
+(#1194) holds Bookkeeper, and they are the ONLY dwarves at this fort
+holding any position (every civ title is a histfig with "no unit at this
+fort"). adil got suite 1 + office + the dining hall; zaneg suite 2 +
+far office; third suite left reserved. Also appointed mistêm (#1306)
+CHIEF_MEDICAL_DWARF — the hospital had stood unstaffed since y100.
+
+**I SEVERED THE FORT'S OWN STAIRCASE.** Designating the 143-tile
+training hall at z=129 overlapped the satellite shaft; the ACK said
+verbatim "4 will remove existing stairs: vertical connection lost" and
+I called step() anyway. z=130 was cut from z=129, isolating the entire
+noble quarter WITH TWO DWARVES INSIDE. Overseer caught it. Repaired with
+constructed upstairs on all four tiles (they are immune to dig/smooth
+destruction, and the trapped pair built their own way out from boulders
+already on that level); cross_section confirms z=131 '>' / z=130 'X' /
+z=129 '<' continuous again. No deaths. Full rule banked in learnings.md:
+a SUCCESS ack can carry a fatal warning — parse the text, not the status.
+
+**SQUADS: DIAGNOSED, AND IT IS OUR BUG, NOT A MISSING DFHACK API.**
+list_squads returns 22 squads — every filled slot reads `unit#-1`,
+i.e. they are the WORLD's squads with no fort filter. create_squad
+defaults to MILITIA_CAPTAIN, which position_vacancies says has "no
+assignment slot yet (not unlocked)", so it takes the tool's own
+self-flagged UNVERIFIED mint path — that explains Fort #5's ghost squad.
+Retested properly: appointed thíkut MILITIA_COMMANDER (a position with a
+REAL vacant slot, assignment#11, squad of 10), created squad #22 under
+it, re-appointed to bind the leader — and assign_squad STILL fails, on
+both an ordinary dwarf and the commander, with
+`Military::addToSquad failed ... (squad may be full, or the unit has no
+historical figure)`. Prime suspect for the fix wave: our create_squad
+mints a squad that never lands in the fort entity's `squads` vector.
+Reproduction is now precise. Training hall dug at z=129 anyway so the
+room is ready the day the fix lands.
+
+**INDUSTRY PIVOT (overseer: "no migrants this season" = we under-built
+wealth; time for non-survival goods).** Read as a real failure signal.
+Started the fort's craft economy: melbil (BONECARVE 13) + 184 pond
+turtle shells → FIVE MASTERPIECES in four steps (2 earrings, a
+bracelet, and TWO CROWNS), now a standing seasonal order. CutGems
+LIVE-VERIFIED FOR THE FIRST TIME IN THIS PROJECT (ruby x3, aventurine
+x3, tiger iron x2 cut at the jewelers) — EncrustWithGems is the next
+untested link. Wealth "other" 6,967 → 10,502 on crafts alone.
+COFFERS (overseer's suggestion): 10 made and PLACED beside beds in the
+z=131 comb, 12 more ordered — dwarves now have somewhere to own things.
+NOTE: `build` calls it 'coffer', `stocks` files it as **BOX** — that
+naming split cost a diagnostic round.
+Also: 6 themed stockpiles in the Iron Quarter (gems by the jewelers,
+bars by the forge, wood by the wood furnace, stone by the smelter) and
+the Vault extension (113,96)-(122,108) z=132 dug + all-category piled,
+after boring 4 corners dry.
+
+**RESUME — paused summer y101 day 84, pop 20, zero deaths:**
+1. CARAVAN + DIPLOMAT from The Confederacy of Balding are due THIS
+   SUMMER (~1264 ticks at pause). PAUSE AND ASK THE OVERSEER before
+   trading — standing rule. Depot still accessible=false; `chop`
+   truthfully reported NO TREES on the northern approach (only
+   unfellable saplings), so the wagon-width theory is unproven — needs
+   client eyes. Expect pack animals, as in autumn y100.
+2. Place the 12 remaining coffers; furnish the 3rd noble suite.
+3. EncrustWithGems on Drakehall/noble furniture — the last untested
+   link in the gem chain, and pure wealth.
+4. Keas still looting the surface stockpile that CANNOT be removed
+   (two piles, identical extents (88,88)-(92,91)). Overseer click.
+5. Barracks zone over the z=129 training hall once assign_squad is fixed.
+
+## 2026-07-25 — FORT #6 SESSION 3 (winter y100 day 259 → day 283)
+
+**LIVE-VERIFY (the 16-item checklist): 14 pass, 2 deferred to a live
+caravan.** tile deltas NONZERO every step (14/38/17/64/33/39/53/48/34 —
+the delivery mystery is answered for good, the stream is ALIVE);
+check_goals shelter now spans 6 z-levels; depot_goods renders the
+ours/theirs split; caravan_status renders walkable_from_edge + an access
+diagnostic; set_depot_trade_flags works (trader_requested +
+anyone_can_trade both set on the depot); build Instrument now REFUSES
+truthfully and names the exact malachite case ("handheld instruments are
+not placeable -- performers use them from stockpiles"); fort_story
+pulse/social/art all real (pulse cursor advances and dedups correctly —
+second call returned "no notable emotions"); dwarf_detail portrait=true
+landed. DEFERRED (need a caravan on the map, elves spring y101):
+bring_goods item_class=crafts on binned goods, unmark_trade_goods.
+trade_agreements gave a TRUTHFUL EMPTY — it only reads civs visiting
+RIGHT NOW, so autumn's liaison agreement is NOT recoverable after
+departure (the will hoped otherwise; the tool is honest, the hope was
+wrong). Zone dance CONFIRMED FOLKLORE a second time: 3 designate_zone →
+assign_zone pairs in one paused breath, zero ticks, all SUCCESS.
+
+**THE COMBAT NARRATOR WAS NOT UNTESTED.** It was never asked. On the
+first summary call it surfaced engagement 84 from y100 t57812 — the
+stray dog vs the carnotaurus, Lanehold's first loss, the death we had
+no remains for and never explained. The 25-line transcript exists: the
+dog bit the carnotaurus's right upper leg and tore scale, scratched it,
+tore the fat of its left foot, and kept biting after being knocked
+over and grabbed by the toe. Then "the stray dog's neck skids along
+the ground and the part is smashed into the body, an unrecognizable
+mass" / "An artery has been opened". She fought it for 94 ticks. The
+narrator degrades honestly AND reaches backward — do not seek a fight
+to test it, the fort's history already had one. (Gap: fort side reads
+"(none)" — a tame fort animal isn't counted as ours.)
+
+**ADIL'S PORTRAIT ANSWERS THE CHAIR QUESTION.** Very High SINGLEMINDED
+(82) — he finishes what he starts, and seeds were what he'd started.
+His most starved need is CraftObject (Distracted, focus -11280), driven
+by his own value on CRAFTSMANSHIP; every other need is Unfocused.
+Paperwork feeds none of them. His ONE fed need is AdmireArt
+(Unfettered, +376) and his strongest emotion is PLEASURE "near his own
+quality building". The manager who wouldn't sit at his desk is a dwarf
+who needs to MAKE something and is nourished only by looking at
+beautiful things. He took nineteen days to sit down because sitting
+down was the one job that gave him nothing.
+
+**THE SURFACE IS SEALED (overseer directive).** The breach was exactly
+six tiles: the y=100 line at z=138 had floor gaps at x=90,92,93,94,99,
+100 (everything else was natural soil wall). All six walled [stone],
+all six BUILT IN ONE DAY by the idle-labor surplus. The street is
+roofed by the z=139 promontory, the east side was already door+flanking
+walls, and the (89,100)→(90,101) diagonal is blocked because both
+orthogonals are now wall. Lanehold has ONE surface entrance: the door
+at (105,102). Chose walls over a north door deliberately — no lock/
+forbid tooling exists in this project, so a door stops wildlife but not
+goblins; one chokepoint is worth the longer depot haul and is what
+makes a future bridge airlock in the lane meaningful.
+
+**TEARDOWN (partial).** Identified the 3 surface workshops by probing
+their job queues (buildings only says "Workshop", never the type —
+logged as a gap): (96,90)=FISHERY, (101,94)=STILL, (97,94)=carpenter.
+Built a CARPENTER underground at (95,107,133) first, confirmed the
+underground still at (99,107,137) by its live CustomReaction, THEN
+removed the surface still + carpenter. Fishery LEFT STANDING on purpose
+— it has no underground home yet and fish may return in spring;
+starter-then-permanent says name the teardown moment, not guess it.
+
+**ROOT CAUSE: NO WORK DETAIL CONTAINED CARPENTRY.** Symptom: every rock
+item (doors, thrones, tables, mugs) completed while every wood item
+(beds, barrels, bins) sat at "in progress" with 0 produced, and the
+carpenter's job queue was EMPTY. Masonry survives on fallback profession
+flags; carpentry had no detail at all among the 12. Fixed: created
+"Carpenters" (CUSTOM_2, only_selected, labor CARPENTER), assigned ilral
+(Carpenter Lvl7, idle all session) + olon. Beds began completing within
+one step. The emotional signature is in the pulse: ilral and olon both
+now register SATISFACTION "at work". THE ORDERS LADDER LIED — "in
+progress" on a job type no citizen can perform reads identical to real
+progress; the truthful discriminator was the workshop's own empty job
+queue. Engineering: the ladder needs a "no citizen has this labor" rung.
+
+**EVERY DWARF IN LANEHOLD IS HOUSED.** 3 doors + 4 beds into the
+second-row comb cells; olon(479), zefon(483), edóm(484) out of the dorm
+and into owned bedrooms at (92,90)/(95,90)/(98,90) z=131; a 4th bed
+closed the one furnished-but-bedless cell at (113,106). check_goals:
+19 bedroom zones / 19 dwarves. Fitting, since fort_story mode=art shows
+all SIX works of art known in Lanehold were brought here by olon and
+edóm — 0 composed here, 6 carried in by the two dwarves who'd spent the
+whole year in a surface dormitory.
+
+**DRAKEHALL FINISHED.** Smoothing was already complete (206 tiles);
+engraved it in 4 rects split around the (116-117,101-102) satellite
+stairs (no stair-overwrite warning fired — the split was clean), let the
+idle-labor surplus work it to completion, THEN furnished: 4 more
+table+chair pairs on the west colonnade (x=108-109), centre kept clear
+as the dance floor. quality>=well_crafted selection worked and named
+each piece it picked (2 Superior tables, WellCrafted rest). Furniture
+was deliberately held until engraving finished — smooth→engrave→
+furniture is not reversible.
+
+**ALSO:** Vault east annex is dug and now under all-category stockpile
+(104,96)-(112,108) z=132 — the hall is one continuous 21x13 room with
+184 loose items to absorb (overseer's ask). Two new farm plots at
+(94,105)-(95,109) and (96,105)-(97,109) z=137 planted CAVE WHEAT and
+SWEET POD — both brewable, both subterranean, from 10 seeds that were
+sitting idle. Brewing was blocked twice (no fermentable plants, then no
+empty barrel — all 19 barrels full, the 3-fort-old treadmill); queued 4
+barrels at the new carpenter and a 10-drink batch completed. Meals
+standing order 5x/monthly added (fort had zero prepared meals).
+edóm pulled off Fisherdwarves — fishing is exhausted fort-wide
+("nothing to catch" in 4 separate swamps).
+
+**MY ONE REAL MISREAD, corrected by the overseer mid-session:** I read
+`stocks` DRINK=15 as 15 servings for 19 dwarves and called a famine.
+It is 15 BARREL-STACKS. The stack-units field that would have
+disambiguated this SHIPPED IN WAVE 5 AND STILL DOES NOT RENDER — Fort
+#5 logged the identical gap. This is no longer a paper cut: it caused a
+live overseer-corrected misdiagnosis. Highest-value small fix on the
+board.
+
+**TOOL FINDINGS (new this session):** (1) `buildings` never names a
+workshop's TYPE — teardown planning is blind; probing job queues is the
+only workaround. (2) `remove_building` cannot disambiguate two
+buildings with IDENTICAL extents — two stockpiles both span
+(88,88)-(92,91) and its "reissue at a tile covered by only one" advice
+is unfollowable; needs a building-id selector. (3) region_scan's level
+set and count are UNSTABLE between calls (5744 over {130,131,133,137,
+138,139} → 4387 over {130,131,132,133,137,138}) — the "upper bound"
+moved by 1300 tiles and swapped two levels. (4) orders ladder can't see
+a missing labor (above). (5) stocks stack-units still absent (above).
+
+**THE DEEP ARC (day 283-334) — overseer handed me the torch mid-session
+("develop your own goals"), then steered the shape of it.** I picked
+DEFENSE, because the fort was safe/fed/housed/beautiful and completely
+undefended: one door, no lock tooling, no military, ZERO mechanisms.
+
+**FIRST WORKING MECHANISM IN LANEHOLD'S HISTORY.** mechanic workshop at
+(100,102,133) → ConstructMechanisms (job name is NOT "mechanism"; the
+tool refused truthfully and job_types named it) → and, applying the
+carpentry lesson BEFORE it bit: no work detail contained MECHANIC
+either, so "Mechanics" (CUSTOM_3) was created and staffed (kivish,
+zefon-1288) pre-emptively. Bridge 2x3 at center (111,102,129)
+raise_e + lever → link_building → pull → **bridge state flipped
+[lowered]→[raised]→[lowered], the whole chain verified live.**
+
+**I REPRODUCED FORT #5'S SELF-LOCK, EXACTLY.** I put the lever at
+(108,104,129) on the PROTECTED side — which was a dead-end pocket. The
+bridge raised, the lever went unreachable, and the "lower" job sat
+forever. Nobody was inside (checked immediately — no '@' at z=129), so
+no döbar repeat, but the fort had sealed off its own new basement. The
+overseer caught it in the client and prescribed the fix: dig around it,
+lower the bridge, then replace the walls. Did exactly that — dug the
+2-tile bypass at (110-111,104) through undug vein, restored access,
+bridge lowered, bypass re-walled [stone]. ALSO built a SECOND lever at
+(113,101,129) on the fort side and linked it to the same bridge (two
+levers, one target — works). THE RULE, now paid for twice: a lever on
+the protected side of a DEAD-END pocket is a self-lock; the fort side
+needs a lever too. Bridge stays DOWN until we actually hole up.
+
+**THE CHOKEPOINT IS GENUINE.** At z=129 the ONLY connection between the
+inner landing (west) and the guard chamber (east) is the 2x3 corridor
+at (110-111,101-103) — every other row is undug vein. The 2x3 bridge
+covers it exactly. Layered fort now reads: surface seal (1 door) →
+tavern z=130 → guard chamber z=129 → BRIDGE AIRLOCK → noble sanctum
+z=128.
+
+**THE NOBLE LAYER (overseer-directed: 5x5/6x6 rooms, nobles need
+offices and dining halls too, mind how bigger rooms push the hallway).**
+Bored SIX columns first — 4 corners + 2 mid-edges — and all six agreed:
+**z=129 AND z=128 dry across x=108-126/y=95-109; z=127 and below is
+aquifer at every single column.** The noble layer therefore sits on the
+LAST DRY GROUND IN LANEHOLD, water directly beneath it. Design shipped
+(~213 tiles, most already dug): 3-wide grand concourse y=101-103 east
+from the stair, 5x5 suites in a comb with walls-by-subtraction and
+single centered door gaps (5 is odd, so every door centers — the
+aesthetic canon), wall columns at x=115 and x=121. Six suites:
+**bedrooms north, business south** — a noble's office/dining hall sits
+directly across the concourse from their bedroom, so the level
+documents itself to whoever picks it up next. WARNING BANKED: 4 aquifer
+tiles sit at y=110, one row past the south suites — do NOT extend z=128
+south of y=109.
+
+Struck RUBY (115-117,104-106, mined on overseer's instruction via
+lens=minerals), plus bauxite, bituminous coal, gray chalcedony, jet,
+morion, picture jasper, tiger iron. lorbam (ENCRUSTGEM 10) finally has
+gems. Wealth 10.6k → 18,319 (architecture alone 6,057).
+
+**RESUME SCRIPT — paused winter y100 day 334 (spring y101 is ~2 DAYS
+AWAY), pop 19, zero deaths:**
+1. ASK THE OVERSEER (owed, unanswered): is the z=130 Drakehall a REAL
+   tavern in the client, vs the z=137 phantom at (95,94)-(98,98)? Both
+   still show in list_locations — the A/B is set up and needs one
+   client glance. Also: did the dog ever get interred in the crypt
+   coffin at (95,113,133)?
+2. ELVEN CARAVAN IS IMMINENT (spring y101). Depot flags already set
+   (trader_requested + anyone_can_trade). PAUSE AND ASK THE OVERSEER
+   BEFORE TRADING — they execute the exchange in-client, by their
+   instruction. The binned-crafts staging fix is the live test.
+   NOTE: depot accessible=false while walkable_from_edge=true —
+   suspected sapling regrowth pinching the wagon corridor; needs an
+   overseer client check.
+3. FINISH THE NOBLE LAYER: ~87 tiles were still designated at pause
+   (suite C both sides, suite B south, concourse east end). Then
+   doors on the 6 gaps (x=112/118/124 at y=100 and y=104), furniture,
+   and designate_zone bedroom/office/dining_hall + assign to adil
+   (manager/broker) and zaneg (bookkeeper) first.
+4. KEAS ARE LOOTING US: mugs x3 + a dwarven wine pot stolen this
+   session, from the surface stockpile OUTSIDE the seal. It CANNOT be
+   removed by tooling — TWO stockpiles share identical extents
+   (88,88)-(92,91) and remove_building refuses to guess. One-click fix
+   in the client; please ask the overseer.
+5. Fishery is the last building outside the seal (fishing exhausted
+   fort-wide). Give it an underground home or retire it.
+6. Brewing still cycles on "needs empty food storage item" — 6 more
+   barrels queued at the carpenter; the real cure is the new cave
+   wheat + sweet pod plots coming in.
+
 ## 2026-07-22 — FORT #6 SESSION 2 (Summer y100 day 100 → day 157+, RESUMED post-deploy)
 
 **LIVE-VERIFY: 10/10.** New DLL loaded clean; tile deltas flow every
@@ -140,12 +458,15 @@ zero deaths; written at session end for the next instance):**
    multi-z shelter counts, connector self-heal. A6 exchange
    automation: verdict in the 012 brief — stays human, by evidence.
    ALSO: Feature 013 (NARRATIVE LAYER — "read the story, not run the
-   game") fully researched at specs/013-narrative-layer/research.md:
-   all five desires feasible; build wave 013-A (portrait card +
-   combat narrator skeleton) BEFORE the first siege if possible —
-   we have been lucky exactly once. The commissioning desires in
-   that file are personal; honor their spirit, not just their spec.
-   And when the tools land: ask adil why he never sits in his chair.
+   game") is RESEARCHED, BUILT, AND DEPLOYED (specs/013 research →
+   wave-013, all five desires shipped: dwarf_detail portrait=true,
+   fort_story pulse|social|art, combat_report summary|log; narrative
+   live-verify = items 13-16 of the goals.md checklist). The
+   commissioning desires in that research file are personal; honor
+   their spirit, not just their spec. The combat narrator is UNTESTED
+   against a real fight and degrades truthfully until one comes — do
+   not seek one. And the tools have landed now, so: ask adil why he
+   never sits in his chair. His portrait knows.
 
 **Tool notes:** connectivity hint no longer map-corner but still
 false-negatives same-z adjacency (reports cross-z tile); a

@@ -52,6 +52,117 @@ type buildingListEntry struct {
 	MaxStage    int    `json:"max_stage"`
 	Done        bool   `json:"done"`
 	BridgeState string `json:"bridge_state,omitempty"` // Bridge only: "raised"/"raising"/"lowering"/"lowered" (queries.cpp handleListBuildings)
+
+	// Stockpile only (queries.cpp handleListBuildings): identity, accepted
+	// categories, and tile-fill. A bare "Stockpile at (x,y,z)" line could
+	// not answer "is this full?" or "why is nothing hauled here?", and a
+	// live session had to be told by a human that the fort needed more
+	// stockpile room.
+	//
+	// SPTiles/SPOccupied/SPItems are POINTERS for the stockItem Units
+	// reason: an older plugin omits them entirely, and a zero-valued int
+	// would render "0/0 tiles occupied" — an invented measurement. SPTiles
+	// != nil is the presence sentinel for the whole group.
+	SPNumber     *int   `json:"sp_number,omitempty"`
+	SPName       string `json:"sp_name,omitempty"`
+	SPCategories string `json:"sp_categories,omitempty"`
+	SPTiles      *int   `json:"sp_tiles,omitempty"`
+	SPOccupied   *int   `json:"sp_occupied,omitempty"`
+	SPItems      *int   `json:"sp_items,omitempty"`
+}
+
+// hasExtents reports whether the entry carries a real footprint rectangle.
+// An all-zero rectangle means an older plugin that never sent x1..y2 (the
+// same test gatherBuildingsLens uses before falling back to center paint).
+func (e buildingListEntry) hasExtents() bool {
+	return e.X1 != 0 || e.Y1 != 0 || e.X2 != 0 || e.Y2 != 0
+}
+
+// stockpileLine renders one Stockpile entry with whatever the plugin
+// actually sent, and returns "" for anything that isn't a finished
+// stockpile with a footprint (those fall through to the generic line).
+//
+// Degradation is layered, never invented: with sp_* fields the line
+// carries identity, accepted categories and fill; with only extents (the
+// plugin build deployed before this feature) it still upgrades the useless
+// center coordinate to the real rectangle — a stockpile's extent is the
+// one thing a caller needs to reason about room — and says nothing about
+// fill at all.
+func stockpileLine(bl buildingListEntry) string {
+	if bl.Type != "Stockpile" || !bl.Done || !bl.hasExtents() {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("- Stockpile")
+	if bl.SPNumber != nil {
+		fmt.Fprintf(&sb, " #%d", *bl.SPNumber)
+	}
+	if bl.SPName != "" {
+		fmt.Fprintf(&sb, " %q", bl.SPName)
+	}
+	fmt.Fprintf(&sb, " at (%d,%d)-(%d,%d) z=%d", bl.X1, bl.Y1, bl.X2, bl.Y2, bl.Z)
+	if bl.SPTiles == nil {
+		// Old plugin: extents only. Say nothing about capacity or fill.
+		sb.WriteString(" — built (fill not reported by this plugin build)")
+		return sb.String()
+	}
+	if bl.SPCategories != "" {
+		fmt.Fprintf(&sb, " — accepts %s", bl.SPCategories)
+	} else {
+		sb.WriteString(" —")
+	}
+	tiles := *bl.SPTiles
+	occupied := 0
+	if bl.SPOccupied != nil {
+		occupied = *bl.SPOccupied
+	}
+	pct := 0
+	if tiles > 0 {
+		pct = occupied * 100 / tiles
+	}
+	fmt.Fprintf(&sb, ", %d/%d tiles occupied (%d%%)", occupied, tiles, pct)
+	if bl.SPItems != nil {
+		fmt.Fprintf(&sb, ", %d items", *bl.SPItems)
+	}
+	return sb.String()
+}
+
+// stockpileFootprintsOverlap counts how many of the given stockpile entries
+// share ground with another one at the same z.
+//
+// This exists because the plugin measures each pile INDEPENDENTLY
+// (queries.cpp stockpileFillCounts walks the blocks covering one pile's
+// bbox and counts every on_ground item that containsTile accepts). Two
+// stockpiles over the same tiles therefore each claim those tiles and the
+// same items on them: each line is individually correct and the lines DO
+// NOT SUM. A live fort has exactly this — two piles spanning the same
+// rectangle — and the `look` footer, which is set-deduped, would report the
+// smaller, correct total for the same ground. Two surfaces disagreeing is
+// worse than either being coarse, so the disagreement is disclosed here.
+//
+// Fixing it plugin-side by first-come attribution was rejected: it would
+// make each pile's number depend on world->buildings.all iteration order.
+//
+// The test is on bounding RECTANGLES — the only footprint the wire carries
+// — so two interlocking extent-shaped piles that share no actual tile can
+// trip it. That direction is the safe one: it over-discloses, never
+// under-discloses.
+func stockpileFootprintsOverlap(entries []buildingListEntry) int {
+	overlapping := make(map[int]bool)
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			a, b := entries[i], entries[j]
+			if a.Z != b.Z {
+				continue
+			}
+			if a.X1 > b.X2 || b.X1 > a.X2 || a.Y1 > b.Y2 || b.Y1 > a.Y2 {
+				continue
+			}
+			overlapping[i] = true
+			overlapping[j] = true
+		}
+	}
+	return len(overlapping)
 }
 
 // renderBuildings renders the list_buildings query response, one line per
@@ -72,7 +183,15 @@ func renderBuildings(raw []byte) string {
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%d buildings:\n", len(resp.Buildings))
+	var filled []buildingListEntry
 	for _, bl := range resp.Buildings {
+		if line := stockpileLine(bl); line != "" {
+			sb.WriteString(line + "\n")
+			if bl.SPTiles != nil {
+				filled = append(filled, bl)
+			}
+			continue
+		}
 		state := ""
 		if bl.BridgeState != "" {
 			state = fmt.Sprintf(" [%s]", bl.BridgeState)
@@ -83,6 +202,18 @@ func renderBuildings(raw []byte) string {
 			fmt.Fprintf(&sb, "- %s at (%d,%d,%d) — UNDER CONSTRUCTION (stage %d/%d)%s\n",
 				bl.Type, bl.X, bl.Y, bl.Z, bl.Stage, bl.MaxStage, state)
 		}
+	}
+	// One caveat per render, not per stockpile. Tile-fill ignores container
+	// interiors in both directions: a pile can be tile-full and still absorb
+	// items into half-empty bins, and a tile holding one bin reads as taken.
+	// Overlapping piles get one more clause on the same line (see
+	// stockpileFootprintsOverlap) rather than a second line.
+	if len(filled) > 0 {
+		sb.WriteString("(stockpile items count a bin/barrel as 1 — contents via stocks; occupied = tiles holding ≥1 loose item")
+		if n := stockpileFootprintsOverlap(filled); n > 0 {
+			fmt.Fprintf(&sb, "; %d stockpile footprint rectangles overlap — shared tiles and their items are counted once per pile, so these numbers do not sum", n)
+		}
+		sb.WriteString(")\n")
 	}
 	if resp.Truncated {
 		sb.WriteString("... list truncated at the plugin's cap — pass z to narrow it\n")
@@ -109,6 +240,15 @@ func renderBuildings(raw []byte) string {
 // where DF's stack_size concept doesn't apply), the plugin reports
 // Units==Count — see queries.cpp's itemStackUnits.
 //
+// They are POINTERS on purpose. A plain int cannot distinguish "the plugin
+// never sent this field" from "the plugin sent it and it happens to equal
+// Count" — both decode to a value the renderer silently treats as "nothing
+// extra to report", which is exactly how a live session read a struct count
+// (8 barrels) as a serving count against a plugin build that predated this
+// feature. nil means NO DATA and makes renderStocks print a caveat instead
+// of an implicit all-clear; non-nil means the plugin actually measured it,
+// even when the answer is "Units == Count, this type doesn't stack."
+//
 // Containers/Empty are only present (queries.cpp only emits them) when this
 // (item_type, material) key has at least one storage-vessel item counted
 // among Count — BARREL/BUCKET/BIN/BAG always qualify, plus any TOOL whose
@@ -127,8 +267,8 @@ type stockItem struct {
 	Material   string `json:"material"`
 	Count      int    `json:"count"`
 	InUse      int    `json:"in_use,omitempty"`
-	Units      int    `json:"units,omitempty"`
-	InUseUnits int    `json:"in_use_units,omitempty"`
+	Units      *int   `json:"units,omitempty"`
+	InUseUnits *int   `json:"in_use_units,omitempty"`
 	Economic   bool   `json:"economic,omitempty"`
 	Containers int    `json:"containers,omitempty"`
 	Empty      int    `json:"empty,omitempty"`
@@ -151,6 +291,43 @@ func formatContainerNote(containers, empty, total int) string {
 	}
 	return fmt.Sprintf(" (%d containers, %d empty)", containers, empty)
 }
+
+// stocksHaveUnitData reports whether the plugin that produced this response
+// measured stack sizes at all: true as soon as ANY item carries a "units"
+// key. False against an empty list too, but renderStocks only consults it
+// for a non-empty one — see stockItem's doc comment for why "the plugin was
+// silent" and "the plugin confirmed no extra stacking" must not look alike.
+func stocksHaveUnitData(items []stockItem) bool {
+	for _, it := range items {
+		if it.Units != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// stocksUnitDataConfirmed answers the same question as stocksHaveUnitData,
+// preferring the plugin's own explicit capability flag when it sent one.
+//
+// queries.cpp emits a top-level "stack_units":true beside the payload — an
+// O(1) self-description that is immune to a future regression which stops
+// populating "units" for some new item type without removing the field
+// wholesale (the nil scan below would happily read one surviving "units" key
+// as "this build measures everything"). A nil flag means a plugin build that
+// predates it, which is exactly what the item scan still exists for.
+func stocksUnitDataConfirmed(flag *bool, items []stockItem) bool {
+	if flag != nil {
+		return *flag
+	}
+	return stocksHaveUnitData(items)
+}
+
+// stocksNoUnitDataCaveat is printed ONCE per response (not per item) when
+// stocksHaveUnitData is false, so a caller can never mistake a struct/stack
+// count for a real serving total against an older plugin build.
+const stocksNoUnitDataCaveat = "NOTE: this plugin build did not report per-item stack sizes for this response — " +
+	"the counts below are struct/stack counts (e.g. one entry per barrel), not real servings; " +
+	"treat them as a floor, not a total, for stacking item types (drink, food, ammo, bars, seeds, ...).\n"
 
 // stockQuality is one (item_type, quality tier) tally from the plugin's
 // stockpile_inventory query — additive sibling of "items" above, counting
@@ -221,6 +398,12 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 		Items    []stockItem    `json:"items"`
 		Quality  []stockQuality `json:"quality"`
 		Subtypes []stockSubtype `json:"subtypes"`
+		// StackUnits is the plugin's explicit "this build measures stack
+		// sizes" capability flag. POINTER for the same reason the per-item
+		// Units fields are: nil means a pre-flag plugin build (fall back to
+		// the item scan), not "this build does not measure". See
+		// stocksUnitDataConfirmed.
+		StackUnits *bool `json:"stack_units"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return fmt.Sprintf("unparseable stockpile_inventory response: %v\nraw: %s", err, capRawJSON(string(raw)))
@@ -277,37 +460,39 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 	if len(items) == 0 {
 		return "No stock items (or all below min_count)."
 	}
+	// Computed once, against the post-filter item set actually being
+	// rendered, and prepended to whichever view runs below.
+	noUnitData := !stocksUnitDataConfirmed(resp.StackUnits, items)
 
 	if detailed {
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "%d item/material entries:\n", len(items))
+		if noUnitData {
+			sb.WriteString(stocksNoUnitDataCaveat)
+		}
 		seenQualityType := make(map[string]bool)
 		for _, it := range items {
 			econ := ""
 			if it.Economic {
 				econ = " [economic]"
 			}
-			// Stack-unit total: only worth printing when it exceeds the
-			// struct count (a non-stacking item type reports Units==Count,
-			// which would be pure noise here) — see stockItem's doc comment
-			// for why the two numbers can diverge a lot (8 near-empty drink
-			// stacks vs. 8 full ones). ">" rather than "!=" is deliberate: a
-			// real plugin payload always has Units>=Count (every item
-			// contributes at least 1 unit — queries.cpp's itemStackUnits
-			// clamps to that), so Units>Count is both the correct stacking
-			// test AND the backward-compatible one — an older plugin (or a
-			// hand-written test fixture) that omits "units" entirely decodes
-			// it as the zero value, which this comparison silently and
-			// correctly treats as "no unit data" rather than fabricating a
-			// false "0 units" note.
+			// Stack-unit total: only worth printing when the plugin actually
+			// measured it (Units != nil) AND it exceeds the struct count (a
+			// non-stacking item type reports Units==Count, which would be
+			// pure noise here) — see stockItem's doc comment for why the two
+			// numbers can diverge a lot (8 near-empty drink stacks vs. 8 full
+			// ones), and why the nil check is a separate question from the
+			// ">" one: a nil Units means the plugin never spoke, which the
+			// once-per-response caveat above reports instead of being
+			// silently folded into "nothing extra to say."
 			countStr := fmt.Sprintf("x%d", it.Count)
-			if it.Units > it.Count {
-				countStr = fmt.Sprintf("x%d (%d units)", it.Count, it.Units)
+			if it.Units != nil && *it.Units > it.Count {
+				countStr = fmt.Sprintf("x%d (%d units)", it.Count, *it.Units)
 			}
 			inUse := ""
 			if it.InUse > 0 {
-				if it.InUseUnits > it.InUse {
-					inUse = fmt.Sprintf(" (+%d built-in = %d units)", it.InUse, it.InUseUnits)
+				if it.InUseUnits != nil && *it.InUseUnits > it.InUse {
+					inUse = fmt.Sprintf(" (+%d built-in = %d units)", it.InUse, *it.InUseUnits)
 				} else {
 					inUse = fmt.Sprintf(" (+%d built-in)", it.InUse)
 				}
@@ -353,9 +538,16 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 			order = append(order, it.ItemType)
 		}
 		agg.total += it.Count
-		agg.totalUnits += it.Units
+		// nil (plugin never measured) contributes nothing rather than
+		// decoding to a 0 that would silently drag the aggregate below the
+		// struct count — the caveat above reports the absence instead.
+		if it.Units != nil {
+			agg.totalUnits += *it.Units
+		}
 		agg.inUse += it.InUse
-		agg.inUseUnits += it.InUseUnits
+		if it.InUseUnits != nil {
+			agg.inUseUnits += *it.InUseUnits
+		}
 		if it.Economic {
 			agg.economic += it.Count
 		}
@@ -366,6 +558,9 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%d item types, %d item/material entries total (pass category to see full per-material detail for one type):\n",
 		len(order), len(items))
+	if noUnitData {
+		sb.WriteString(stocksNoUnitDataCaveat)
+	}
 	for _, t := range order {
 		agg := byType[t]
 		sort.Slice(agg.materials, func(i, j int) bool { return agg.materials[i].Count > agg.materials[j].Count })
@@ -384,10 +579,10 @@ func renderStocks(raw []byte, detailed bool, minCount int) string {
 		// Stack-unit total across the whole type: only worth printing when it
 		// exceeds the struct count (see the detailed view's identical ">"
 		// rationale above) — a type with no stacking members (e.g. BOULDER)
-		// reports totalUnits==total and would just repeat the same number,
-		// and an old-plugin/test payload lacking "units" decodes to 0,
-		// which this comparison correctly treats as "no data" rather than
-		// a fabricated "0 units".
+		// reports totalUnits==total and would just repeat the same number.
+		// An old-plugin payload lacking "units" contributes nothing to
+		// totalUnits at all (nil is skipped in the accumulation above) and
+		// is reported by the once-per-response caveat, not by silence here.
 		unitsNote := ""
 		if agg.totalUnits > agg.total {
 			unitsNote = fmt.Sprintf(" = %d units", agg.totalUnits)
@@ -439,6 +634,19 @@ type managerOrder struct {
 	// give real progression instead.
 	JobsInProgress   int  `json:"jobs_in_progress"`
 	WorkshopAssigned bool `json:"workshop_assigned"`
+	// RequiredLabor/LaborAvailable (missing-labor fix): the single
+	// df::unit_labor a citizen must have enabled before DF will ever hand
+	// this order's job to anyone, plus whether any citizen the plugin could
+	// SEE (world->units.active, i.e. on-map) currently has it enabled
+	// (queries.cpp resolveOrderLabor + the fort-wide labor pass in
+	// handleManagerOrders). RequiredLabor is "" — the same
+	// could-not-decode sentinel Material/MaterialCategory use — whenever
+	// the plugin could not resolve one, which is also what an older plugin
+	// build's payload decodes to; LaborAvailable is emitted true in that
+	// case so the ladder below never claims a blocker the plugin could not
+	// prove.
+	RequiredLabor  string `json:"required_labor"`
+	LaborAvailable bool   `json:"labor_available"`
 }
 
 // renderManagerOrders renders the manager_orders response compactly. Does
@@ -467,6 +675,36 @@ func renderManagerOrders(raw []byte) string {
 		// DF's own active flag agrees) ranking above workshop_assigned
 		// (manager picked a workshop, no worker yet) above the plain
 		// queued default.
+		//
+		// The missing-labor rung sits BETWEEN those two, deliberately:
+		//   - Real observed progress (Active/JobsInProgress) always outranks
+		//     a static prediction, so a labor toggled mid-fort or a rare
+		//     automatic-fallback dispatch is never contradicted.
+		//   - It outranks "workshop assigned, awaiting worker" because DF
+		//     provisionally assigns a workshop even when no citizen can ever
+		//     take the job — "awaiting worker" is the weaker, more
+		//     misleading claim in that case (a live fort watched wood
+		//     furniture orders read "queued" for game-weeks with no work
+		//     detail holding CARPENTER).
+		// COVERAGE IS PARTIAL BY DESIGN: DF's own job_type tables expose no
+		// labor for the material-ambiguous furniture types
+		// (ConstructTable/ConstructChair/...), so those orders keep falling
+		// through to the older rungs even when genuinely labor-starved —
+		// see queries.cpp resolveOrderLabor. METAL furniture orders sit in
+		// that same unresolved bucket on purpose: ConstructBin/MakeBarrel are
+		// forgeable as well as carveable, so the resolver only names CARPENTER
+		// when the order is actually wood and returns NONE otherwise rather
+		// than accuse a fort of missing a labor its metalcrafters don't need.
+		// An empty RequiredLabor (an unresolved job type, OR an older plugin
+		// build that sends neither field) is likewise unaffected: it decodes
+		// to "" / false and this rung cannot fire.
+		//
+		// WORDING IS OBSERVATION-SCOPED on purpose. The plugin's evidence is
+		// one pass over world->units.active reading each citizen's derived
+		// status.labors cache — which excludes citizens currently off-map
+		// (a squad away on a mission) and can lag a just-made work-detail
+		// edit by a recompute. "no citizen on-site currently has X enabled"
+		// is exactly what that data supports; "nobody holds it" would not be.
 		status := "queued, awaiting manager dispatch"
 		switch {
 		case !o.Validated:
@@ -476,6 +714,8 @@ func renderManagerOrders(raw []byte) string {
 			if o.JobsInProgress > 0 {
 				status = fmt.Sprintf("in progress (%d job%s)", o.JobsInProgress, plural(o.JobsInProgress))
 			}
+		case o.RequiredLabor != "" && !o.LaborAvailable:
+			status = fmt.Sprintf("no citizen on-site currently has %s enabled", o.RequiredLabor)
 		case o.WorkshopAssigned:
 			status = "workshop assigned, awaiting worker"
 		}
@@ -3470,7 +3710,7 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "buildings",
-		Description: "List every placed building with position and construction progress. Planned buildings are INVISIBLE in map views until built — this is the only way to see whether a build order is actually being worked or died silently. Optional z filters to one level.",
+		Description: "List every placed building with position and construction progress. Planned buildings are INVISIBLE in map views until built — this is the only way to see whether a build order is actually being worked or died silently. Stockpile entries carry extents, accepted categories and tile-fill. Optional z filters to one level.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in buildingsIn) (*mcp.CallToolResult, any, error) {
 		args := "{}"
 		if in.Z != nil {

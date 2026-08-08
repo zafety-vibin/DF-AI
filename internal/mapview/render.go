@@ -119,10 +119,14 @@ func RenderCrop(s *Slice, overlays []Overlay, legendExtra string) string {
 	if len(s.Smoothed) > 0 {
 		fmt.Fprintf(&sb, "smoothed tiles in view: %d\n", len(s.Smoothed))
 	}
-	// Loose floor items get a count line too — invisible to the base
-	// glyph classifier, but can still block a new building placement.
-	if len(s.FloorItems) > 0 {
-		fmt.Fprintf(&sb, "tiles with loose items on floor: %d\n", len(s.FloorItems))
+	// Loose floor items: invisible to the base glyph classifier (an
+	// item-covered tile still renders as clean floor), so they report as
+	// text. NOT a bare tile count — that line could not tell a full
+	// stockpile from a floor buried in junk. FloorItemFooter splits items
+	// from tiles, splits stockpiled from homeless when the plugin measured
+	// it, and hands back cluster bounding boxes for the homeless piles.
+	for _, line := range FloorItemFooter(s) {
+		sb.WriteString(line + "\n")
 	}
 	if legendExtra != "" {
 		sb.WriteString(legendExtra + "\n")

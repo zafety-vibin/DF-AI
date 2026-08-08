@@ -2,6 +2,93 @@
 
 (append-only; never delete)
 
+## Fort #6 (2026-08-07): the dig ACK warned me and I stepped anyway — READ THE ACK BEFORE step()
+
+- Live sequence: designated a 143-tile training hall at z=129 whose rect
+  overlapped the satellite stair at (116-117,101-102). The ACK said
+  verbatim: "143 designated (4 will remove existing stairs: vertical
+  connection lost)". I did not act on it and called step(6000). The
+  miners flattened all four stair tiles, severing z=130 from z=129 and
+  turning the whole new noble quarter (z=129 + z=128) into an isolated
+  pocket — with TWO DWARVES INSIDE IT. Overseer caught it in the client.
+- This is NOT the old "flat dig eats a pending stair designation" bug
+  (that one is silent, and is why rooms-first-stairs-last exists). Here
+  the tooling was CORRECT and LOUD. The failure was operator discipline:
+  treating a SUCCESS ack as "done" instead of reading its warning text.
+- Recovery that worked (no deaths): the flattened tiles were already dug,
+  so there was no designation left to cancel — build type=upstair on all
+  four tiles at z=129. Constructed stairs are immune to dig/smooth
+  destruction and the trapped dwarves built their own way out using
+  boulders already on that level. Verified with cross_section: z=131 '>'
+  / z=130 'X' / z=129 '<' is a continuous shaft again.
+- RULES: (1) a SUCCESS ack can still carry a fatal warning — parse the
+  text, not just the status word; (2) before any large rect on a level
+  that already has a shaft, check the rect against the stair footprint
+  FIRST; (3) if a stair is lost, constructed stairs are the repair path
+  and can be built from the trapped side.
+
+
+
+## Fort #6 (2026-07-25): a labor with NO work detail is INVISIBLE — and the orders ladder reports it as healthy progress
+
+- Live sequence: every ROCK item (doors, thrones, tables, mugs) completed
+  normally while every WOOD item (beds, barrels, bins) produced ZERO for
+  a whole session. Manager orders read "in progress" the entire time.
+  The truthful discriminator was the carpenter workshop's OWN job queue:
+  empty. `work_details` then showed the cause — none of the 12 details
+  contained CARPENTER at all. Masonry only worked because DF's automatic
+  profession flags cover it as a fallback; carpentry had no such luck.
+- Fix: `create_work_detail` (mode only_selected, labors [CARPENTER]) +
+  `assign_work_detail` the actual carpenter. Beds began completing
+  within ONE step, and the pulse showed both assignees flip to
+  SATISFACTION "at work".
+- RULE: when an order sits at "in progress" with nothing produced, do
+  NOT re-issue it and do NOT blame the workshop. Check, in order:
+  (1) the workshop's own job queue, (2) `work_details` for the labor.
+  A missing detail looks exactly like a busy fort.
+- Confirmed a second time the same session: MECHANIC was ALSO absent
+  from every work detail. Created "Mechanics" pre-emptively before
+  queueing mechanisms — the bug never got a chance to fire. Assume any
+  labor outside DF's default detail list is missing until checked.
+- Tool-hardening candidate: the orders status ladder needs a rung for
+  "no citizen holds the required labor" — it currently renders identical
+  to real progress.
+
+## Fort #6 (2026-07-25): a lever on the protected side of a DEAD-END pocket is a self-lock — build a lever on BOTH sides
+
+- Live sequence: built a bridge airlock sealing a new basement, and put
+  the lever on the protected (inner) side per the "lever on the inner
+  side" canon. Raised it successfully. The inner side was a dead-end
+  pocket with no other exit, so the lever became unreachable and the
+  queued "lower" job sat forever — the fort sealed off its own basement.
+  This is Fort #5's döbar self-lock in a new costume; no one was inside
+  this time (verified: zero '@' at that z before and after).
+- The canon was incomplete. "Lever on the inner side" assumes the inner
+  side is the LIVED-IN fort. When the sealed side is a dead-end (a
+  basement, a vault, a sanctum), the lever must ALSO exist on the side
+  that keeps its access to food, water, and the rest of the fort.
+- Fix that worked, in order: dig a bypass around the bridge (2 tiles of
+  undug vein beside it) → access restored → lower the bridge → REBUILD
+  the bypass as walls while the bridge is DOWN. Also built a second
+  lever on the fort side and linked it to the same bridge — two levers
+  to one target links fine.
+- RULE: before raising any bridge, ask "if this seals, who can reach a
+  lever, and can they also reach food?" Leave bridges DOWN by default;
+  raise only to hole up.
+
+## Fort #6 (2026-07-25): `stocks` food/drink counts are STACKS (barrels), not servings
+
+- Read DRINK=15 for 19 dwarves as a famine and started emergency
+  farming. The overseer corrected it live: each DRINK entry is a full
+  barrel's worth, and the fort was comfortable. `wellbeing` agreed —
+  all 19 negative-stress, one blissful.
+- The stack-units field that would disambiguate this shipped in wave 5
+  and STILL does not render (Fort #5 logged the identical gap). It has
+  now caused a real misdiagnosis, not just a paper cut.
+- RULE: never call a food/drink emergency off a raw `stocks` count.
+  Corroborate with `wellbeing` (hunger/thirst shows as stress) and with
+  the overseer's client view before acting.
+
 ## Fort #6 (2026-07-22): a flat dig rect silently REPLACES a stair DESIGNATION it overlaps — the warning only guards carved stairs
 
 - Live sequence: designated a 2x2 stairs shaft (131→130), then designated

@@ -37,6 +37,78 @@ func TestAckText(t *testing.T) {
 	}
 }
 
+// TestAckTextStairWarningTextSurvivesVerbatim is a LITERAL-TEXT PIN, not a
+// verification of the plugin's status-byte change. ackText already rendered
+// any AckStatusPartial result this way (TestAckText covers that rung), so
+// this test passes unchanged against a fully reverted designations.cpp /
+// df_ai_protocol.cpp — it exists only so the exact live-incident wording from
+// the dig-over-an-existing-shaft case (Fort #4, session 2: a room designation
+// crossed the descent shaft and severed it) keeps arriving unsoftened.
+//
+// The behavioural halves of that change are covered elsewhere:
+//   - Go side: TestAckDesignatedTreatsPartialAsDesignated,
+//     TestPendingDigsRecordsPartialDig, TestApplyBlueprintCmdsPartialRun.
+//   - C++ side (that the plugin actually SENDS AckStatusPartial here) has no
+//     automated coverage — there is no plugin test harness — and must be
+//     live-verified after a rebuild+redeploy.
+func TestAckTextStairWarningTextSurvivesVerbatim(t *testing.T) {
+	out := ackText(&commands.CommandResult{
+		Status:   protocol.AckStatusPartial,
+		ErrorMsg: "143 designated (4 will remove existing stairs: vertical connection lost)",
+	}, nil, "dig default (116,96,129)->(126,108,129)")
+	if !strings.HasPrefix(out, "PARTIAL") {
+		t.Fatalf("a stair-destroying dig must not read as SUCCESS: %q", out)
+	}
+	if !strings.Contains(out, "will remove existing stairs: vertical connection lost") {
+		t.Fatalf("the plugin's warning text must survive verbatim: %q", out)
+	}
+}
+
+// TestAckDesignatedTreatsPartialAsDesignated pins the invariant that broke
+// when the plugin started answering ACK_STATUS_PARTIAL for a fully-applied
+// stair-destroying dig: commands/tracker.go sets Success only for
+// ACK_STATUS_SUCCESS, so every `res.Success` gate downstream silently
+// reclassified a completed designation as a non-designation.
+func TestAckDesignatedTreatsPartialAsDesignated(t *testing.T) {
+	cases := []struct {
+		name string
+		res  *commands.CommandResult
+		err  error
+		want bool
+	}{
+		{"success", &commands.CommandResult{Success: true, Status: protocol.AckStatusSuccess}, nil, true},
+		{"partial", &commands.CommandResult{Status: protocol.AckStatusPartial, ErrorMsg: "4 will remove existing stairs"}, nil, true},
+		{"failure", &commands.CommandResult{Status: protocol.AckStatusFailure, ErrorMsg: "rejected"}, nil, false},
+		{"transport error", nil, errors.New("timeout waiting for ACK"), false},
+		{"nil result", nil, nil, false},
+	}
+	for _, tc := range cases {
+		if got := ackDesignated(tc.res, tc.err); got != tc.want {
+			t.Errorf("%s: ackDesignated = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestPendingDigsRecordsPartialDig pins digrects.go's stated invariant —
+// "every dig rectangle the plugin ACKed this session" — against the exact
+// case that was dropping out of it: a PARTIAL (stair-destroying) dig. If the
+// rect is not recorded, the NEXT designation beside it falsely reports "not
+// yet connected to existing space" and suggests a bogus connector corridor.
+func TestPendingDigsRecordsPartialDig(t *testing.T) {
+	digs := &pendingDigs{}
+	res := &commands.CommandResult{
+		Status:   protocol.AckStatusPartial,
+		ErrorMsg: "143 designated (4 will remove existing stairs: vertical connection lost)",
+	}
+	// Mirrors the designate_dig handler's post-ACK record step.
+	if ackDesignated(res, nil) {
+		digs.add(116, 96, 129, 126, 108, 129)
+	}
+	if !digs.contains(120, 100, 129) {
+		t.Fatal("a PARTIAL dig's rectangle WAS designated and must be recorded in pendingDigs")
+	}
+}
+
 func TestDigTypeMapper(t *testing.T) {
 	if v, err := digTypeFromName("stairs"); err != nil || v != protocol.DigTypeUpDownStair {
 		t.Fatalf("stairs mapping wrong: %v %v", v, err)

@@ -115,6 +115,76 @@ func TestStitchSlices_RemainderTile(t *testing.T) {
 	}
 }
 
+// Stockpile coverage sums across blocks (their windows are disjoint), and
+// each block's OWN first-seen class-name table is re-keyed against a merged
+// table — otherwise a stitched elevation/fort view would paint block 2's
+// index 0 with block 1's class letter.
+func TestStitchSlices_StockpileCoverageAndClassTables(t *testing.T) {
+	a := quadrantSlice(0, 0, 4, 4, 'A')
+	a.StockpileTilesInView, a.StockpileTilesOccupied = intPtr(10), intPtr(4)
+	a.FloorItemsNoStock = [][3]int16{{0, 0, 2}}
+	a.FloorItemClasses = [][3]int16{{0, 0, 0}, {1, 0, 1}}
+	a.FloorItemClassNames = []string{"stone", "food/drink"}
+
+	b := quadrantSlice(4, 0, 4, 4, 'B')
+	b.StockpileTilesInView, b.StockpileTilesOccupied = intPtr(6), intPtr(1)
+	b.FloorItemsNoStockCapped = true
+	// Block b saw food/drink FIRST, so its local index 0 is food/drink and
+	// index 1 is furniture — a straight union would mislabel both.
+	b.FloorItemClasses = [][3]int16{{4, 0, 0}, {5, 0, 1}}
+	b.FloorItemClassNames = []string{"food/drink", "furniture"}
+
+	out, err := StitchSlices([][]*Slice{{a, b}})
+	if err != nil {
+		t.Fatalf("stitch: %v", err)
+	}
+	if out.StockpileTilesInView == nil || *out.StockpileTilesInView != 16 {
+		t.Fatalf("stockpile tiles must sum to 16, got %v", out.StockpileTilesInView)
+	}
+	if out.StockpileTilesOccupied == nil || *out.StockpileTilesOccupied != 5 {
+		t.Fatalf("occupied tiles must sum to 5, got %v", out.StockpileTilesOccupied)
+	}
+	if !out.FloorItemsNoStockCapped {
+		t.Fatal("a capped block must make the stitched slice report the cap")
+	}
+	wantNames := []string{"stone", "food/drink", "furniture"}
+	if len(out.FloorItemClassNames) != 3 {
+		t.Fatalf("merged class table wrong: %v", out.FloorItemClassNames)
+	}
+	for i, n := range wantNames {
+		if out.FloorItemClassNames[i] != n {
+			t.Fatalf("merged class table wrong at %d: %v", i, out.FloorItemClassNames)
+		}
+	}
+	want := [][3]int16{{0, 0, 0}, {1, 0, 1}, {4, 0, 1}, {5, 0, 2}}
+	if len(out.FloorItemClasses) != len(want) {
+		t.Fatalf("class entries: got %v want %v", out.FloorItemClasses, want)
+	}
+	for i := range want {
+		if out.FloorItemClasses[i] != want[i] {
+			t.Fatalf("class entry %d remapped wrong: got %v want %v", i, out.FloorItemClasses[i], want[i])
+		}
+	}
+}
+
+// One unmeasured block poisons the whole stitched sum: a partial coverage
+// total presented as a whole is the same lie the nil sentinel exists to
+// prevent, just quieter.
+func TestStitchSlices_MixedCoverageDegradesToNil(t *testing.T) {
+	a := quadrantSlice(0, 0, 4, 4, 'A')
+	a.StockpileTilesInView, a.StockpileTilesOccupied = intPtr(10), intPtr(4)
+	b := quadrantSlice(4, 0, 4, 4, 'B') // no coverage fields
+
+	out, err := StitchSlices([][]*Slice{{a, b}})
+	if err != nil {
+		t.Fatalf("stitch: %v", err)
+	}
+	if out.StockpileTilesInView != nil || out.StockpileTilesOccupied != nil {
+		t.Fatalf("partial coverage must degrade to nil, got %v/%v",
+			out.StockpileTilesInView, out.StockpileTilesOccupied)
+	}
+}
+
 func TestStitchSlices_RejectsRaggedGrid(t *testing.T) {
 	grid := [][]*Slice{
 		{quadrantSlice(0, 0, 4, 4, 'A'), quadrantSlice(4, 0, 4, 4, 'B')},

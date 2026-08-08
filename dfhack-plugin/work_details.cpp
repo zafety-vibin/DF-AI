@@ -202,7 +202,27 @@ bool applyCreateWorkDetail(const std::string &name, uint8_t mode,
     details.push_back(wd);
     int index = (int)details.size() - 1;
 
+    // Recompute derived labors for EVERY citizen, same as
+    // applySetWorkDetailMode above and for the same reason: a brand-new
+    // detail is a fort-wide membership/mode event. An EverybodyDoesThis
+    // detail pulls in citizens who are in nobody's assigned_units, and even a
+    // Default one changes which labors DF's automatic-profession pass may
+    // hand out -- without this, every citizen's status.labors cache still
+    // reflects the pre-creation world, and the manager_orders missing-labor
+    // rung (queries.cpp handleManagerOrders, which reads status.labors) would
+    // keep reporting the labor as held by nobody immediately after a model
+    // created the very detail that fixes it.
+    int recomputed = 0;
+    if (df::global::world) {
+        for (auto *unit : df::global::world->units.active) {
+            if (!unit || !Units::isCitizen(unit)) continue;
+            Units::setAutomaticProfessions(unit);
+            recomputed++;
+        }
+    }
+
     error = "work detail '" + name + "' created at index " + std::to_string(index) +
-            " (icon " + ENUM_KEY_STR(work_detail_icon_type, wd->icon) + ")";
+            " (icon " + ENUM_KEY_STR(work_detail_icon_type, wd->icon) + ")" +
+            "; recomputed labors for " + std::to_string(recomputed) + " citizens";
     return true;
 }
