@@ -16,27 +16,48 @@ Personal research project, moving fast. Multiple forts have been played end-to-e
 ## Requirements
 
 - **Steam Dwarf Fortress** (paid, [store page](https://store.steampowered.com/app/975370/Dwarf_Fortress/)) — the game DF-AI plays.
-- **[DFHack](https://github.com/DFHack/dfhack)**, matching the exact release your Steam DF version needs. Two things from it: the packaged release (a separate Steam app, supplying the `hack/plugins/` we deploy into) and a **source checkout** at the same tag (for building the plugin — DFHack ships no SDK, plugins build in-tree; see `docs/guides/plugin-build.md`).
-- **Go 1.25+**
-- **MSVC 2022 (v143)** — the plugin's only supported toolchain right now.
-- **[Claude Code](https://claude.com/claude-code)** (or another MCP client that can run a long-lived stdio server) and Claude API access — this is what actually plays.
+- **[DFHack](https://github.com/DFHack/dfhack)**, matching the exact release your Steam DF version needs. It's a separate free Steam app.
+- **[Claude Code](https://claude.com/claude-code)** (or another MCP client that can run a long-lived stdio server) and a Claude plan — this is what actually plays.
+
+The quick-start path needs nothing else. The developer path additionally needs **Go 1.25+**, **MSVC 2022 (v143)** (the plugin's only supported toolchain), and a **DFHack source checkout** at your DFHack's tag — DFHack ships no SDK, so plugins build in-tree; see `docs/guides/plugin-build.md`.
 
 ## Setup
+
+Two paths. Most people want the first one.
+
+### Quick start (prebuilt — no compiler, no Go, no Git required)
+
+1. **Get the source.** Green **Code** button above → **Download ZIP**, and unzip it. (Or `git clone` if you have Git — you'll get updates more easily, and the tooling changes often.)
+2. **Get the release.** From this repo's [Releases](https://github.com/zafety-vibin/DF-AI/releases), download the ZIP matching your DFHack version and merge its folders into the source folder. `INSTALL.txt` inside spells out each file.
+3. **Deploy the plugin.** With DF closed, copy `df_ai_protocol.plug.dll` into DFHack's `hack/plugins/` — the folder holding its stock plugins. Steam installs DFHack as its own app, so this may not live under the DF folder; `docs/guides/plugin-build.md` shows how to derive the current path.
+4. **Launch DF** through DFHack and load or embark a fort.
+5. **Open Claude Code** in the `fortress/` directory. Its `.mcp.json` starts the server automatically.
+6. **Connect.** In the DFHack console: `ai-connect`. Then call the `status` tool in Claude Code and confirm it reports a live connection.
+
+Order matters in steps 5–6: Claude Code must be running before `ai-connect`, because Claude Code is what starts the server `ai-connect` dials.
+
+A release is pinned to one exact DFHack version — the plugin loader enforces an exact version-string match. If your DFHack has moved past the latest release, build the plugin yourself with the developer path below.
+
+### Developer path (build from source)
 
 1. **Build the plugin.** Clone a DFHack source checkout as a sibling of this repo (conventionally `../dfhack-build`) at the tag matching your installed DFHack, junction `plugins/df_ai_protocol` to this repo's `dfhack-plugin/`, and build:
    ```bash
    cmake --build build --target df_ai_protocol --config Release
    ```
    Full detail, including the exact-version-match gotcha and the upgrade procedure: `docs/guides/plugin-build.md`.
-2. **Deploy it.** With DF closed, copy the built `.plug.dll` into DFHack's `hack/plugins/` — the folder holding its stock plugins. Steam installs DFHack as its own app, so this may or may not live under the DF folder; `docs/guides/plugin-build.md` shows how to derive the current path.
+2. **Deploy it.** As step 3 above.
 3. **Build the MCP server.**
    ```bash
    go build ./... && go test ./...
    ```
-4. **Point an MCP client at it.** This repo's `.mcp.json` (and `fortress/.mcp.json`, for playing from that directory) already wires up a `df-fortress` stdio server via `go run`. If you're using Claude Code, opening either directory picks it up automatically.
-5. **Launch DF, load a fort, and connect.** In the DFHack console: `load df_ai_protocol` then `ai-connect`. In your Claude session, call the `status` tool and confirm it reports a live connection.
+4. **Seed your fort's memory files** (first run only; never overwrites):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts/seed-fortress-memory.ps1
+   ```
+5. **Point an MCP client at it.** `fortress/.mcp.json` wires a `df-fortress` stdio server via `go run`. Opening `fortress/` in Claude Code picks it up automatically.
+6. **Launch, connect, verify** as steps 4–6 above.
 
-Playing a session end-to-end (recommended kickoff prompt, working-directory gotchas, etc.): `fortress/SESSION-SETUP.md`.
+Playing a session end-to-end (recommended kickoff prompt, working-directory gotchas): `fortress/SESSION-SETUP.md`.
 
 ## Orientation
 
