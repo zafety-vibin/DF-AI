@@ -47,3 +47,9 @@ Thumbs.db
 
 # the overseer's private art (per overseer, 2026-07-24 — un-ignore to publish)
 fortress/art/
+
+# The playing AI's live memory — yours, not ours. Seeded from
+# fortress/memory-templates/ by scripts/seed-fortress-memory.ps1.
+# Published snapshots live in docs/example-fort-journals/.
+fortress/memory/*.md
+fortress/state/
