@@ -355,8 +355,13 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
 # --- Derive the DFHack tag rather than trusting a constant -----------------
-$tag = (& git -C $DfhackCheckout describe --tags).Trim()
-if (-not $?) { throw "Could not read DFHack tag from $DfhackCheckout" }
+# Test $LASTEXITCODE, not $? — $? reflects the last operation in the
+# statement (the .Trim() call), not the native git invocation, so a
+# non-zero git exit with partial stdout would sail straight through.
+$tagRaw = & git -C $DfhackCheckout describe --tags
+if ($LASTEXITCODE -ne 0) { throw "Could not read DFHack tag from $DfhackCheckout (git exit $LASTEXITCODE)" }
+$tag = $tagRaw.Trim()
+if ([string]::IsNullOrWhiteSpace($tag)) { throw "DFHack tag came back empty from $DfhackCheckout" }
 Write-Host "DFHack tag: $tag"
 
 $stage = Join-Path $repoRoot "dist/stage"
@@ -402,7 +407,11 @@ $mcpJson = @'
   }
 }
 '@
-Set-Content -Path "$stage/fortress/.mcp.json" -Value $mcpJson -Encoding utf8
+# UTF-8 *without* BOM. Set-Content -Encoding utf8 emits a BOM on PS 5.1,
+# and Node's JSON.parse throws on a leading BOM — a BOM here would break
+# the MCP config for every viewer following the quick-start.
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText("$stage/fortress/.mcp.json", $mcpJson, $utf8NoBom)
 
 # --- Seed memory files ----------------------------------------------------
 Copy-Item "$repoRoot/fortress/memory-templates/*.md" "$stage/fortress/memory/"
@@ -444,7 +453,7 @@ WHAT TO DO WITH THESE FILES
 Order matters in steps 4-5: Claude Code must be open before ai-connect,
 because Claude Code is what starts the server that ai-connect dials.
 "@
-Set-Content -Path "$stage/INSTALL.txt" -Value $install -Encoding utf8
+[System.IO.File]::WriteAllText("$stage/INSTALL.txt", $install, $utf8NoBom)
 
 # --- Zip ------------------------------------------------------------------
 $zipName = "df-ai-$Version-dfhack$tag.zip"
