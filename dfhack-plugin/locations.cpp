@@ -43,6 +43,10 @@
 #include "df/world.h"
 #include "df/historical_entity.h"
 #include "df/entity_site_link.h"
+#include "df/historical_figure.h"
+#include "df/histfig_flags.h"
+#include "df/religious_practice_type.h"
+#include "df/religious_practice_data.h"
 
 #include "protocol.h"
 
@@ -77,7 +81,13 @@ uint8_t wireFromAbstractBuildingType(df::abstract_building_type t) {
 // applyCreateLocation converts an existing MeetingHall civzone into a
 // Tavern/Temple/Library/Guildhall/Hospital Location, mirroring set_location()
 // (zone.lua:300-354) step for step.
-bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, const std::string &profession, std::string &error)
+//
+// hasDeity/deityHfId carry create_location's OPTIONAL temple dedication (see
+// the TEMPLE case below). A presence flag rather than a -1 sentinel because
+// historical-figure id 0 is a valid deity id -- "absent" and "id 0" must stay
+// distinguishable. Ignored for every non-Temple type.
+bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, const std::string &profession,
+                         bool hasDeity, int32_t deityHfId, std::string &error)
 {
     df::abstract_building_type abType = abstractBuildingTypeFromWire(locationType);
     if (abType == df::abstract_building_type::NONE) {
@@ -113,6 +123,47 @@ bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, 
         }
         if (!find_enum_item(&prof, profession)) {
             error = "unknown profession name " + profession;
+            return false;
+        }
+    }
+
+    // Deity dedication is a TEMPLE-only field. Reject it elsewhere instead of
+    // silently dropping it -- a caller that asked for a dedication and got a
+    // plain SUCCESS would reasonably believe it landed.
+    if (hasDeity && abType != df::abstract_building_type::TEMPLE) {
+        error = "deity dedication applies only to a temple, not "
+                + std::string(ENUM_KEY_STR(abstract_building_type, abType));
+        return false;
+    }
+    if (hasDeity) {
+        df::historical_figure *deityHf = df::historical_figure::find(deityHfId);
+        if (!deityHf) {
+            error = "no historical figure with id " + std::to_string(deityHfId)
+                    + " -- deity ids come from fort_story mode=social kind=worship (the b_id of a relation=deity edge)";
+            return false;
+        }
+        // "The id resolves" is NOT "the id is a god". Every mortal dwarf is a
+        // historical figure too, and writing deity_type=WORSHIP_HFID with a
+        // mortal's hf id produces a temple state DF's own UI cannot create --
+        // on a first-of-its-kind write with no DFHack reference to fall back
+        // on (see the TEMPLE case below). df::histfig_flags
+        // (df.history_figure.xml:998-1015) carries the real answer, and
+        // BitArray::is_set (library/include/BitArray.h:156) reads it for free.
+        //
+        // FORCE COUNTS. DF dedicates temples to forces as well as to gods, and
+        // the skeletal/rotting deity flags are deity variants -- a
+        // deity-only check would over-reject legitimate dedications.
+        const auto &hfFlags = deityHf->flags;
+        if (!hfFlags.is_set(df::histfig_flags::deity) &&
+            !hfFlags.is_set(df::histfig_flags::force) &&
+            !hfFlags.is_set(df::histfig_flags::skeletal_deity) &&
+            !hfFlags.is_set(df::histfig_flags::rotting_deity)) {
+            error = "historical figure " + std::to_string(deityHfId)
+                    + " exists but is not a deity or force -- a temple dedication requires an hf"
+                      " carrying one of histfig_flags deity / force / skeletal_deity /"
+                      " rotting_deity, and this one carries none of them (an ordinary mortal's"
+                      " hf id looks exactly like a deity id from the outside); deity ids come"
+                      " from fort_story mode=social kind=worship (the b_id of a relation=deity edge)";
             return false;
         }
     }
@@ -182,7 +233,41 @@ bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, 
             }
             temple->contents.desired_instruments = 5;
             temple->contents.need_more.bits.instruments = true;
-            // deity left at its default (no deity) -- matches zone.lua's Religion=-1
+            // Dedication. df::abstract_building_templest carries a
+            // religious_practice_type `deity_type` plus a
+            // religious_practice_data UNION `deity_data`
+            // (practice_id/Deity[historical_figure]/Religion[historical_entity],
+            // all the same 4 bytes) -- df.abstract_building.xml:235-246,
+            // df.d_basics.xml:343-347 (NONE=-1, WORSHIP_HFID=0,
+            // RELIGION_ENID=1).
+            //
+            // Both branches WRITE both fields rather than leaning on the
+            // allocator's defaults. (Those defaults are in fact benign --
+            // DFHack's generated ctor is
+            // `deity_type(ENUM_FIRST_ITEM(religious_practice_type))` = NONE,
+            // static.ctors.inc:2188, and religious_practice_data() zeroes the
+            // union -- but an explicit write is a statement instead of an
+            // assumption, and it also lets the generic branch match zone.lua's
+            // own Religion=-1 exactly, which the bare default did not.)
+            //
+            // UNVERIFIED IN A LIVE FORT: no DFHack reference implementation
+            // anywhere in the 53.16-r1 checkout ever sets WORSHIP_HFID with a
+            // real deity id -- quickfort's zone.lua only ever writes the
+            // generic Religion=-1 case (zone.lua:155-158). This is a
+            // first-of-its-kind write for this project. The figure is checked
+            // to exist AND to carry a deity/force histfig flag (see the guard
+            // above), but DF's remaining runtime expectations (must the deity
+            // belong to this civ's pantheon? to a worshipper's religion?) are
+            // not modeled. The ACK says so, and list_locations reads the two
+            // written fields back so the caller can at least confirm the write
+            // landed without in-game eyes.
+            if (hasDeity) {
+                temple->deity_type = df::religious_practice_type::WORSHIP_HFID;
+                temple->deity_data.Deity = deityHfId;
+            } else {
+                temple->deity_type = df::religious_practice_type::NONE;
+                temple->deity_data.Religion = -1; // matches zone.lua's generic temple
+            }
             temple->name.has_name = true;
             temple->name.type = df::language_name_type::Temple;
             temple->name.parts_of_speech[df::language_name_component::FirstAdjective] = df::part_of_speech::Adjective;
@@ -310,6 +395,15 @@ bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, 
     zone->uncategorize();
     zone->categorize(true);
 
+    if (hasDeity) {
+        // Truthful ACK: the write went in, but nothing here has confirmed DF
+        // itself accepts/renders this dedication (see the TEMPLE case's
+        // UNVERIFIED note). Say so rather than implying a verified capability.
+        error = "temple dedicated to historical figure id " + std::to_string(deityHfId)
+              + " (deity_type=WORSHIP_HFID) -- UNVERIFIED: this is the first deity dedication this plugin has "
+                "ever written and DFHack ships no reference implementation for it; list_locations reads the "
+                "dedication back (proving the fields landed), but only in-game observation proves DF honors it";
+    }
     return true;
 }
 

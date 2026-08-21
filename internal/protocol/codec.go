@@ -1066,6 +1066,10 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		}
 	case CommandTypeCreateLocation:
 		// [2: X] [2: Y] [2: Z] [1: LocationType] [2: ProfessionLen] [N: Profession]
+		// [1: HasDeity] [4: DeityHfID]
+		// The deity pair is always emitted; a plugin build that predates it
+		// simply never reads past the profession bytes, and a payload from a
+		// peer that predates it decodes as HasDeity=false (see DecodeCommand).
 		for _, v := range []int16{msg.CreateLocation.X, msg.CreateLocation.Y, msg.CreateLocation.Z} {
 			if err := binary.Write(w, binary.BigEndian, v); err != nil {
 				return err
@@ -1079,6 +1083,16 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 			return err
 		}
 		if _, err := w.Write(profBytes); err != nil {
+			return err
+		}
+		hasDeity := uint8(0)
+		if msg.CreateLocation.HasDeity {
+			hasDeity = 1
+		}
+		if err := binary.Write(w, binary.BigEndian, hasDeity); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, msg.CreateLocation.DeityHfID); err != nil {
 			return err
 		}
 	case CommandTypeAssignLodging:
@@ -1689,6 +1703,52 @@ func serializeCommand(w io.Writer, msg *CommandMessage) error {
 		if err := binary.Write(w, binary.BigEndian, anyoneCanTrade); err != nil {
 			return err
 		}
+	case CommandTypeSetStockpileContainers:
+		// [2: X] [2: Y] [2: Z]
+		// [1: HasMaxBins] [2: MaxBins]
+		// [1: HasMaxBarrels] [2: MaxBarrels]
+		// [1: HasMaxWheelbarrows] [2: MaxWheelbarrows]
+		// Same (presence byte, value) pairing CommandTypeEditOrder already
+		// uses above — no new wire idiom.
+		sc := msg.SetStockpileContainers
+		for _, v := range []int16{sc.X, sc.Y, sc.Z} {
+			if err := binary.Write(w, binary.BigEndian, v); err != nil {
+				return err
+			}
+		}
+		pairs := []struct {
+			has bool
+			val int16
+		}{
+			{sc.HasMaxBins, sc.MaxBins},
+			{sc.HasMaxBarrels, sc.MaxBarrels},
+			{sc.HasMaxWheelbarrows, sc.MaxWheelbarrows},
+		}
+		for _, p := range pairs {
+			has := uint8(0)
+			if p.has {
+				has = 1
+			}
+			if err := binary.Write(w, binary.BigEndian, has); err != nil {
+				return err
+			}
+			if err := binary.Write(w, binary.BigEndian, p.val); err != nil {
+				return err
+			}
+		}
+		// [1: HasStockpileNumber] [4: StockpileNumber] — the by-number
+		// addressing escape hatch; same presence-byte idiom, int32 because
+		// stockpile_number is an int32 field.
+		hasNumber := uint8(0)
+		if sc.HasStockpileNumber {
+			hasNumber = 1
+		}
+		if err := binary.Write(w, binary.BigEndian, hasNumber); err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, sc.StockpileNumber); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -1843,6 +1903,19 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 				return nil, err
 			}
 			msg.CreateLocation.Profession = string(profBytes)
+		}
+		// Trailing deity pair, guarded on remaining length the same way the
+		// profession field is: a payload written before this field existed
+		// stops here and decodes as "no dedication" rather than erroring.
+		if buf.Len() >= 5 {
+			var hasDeity uint8
+			if err := binary.Read(buf, binary.BigEndian, &hasDeity); err != nil {
+				return nil, err
+			}
+			if err := binary.Read(buf, binary.BigEndian, &msg.CreateLocation.DeityHfID); err != nil {
+				return nil, err
+			}
+			msg.CreateLocation.HasDeity = hasDeity != 0
 		}
 	case CommandTypeAssignLodging:
 		for _, p := range []*int16{
@@ -2394,6 +2467,38 @@ func deserializeCommand(data []byte) (*CommandMessage, error) {
 			return nil, err
 		}
 		msg.SetDepotTradeFlags.AnyoneCanTrade = anyoneCanTrade != 0
+	case CommandTypeSetStockpileContainers:
+		for _, p := range []*int16{&msg.SetStockpileContainers.X, &msg.SetStockpileContainers.Y, &msg.SetStockpileContainers.Z} {
+			if err := binary.Read(buf, binary.BigEndian, p); err != nil {
+				return nil, err
+			}
+		}
+		pairs := []struct {
+			has *bool
+			val *int16
+		}{
+			{&msg.SetStockpileContainers.HasMaxBins, &msg.SetStockpileContainers.MaxBins},
+			{&msg.SetStockpileContainers.HasMaxBarrels, &msg.SetStockpileContainers.MaxBarrels},
+			{&msg.SetStockpileContainers.HasMaxWheelbarrows, &msg.SetStockpileContainers.MaxWheelbarrows},
+		}
+		for _, p := range pairs {
+			var has uint8
+			if err := binary.Read(buf, binary.BigEndian, &has); err != nil {
+				return nil, err
+			}
+			*p.has = has != 0
+			if err := binary.Read(buf, binary.BigEndian, p.val); err != nil {
+				return nil, err
+			}
+		}
+		var hasNumber uint8
+		if err := binary.Read(buf, binary.BigEndian, &hasNumber); err != nil {
+			return nil, err
+		}
+		msg.SetStockpileContainers.HasStockpileNumber = hasNumber != 0
+		if err := binary.Read(buf, binary.BigEndian, &msg.SetStockpileContainers.StockpileNumber); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unknown command type: 0x%02X", msg.CommandType)
 	}

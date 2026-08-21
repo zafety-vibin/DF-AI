@@ -177,6 +177,9 @@ rather than letting the starter rooms drift into permanence unexamined.
 
 Each stage is keyed to observable state, and every stage below names its
 real tooling status — don't promise a stage the tooling can't back yet.
+Whatever stage gets built, its seal is only a claim until audited —
+`sealing-the-fort` owns the verification method (diagonal corner-cutting,
+roof holes, the lever self-lock rule).
 
 1. **Open** (year 1). No defense. Acceptable early risk while the fort is
    too small to be a target and too busy digging to spare labor.
@@ -342,7 +345,9 @@ trade EXCHANGE itself has no safe headless path and stays a
 human-in-the-client action, and none of the three has survived a live
 caravan yet. Stage goods when a caravan is present; don't build an
 industry purely around trading until a live caravan has verified the
-loop end-to-end.)
+loop end-to-end. UPDATE: the loop HAS since survived live caravans —
+`caravan-trading` now owns the whole procedure, including trade
+agreements as a first-class demand signal, and supersedes this caveat.)
 
 Supply-push still exists as the secondary signal: `stocks` accumulating
 a raw good with no consumer (hides, fiber, sand, gems) is the site

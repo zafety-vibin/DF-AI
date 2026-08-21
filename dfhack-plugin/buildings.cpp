@@ -99,6 +99,7 @@
 
 #include <vector>
 #include <string>
+#include <sstream>
 #include <cstdio>
 #include <cctype>
 #include <filesystem>
@@ -106,6 +107,16 @@
 using namespace DFHack;
 
 extern int16_t read_int16_be(const std::vector<uint8_t> &data, size_t offset);
+
+// collectStockpilesAtZ lives in df_ai_protocol.cpp (next to the removal
+// disambiguation that first needed it) and has external linkage precisely so
+// this file can reuse it: applySetStockpileContainers below addresses a
+// stockpile BY TILE, and Buildings::findAtTile provably cannot see one
+// (Buildings.cpp:399 skips every building with isSettingOccupancy()==false,
+// which is exactly the abstract Stockpile/Civzone bucket -- see the comment
+// above collectStockpilesAtZ). One definition of "which stockpiles live at
+// this z", shared by both callers.
+void collectStockpilesAtZ(int32_t z, std::vector<df::building*> &out);
 
 // ---------------------------------------------------------------------------
 // Type translation: protocol BuildType byte → DFHack enums.
@@ -136,7 +147,31 @@ static int protocolToWorkshopType(uint8_t buildType) {
         case BUILD_TYPE_WS_KENNELS:      return df::workshop_type::Kennels;
         case BUILD_TYPE_WS_ASHERY:       return df::workshop_type::Ashery;
         case BUILD_TYPE_WS_DYERS:        return df::workshop_type::Dyers;
+        case BUILD_TYPE_WS_QUERN:        return df::workshop_type::Quern;
+        case BUILD_TYPE_WS_MILLSTONE:    return df::workshop_type::Millstone;
         default: return -1;
+    }
+}
+
+// workshopFootprint reports the footprint DF itself will force for a
+// workshop_type, per Buildings::getCorrectSize's Workshop case (dfhack-build
+// library/modules/Buildings.cpp:653-686). Three sizes exist, not one:
+// Quern/Millstone/Tool are forced 1x1, Siege/Kennels are forced 5x5, and
+// everything else falls to the 3x3 default. setSize overwrites whatever we
+// pass regardless, so this is purely for call-site clarity here -- but the
+// Go peer's buildWireCoords needs the SAME table to convert its
+// model-facing CENTER coordinate into the wire's NW corner, so the two are
+// deliberately written to match (internal/mcpserver/tools_action.go).
+static int16_t workshopFootprint(int wsType) {
+    switch (wsType) {
+        case df::workshop_type::Quern:
+        case df::workshop_type::Millstone:
+            return 1;
+        case df::workshop_type::Siege:
+        case df::workshop_type::Kennels:
+            return 5;
+        default:
+            return 3;
     }
 }
 
@@ -183,6 +218,8 @@ static int protocolToConstructionType(uint8_t buildType) {
         case BUILD_TYPE_DOWN_STAIR:   return df::construction_type::DownStair;
         case BUILD_TYPE_UPDOWN_STAIR: return df::construction_type::UpDownStair;
         case BUILD_TYPE_RAMP:         return df::construction_type::Ramp;
+        case BUILD_TYPE_FORTIFICATION:   return df::construction_type::Fortification;
+        case BUILD_TYPE_REINFORCED_WALL: return df::construction_type::ReinforcedWall;
         default: return -1;
     }
 }
@@ -208,10 +245,23 @@ static int protocolToConstructionType(uint8_t buildType) {
 //       {building_type::Furnace, that furnace_type}.
 //   (d) df::trap_type key name -- resolves to
 //       {building_type::Trap, that trap_type}.
+//   (e) df::construction_type key name -- resolves to
+//       {building_type::Construction, that construction_type}. Tried LAST,
+//       and last on purpose: it can therefore never shadow a name any of
+//       (a)-(d) already resolves. (Verified disjoint anyway -- no key in
+//       construction_type appears in building_type/workshop_type/
+//       furnace_type/trap_type -- but the ordering makes that a safety
+//       property rather than a fact that has to stay true across DF
+//       versions.) Without this branch a caller who knows DF's own name for
+//       a construction ("Wall", "Fortification", "ReinforcedWall") got a
+//       flat "unrecognized building type name" even though this plugin has
+//       placed constructions since its first commit -- the same
+//       discoverability trap that made a fort believe altars were
+//       unplaceable.
 // outSubtype is -1 ("no subtype", DF's own allocInstance convention) for a
 // path-(a) match, and the resolved subtype enum value (as int) for
-// (b)/(c)/(d). Returns false with `error` populated (naming the attempted
-// name and pointing at the building_types tool) if none of the four match.
+// (b)/(c)/(d)/(e). Returns false with `error` populated (naming the
+// attempted name and pointing at the building_types tool) if none match.
 //
 // This function is PURELY a name -> (building_type, subtype) translation --
 // it says nothing about whether this plugin actually knows how to PLACE the
@@ -245,9 +295,15 @@ bool resolveBuildTypeByName(const std::string &name, int &outBuildingType, int &
         outSubtype = (int)tt;
         return true;
     }
+    df::construction_type ct;
+    if (find_enum_item(&ct, name)) {
+        outBuildingType = (int)df::building_type::Construction;
+        outSubtype = (int)ct;
+        return true;
+    }
     error = "unrecognized building type name: '" + name +
-            "' (not a df::building_type, workshop_type, furnace_type, or trap_type key name -- "
-            "use the building_types tool to look up valid names)";
+            "' (not a df::building_type, workshop_type, furnace_type, trap_type, or construction_type "
+            "key name -- use the building_types tool to look up valid names)";
     return false;
 }
 
@@ -261,7 +317,7 @@ bool resolveBuildTypeByName(const std::string &name, int &outBuildingType, int &
 //
 // KNOWN LIMITATION (mirrors resolveJobTypeByName/ORDER_TYPE_BY_NAME in
 // work_orders.cpp): resolving a name to a real DFHack building_type/
-// workshop_type/furnace_type/trap_type does NOT by itself mean this plugin
+// workshop_type/furnace_type/trap_type/construction_type does NOT by itself mean this plugin
 // knows how to place it -- job_item filter recipes (buildings.lua
 // workshop_inputs/furnace_inputs/trap_inputs, confirmed against the
 // 53.15-r1 checkout) are per-type domain knowledge, hand-ported one
@@ -297,6 +353,8 @@ int resolveCuratedBuildTypeByte(int buildingType, int subtype, const std::string
             case df::workshop_type::Kennels:         curatedByte = BUILD_TYPE_WS_KENNELS;     break;
             case df::workshop_type::Ashery:          curatedByte = BUILD_TYPE_WS_ASHERY;      break;
             case df::workshop_type::Dyers:           curatedByte = BUILD_TYPE_WS_DYERS;       break;
+            case df::workshop_type::Quern:           curatedByte = BUILD_TYPE_WS_QUERN;       break;
+            case df::workshop_type::Millstone:       curatedByte = BUILD_TYPE_WS_MILLSTONE;   break;
             default: break; // Tool/Custom deliberately excluded -- see BUILD_TYPE_WS_JEWELERS's doc comment block (protocol.h) for why neither has a universal recipe
         }
     } else if (buildingType == df::building_type::Furnace) {
@@ -310,6 +368,27 @@ int resolveCuratedBuildTypeByte(int buildingType, int subtype, const std::string
             case df::furnace_type::MagmaKiln:         curatedByte = BUILD_TYPE_FURNACE_MAGMA_KILN;    break;
             default: break;
         }
+    } else if (buildingType == df::building_type::Construction) {
+        // Reached only via resolveBuildTypeByName's construction_type branch
+        // (path (e) above) -- a caller who sent a curated BUILD_TYPE_WALL et
+        // al byte directly never comes through here. The eight cases below
+        // are exactly protocolToConstructionType's, read backwards.
+        // Everything else in construction_type (the 30-odd Track*/TrackRamp*
+        // minecart variants) deliberately has no byte: they need track
+        // direction semantics this plugin does not model, so they fall to
+        // the truthful "resolved but no placement recipe" error below rather
+        // than being silently placed as some other construction.
+        switch ((df::construction_type)subtype) {
+            case df::construction_type::Wall:           curatedByte = BUILD_TYPE_WALL;            break;
+            case df::construction_type::Fortification:  curatedByte = BUILD_TYPE_FORTIFICATION;   break;
+            case df::construction_type::Floor:          curatedByte = BUILD_TYPE_FLOOR;           break;
+            case df::construction_type::UpStair:        curatedByte = BUILD_TYPE_UP_STAIR;        break;
+            case df::construction_type::DownStair:      curatedByte = BUILD_TYPE_DOWN_STAIR;      break;
+            case df::construction_type::UpDownStair:    curatedByte = BUILD_TYPE_UPDOWN_STAIR;    break;
+            case df::construction_type::Ramp:           curatedByte = BUILD_TYPE_RAMP;            break;
+            case df::construction_type::ReinforcedWall: curatedByte = BUILD_TYPE_REINFORCED_WALL; break;
+            default: break;
+        }
     } else if (buildingType == df::building_type::Trap) {
         switch ((df::trap_type)subtype) {
             case df::trap_type::Lever:         curatedByte = BUILD_TYPE_LEVER;          break;
@@ -317,7 +396,8 @@ int resolveCuratedBuildTypeByte(int buildingType, int subtype, const std::string
             case df::trap_type::StoneFallTrap: curatedByte = BUILD_TYPE_STONE_FALL_TRAP;break;
             case df::trap_type::WeaponTrap:    curatedByte = BUILD_TYPE_WEAPON_TRAP;    break;
             case df::trap_type::TrackStop:     curatedByte = BUILD_TYPE_TRACK_STOP;     break;
-            default: break; // CageTrap deliberately excluded -- see file/task scope note
+            case df::trap_type::CageTrap:      curatedByte = BUILD_TYPE_CAGE_TRAP;      break;
+            default: break;
         }
     } else {
         switch ((df::building_type)buildingType) {
@@ -352,6 +432,17 @@ int resolveCuratedBuildTypeByte(int buildingType, int subtype, const std::string
             case df::building_type::TractionBench:    curatedByte = BUILD_TYPE_TRACTION_BENCH;    break;
             case df::building_type::NestBox:          curatedByte = BUILD_TYPE_NEST_BOX;          break;
             case df::building_type::Hive:             curatedByte = BUILD_TYPE_HIVE;              break;
+            // Specific-item fixture family (placeFixture, 0xC0-0xCF).
+            case df::building_type::Weaponrack:       curatedByte = BUILD_TYPE_WEAPON_RACK;       break;
+            case df::building_type::Armorstand:       curatedByte = BUILD_TYPE_ARMOR_STAND;       break;
+            case df::building_type::AnimalTrap:       curatedByte = BUILD_TYPE_ANIMAL_TRAP;       break;
+            case df::building_type::Chain:            curatedByte = BUILD_TYPE_CHAIN;             break;
+            case df::building_type::Cage:             curatedByte = BUILD_TYPE_CAGE;              break;
+            case df::building_type::BarsVertical:     curatedByte = BUILD_TYPE_BARS_VERTICAL;     break;
+            case df::building_type::BarsFloor:        curatedByte = BUILD_TYPE_BARS_FLOOR;        break;
+            case df::building_type::GrateWall:        curatedByte = BUILD_TYPE_GRATE_WALL;        break;
+            case df::building_type::GrateFloor:       curatedByte = BUILD_TYPE_GRATE_FLOOR;       break;
+            case df::building_type::Weapon:           curatedByte = BUILD_TYPE_WEAPON_SPIKE;      break;
             default: break;
         }
     }
@@ -723,14 +814,16 @@ bool placeWorkshop(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t m
         error = buf;
         return false;
     }
-    // Ashery and Dyers take ONLY specific-item reagents (buildings.lua
-    // workshop_inputs:251-282) -- no generic building-material reagent at
-    // all, unlike every other workshop this plugin places -- so
-    // materialClass has nothing to narrow. Reject truthfully up front,
-    // same reasoning as placeWell/placeDoor for their all-specific-item
-    // reagent lists.
+    // Ashery, Dyers, Quern and Millstone take ONLY specific-item reagents
+    // (buildings.lua workshop_inputs:248,251-282,283-293) -- no generic
+    // building-material reagent at all, unlike every other workshop this
+    // plugin places -- so materialClass has nothing to narrow. Reject
+    // truthfully up front, same reasoning as placeWell/placeDoor for their
+    // all-specific-item reagent lists.
     bool specificItemOnly = (wsType == df::workshop_type::Ashery ||
-                             wsType == df::workshop_type::Dyers);
+                             wsType == df::workshop_type::Dyers ||
+                             wsType == df::workshop_type::Quern ||
+                             wsType == df::workshop_type::Millstone);
     if (specificItemOnly && materialClass != MATERIAL_CLASS_ANY) {
         error = "material class constraint does not apply to this workshop "
                 "(every reagent is already a specific finished item, not a raw building-material class)";
@@ -783,6 +876,24 @@ bool placeWorkshop(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t m
         df::job_item *bucket = makeItemFilter(df::item_type::BUCKET, df::job_item_vector_id::BUCKET);
         bucket->flags2.bits.lye_milk_free = true;
         filters.push_back(bucket);
+    } else if (wsType == df::workshop_type::Quern) {
+        // Quern: ONE specific QUERN item, no generic building material
+        // (buildings.lua workshop_inputs:248) -- the hand-powered mill.
+        // Same single-specific-item shape as placeFurniture's Statue/Slab
+        // branch, just reached through the workshop path because DF models
+        // Quern as a workshop_type rather than a standalone building_type.
+        filters.push_back(makeItemFilter(df::item_type::QUERN, df::job_item_vector_id::QUERN));
+    } else if (wsType == df::workshop_type::Millstone) {
+        // Millstone: TWO specific-item reagents and no generic building
+        // material (buildings.lua workshop_inputs:283-293) -- a MILLSTONE
+        // item plus a mechanism (TRAPPARTS), in that order, matching the
+        // reference table's own ordering exactly. Unlike Quern this one is
+        // machine-powered: it does nothing until an adjacent axle/gear
+        // network drives it, which is DF's own engine-level concern (the
+        // same adjacency limitation placeWaterPowerBuilding documents), not
+        // something validated here.
+        filters.push_back(makeItemFilter(df::item_type::MILLSTONE, df::job_item_vector_id::MILLSTONE));
+        filters.push_back(makeItemFilter(df::item_type::TRAPPARTS, df::job_item_vector_id::TRAPPARTS));
     } else {
         // Every other workshop type we place takes exactly one generic
         // building-material item (buildings.lua workshop_inputs —
@@ -792,8 +903,13 @@ bool placeWorkshop(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t m
         // Still:246, Loom:247, Kennels:249, Kitchen:250).
         filters.push_back(makeBuildMatFilter(materialClass));
     }
+    // Size is advisory -- getCorrectSize overwrites it for every workshop
+    // subtype (Buildings.cpp:653-686) -- but pass DF's own answer anyway so
+    // the call site reads truthfully; see workshopFootprint's doc comment
+    // for the three sizes and why the Go peer mirrors the same table.
+    int16_t wsSize = workshopFootprint(wsType);
     return placeBuilding(df::coord(x, y, z), df::building_type::Workshop,
-                         wsType, -1, 3, 3, filters, error);
+                         wsType, -1, wsSize, wsSize, filters, error);
 }
 
 // placeFurnace places any of the seven df::furnace_type values (buildings.lua
@@ -958,11 +1074,30 @@ bool placeConstruction(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8
         error = buf;
         return false;
     }
-    // Constructed wall/floor/stairs/ramp take one generic building-material
-    // item (buildings.lua get_inputs_by_type Construction branch:403-407;
-    // only ReinforcedWall differs, which we do not place).
+    // Constructed wall/fortification/floor/stairs/ramp take one generic
+    // building-material item (buildings.lua get_inputs_by_type Construction
+    // branch:406-407 -- the fall-through default for EVERY construction_type
+    // except the one special case just below).
+    //
+    // ReinforcedWall is that one special case (buildings.lua:403-405): TWO
+    // reagents, 2x generic building material PLUS one METAL BAR
+    // (flags3.metal, item_type=BAR, vector_id=BAR). flags3 is a third
+    // job_item flag word this file had no prior user of -- confirmed present
+    // and named `metal` at dfhack-build library/include/df/
+    // job_item_flags3.h:21, and set here exactly as the reference table
+    // does. materialClass still narrows the FIRST (generic) reagent only;
+    // the bar is always metal, never a caller choice.
     std::vector<df::job_item*> filters;
-    filters.push_back(makeBuildMatFilter(materialClass));
+    if (cType == df::construction_type::ReinforcedWall) {
+        df::job_item *mat = makeBuildMatFilter(materialClass);
+        mat->quantity = 2;
+        filters.push_back(mat);
+        df::job_item *bar = makeItemFilter(df::item_type::BAR, df::job_item_vector_id::BAR);
+        bar->flags3.bits.metal = true;
+        filters.push_back(bar);
+    } else {
+        filters.push_back(makeBuildMatFilter(materialClass));
+    }
     return placeBuilding(df::coord(x, y, z), df::building_type::Construction,
                          cType, -1, 1, 1, filters, error);
 }
@@ -1045,6 +1180,127 @@ static bool applyStockpilePreset(color_ostream &out, df::building_stockpilest *s
         return false;
     }
     return true;
+}
+
+// computeDefaultStockpileContainers derives the per-category container
+// CEILINGS a freshly created stockpile should carry, mirroring vanilla DF's
+// own stockpile-creation defaults.
+//
+// WHY THIS EXISTS: df::building_stockpilest has TWO sibling compounds
+// (df.building.xml:990-993) -- `settings` (which category tabs are on) and
+// `storage` (stockpile_storage_infost, df.building.xml:973-976:
+// max_barrels/max_bins/max_wheelbarrows, original names barrel_seek_num/
+// bin_seek_num/wheelbarrow_seek_num). placeStockpile wrote only the first for
+// this plugin's whole life, leaving the int16 ceilings at their
+// zero-initialized value. Those ceilings are how many containers DF's hauling
+// AI is willing to assign to the pile -- 0 means it never assigns ANY, so
+// every DF-AI stockpile was pinned at one loose item per tile (~1/10 of real
+// capacity). They are ceilings, not targets and not per-tile allotments, which
+// is why quickfort resolves its own "unlimited" to ntiles.
+//
+// A bin or barrel ceiling above the tile count is harmless (physically
+// unreachable). A WHEELBARROW ceiling above it is NOT: a wheelbarrow occupies
+// a stockpile tile, so max_wheelbarrows >= tiles denies the pile all of its own
+// storage. quickfort's init_containers bounds all three but at different
+// ceilings for exactly that reason -- bins/barrels to ntiles, wheelbarrows to
+// ntiles-1 (place.lua:270-291) -- and applySetStockpileContainers below
+// enforces the wheelbarrow one on the explicit-override path. It cannot arise
+// here, where wheelbarrows are always 0 (see below).
+//
+// THE TABLE IS NOT INVENTED. It mirrors DFHack's quickfort, whose stated
+// design goal is replicating the vanilla UI exactly:
+//   scripts/internal/quickfort/place.lua:78-97 -- per-category wants:
+//     want_barrels: Food.
+//     want_bins:    Coins, Gems, BarsBlocks, Cloth, Leather, Ammo, Sheets,
+//                   FinishedGoods, Weapons, Armor.
+//     want_wheelbarrows: Stone.
+//     NEITHER:      Animals, Furniture, Corpses, Refuse, Wood -- matching real
+//                   DF, where a stockpiled animal/table/corpse/garbage/log
+//                   cannot be containerized at all.
+//   place.lua:270-291 init_containers -- resolves the "unlimited" default
+//     (scripts/internal/quickfort/set.lua:12-13, stockpiles_max_barrels =
+//     stockpiles_max_bins = -1) to exactly the pile's own live tile count.
+//     Hence tiles, clamped, is the value below.
+//
+// WHEELBARROWS ARE DELIBERATELY LEFT AT 0. set.lua:14 has
+// stockpiles_max_wheelbarrows=0: vanilla DF ships new stone piles with zero
+// wheelbarrows and dwarves haul boulders by hand. That is a real, intentional
+// vanilla default, not the bug this function fixes, so it is not silently
+// changed here -- a caller who wants wheelbarrows pins them explicitly
+// through COMMAND_TYPE_SET_STOCKPILE_CONTAINERS.
+//
+// Reads sp->settings.flags.bits with the same field-access pattern
+// queries.cpp's stockpileCategoryList uses, so the two never drift.
+static void computeDefaultStockpileContainers(df::building_stockpilest *sp, int tiles,
+                                              int16_t &bins, int16_t &barrels,
+                                              int16_t &wheelbarrows)
+{
+    bins = 0;
+    barrels = 0;
+    wheelbarrows = 0;  // vanilla default; see doc comment.
+    if (!sp) return;
+
+    int clampedTiles = tiles;
+    if (clampedTiles < 0) clampedTiles = 0;
+    if (clampedTiles > 32767) clampedTiles = 32767;
+    const int16_t cap = (int16_t)clampedTiles;
+
+    const auto &f = sp->settings.flags.bits;
+    const bool wantsBins = f.ammo || f.coins || f.bars_blocks || f.gems ||
+                           f.finished_goods || f.leather || f.cloth ||
+                           f.weapons || f.armor || f.sheet;
+    if (wantsBins) bins = cap;
+    if (f.food) barrels = cap;
+}
+
+// describeStockpileCandidate: enough identity to tell two overlapping
+// stockpiles apart in an ACK, in the same vocabulary the `buildings` tool's
+// own stockpile lines use (#number + custom name). Deliberately mirrors
+// df_ai_protocol.cpp's describeRemovalCandidate, minus its real-building
+// branch -- a workshop enclosed by a pile's rectangle is never a candidate
+// for a stockpile-settings command.
+static std::string describeStockpileCandidate(df::building *b)
+{
+    std::ostringstream os;
+    os << "Stockpile";
+    if (auto *sp = strict_virtual_cast<df::building_stockpilest>(b))
+        os << " #" << sp->stockpile_number;
+    if (!b->name.empty()) os << " \"" << b->name << "\"";
+    os << " id=" << b->id
+       << " spanning (" << b->x1 << "," << b->y1 << ")-(" << b->x2 << "," << b->y2 << ")";
+    int bboxArea = (b->x2 - b->x1 + 1) * (b->y2 - b->y1 + 1);
+    os << ", " << Buildings::countExtentTiles(b, bboxArea) << " tiles";
+    return os.str();
+}
+
+// findStockpileOnlyTileFor: a tile inside target's footprint covered by NO
+// other stockpile at this z -- i.e. a coordinate the caller can reissue at to
+// hit exactly the pile it means. Returns false when none exists (identical or
+// enclosing footprints), which is itself the answer: stop looking.
+//
+// Takes the already-collected z list so an error path never re-walks
+// world->buildings.all per tile (the same hoist df_ai_protocol.cpp's
+// findUnambiguousTileFor documents).
+static bool findStockpileOnlyTileFor(df::building *target,
+                                     const std::vector<df::building*> &stockpilesAtZ,
+                                     int16_t &ux, int16_t &uy)
+{
+    for (int16_t ty = (int16_t)target->y1; ty <= (int16_t)target->y2; ty++) {
+        for (int16_t tx = (int16_t)target->x1; tx <= (int16_t)target->x2; tx++) {
+            df::coord2d probe(tx, ty);
+            if (!Buildings::containsTile(target, probe)) continue;
+            bool shared = false;
+            for (auto *b : stockpilesAtZ) {
+                if (b == target) continue;
+                if (Buildings::containsTile(b, probe)) { shared = true; break; }
+            }
+            if (shared) continue;
+            ux = tx;
+            uy = ty;
+            return true;
+        }
+    }
+    return false;
 }
 
 // placeStockpile designates a rectangular stockpile zone with the
@@ -1133,7 +1389,215 @@ bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, u
             error = warning;
             partial = true;
         }
+
+        // Container ceilings (sp->storage) -- the sibling compound to
+        // sp->settings that this function ignored for its whole life, leaving
+        // max_bins/max_barrels/max_wheelbarrows at zero and DF's hauling AI
+        // therefore refusing to assign any bin or barrel to a DF-AI pile. See
+        // computeDefaultStockpileContainers above for the vanilla-mirroring
+        // table and the fields' exact semantics.
+        //
+        // ORDER IS LOAD-BEARING -- DO NOT MOVE THIS EARLIER. It must run
+        // AFTER applyStockpilePreset and after the flags re-narrow above:
+        // StockpileSerializer::read_containers (DFHack plugins/stockpiles/
+        // StockpileSerializer.cpp:878-943) writes these very fields out of a
+        // .dfstock file when the file encodes them (guarded by has_elem_fn),
+        // and everything.dfstock's binary contents were never inspected.
+        // Computing last means our values win regardless of what the preset
+        // does or does not carry, and reading settings.flags last means we
+        // compute against the categories the CALLER asked for rather than the
+        // preset's transient all-17.
+        int spTiles = Buildings::countExtentTiles(bld, width * height);
+        int16_t defBins = 0, defBarrels = 0, defWheelbarrows = 0;
+        computeDefaultStockpileContainers(sp, spTiles, defBins, defBarrels, defWheelbarrows);
+        sp->storage.max_bins = defBins;
+        sp->storage.max_barrels = defBarrels;
+        sp->storage.max_wheelbarrows = defWheelbarrows;
     }
+    return true;
+}
+
+// applySetStockpileContainers retrofits (or explicitly overrides) the
+// container ceilings on an ALREADY-PLACED stockpile. Every Has* that is false
+// means "recompute this one field's vanilla-mirroring default from the pile's
+// CURRENT categories and CURRENT tile count" -- so the common retrofit call
+// carries no numbers at all and lands on exactly what placeStockpile would now
+// produce for the same pile. A Has* that is true pins the given value
+// verbatim, including an explicit 0 ("accept no container of this type") --
+// except max_wheelbarrows, which is additionally clamped to tiles-1 (see the
+// clamp comment at the write below).
+//
+// ADDRESSING, two ways.
+//
+// BY TILE (hasStockpileNumber false): findAtTile is NOT usable.
+// Buildings::findAtTile skips every building with isSettingOccupancy()==false
+// (library/modules/Buildings.cpp:399-400) and Stockpile is abstract, so it is
+// architecturally invisible to that call -- the same fact df_ai_protocol.cpp's
+// removal path already documents. The scan is collectStockpilesAtZ +
+// Buildings::containsTile (extent-bitmap aware, so an L-shaped pile is matched
+// by its real tiles). AMBIGUITY IS REPORTED, NEVER GUESSED: N>1 matches is a
+// truthful FAILURE listing every candidate and, where one exists, a tile that
+// resolves to it alone.
+//
+// BY NUMBER (hasStockpileNumber true): stockpile_number selects the pile
+// directly and x/y/z are ignored. This is not a convenience -- tile addressing
+// has a case it can NEVER resolve: a live fort has had two stockpiles sharing
+// the exact rectangle (88,88)-(92,91), so neither owns a tile the other does
+// not and no coordinate names either one alone. Without this path both piles
+// would be permanently unconfigurable. stockpile_number is assigned as max+1
+// over live piles (Buildings.cpp:1069-1099), so it is unique among existing
+// stockpiles; a duplicate would still be reported rather than guessed at.
+bool applySetStockpileContainers(int16_t x, int16_t y, int16_t z,
+                                 bool hasStockpileNumber, int32_t stockpileNumber,
+                                 bool hasMaxBins, int16_t maxBins,
+                                 bool hasMaxBarrels, int16_t maxBarrels,
+                                 bool hasMaxWheelbarrows, int16_t maxWheelbarrows,
+                                 std::string &error)
+{
+    using namespace DFHack;
+
+    // Negative ceilings are not a DF state: quickfort's -1 "unlimited" is a
+    // settings-layer sentinel it resolves to a tile count BEFORE writing the
+    // struct (place.lua:270-291). Reject rather than write one through.
+    if ((hasMaxBins && maxBins < 0) || (hasMaxBarrels && maxBarrels < 0) ||
+        (hasMaxWheelbarrows && maxWheelbarrows < 0)) {
+        error = "container limits must be >= 0 (omit a field instead to auto-compute its default)";
+        return false;
+    }
+
+    df::building *bld = nullptr;
+
+    if (hasStockpileNumber) {
+        std::vector<df::building*> byNumber;
+        if (df::global::world) {
+            for (auto *b : df::global::world->buildings.all) {
+                if (!b || b->getType() != df::building_type::Stockpile) continue;
+                auto *cand = strict_virtual_cast<df::building_stockpilest>(b);
+                if (!cand || cand->stockpile_number != stockpileNumber) continue;
+                bool dup = false;
+                for (auto *existing : byNumber) {
+                    if (existing == b || existing->id == b->id) { dup = true; break; }
+                }
+                if (!dup) byNumber.push_back(b);
+            }
+        }
+        if (byNumber.empty()) {
+            std::ostringstream os;
+            os << "no stockpile numbered #" << stockpileNumber
+               << " -- the buildings query reports each pile's number as sp_number";
+            error = os.str();
+            return false;
+        }
+        if (byNumber.size() > 1) {
+            // Should be impossible (numbers are max+1 over live piles), so if
+            // it ever happens, say so instead of picking one.
+            std::ostringstream os;
+            os << byNumber.size() << " stockpiles share the number #" << stockpileNumber
+               << " -- nothing was changed:";
+            for (size_t i = 0; i < byNumber.size(); i++)
+                os << " [" << (i + 1) << "] " << describeStockpileCandidate(byNumber[i]) << ";";
+            error = os.str();
+            return false;
+        }
+        bld = byNumber[0];
+    } else {
+        if (!Maps::isValidTilePos(x, y, z)) {
+            error = "Coordinates out of map bounds";
+            return false;
+        }
+
+        std::vector<df::building*> stockpilesAtZ;
+        collectStockpilesAtZ(z, stockpilesAtZ);
+
+        df::coord2d pos2d(x, y);
+        std::vector<df::building*> matches;
+        for (auto *b : stockpilesAtZ) {
+            if (!Buildings::containsTile(b, pos2d)) continue;
+            matches.push_back(b);
+        }
+
+        if (matches.empty()) {
+            std::ostringstream os;
+            os << "no stockpile at (" << x << "," << y << "," << z
+               << ") -- this command addresses a stockpile by any tile of its footprint, "
+                  "or by stockpile_number";
+            error = os.str();
+            return false;
+        }
+
+        if (matches.size() > 1) {
+            std::ostringstream os;
+            os << matches.size() << " stockpiles overlap (" << x << "," << y << "," << z
+               << ") and this call selected by tile -- nothing was changed; reissue with the "
+                  "stockpile_number of the one you want, or at a tile that means it:";
+            for (size_t i = 0; i < matches.size(); i++) {
+                os << " [" << (i + 1) << "] " << describeStockpileCandidate(matches[i]);
+                int16_t ux = 0, uy = 0;
+                if (findStockpileOnlyTileFor(matches[i], stockpilesAtZ, ux, uy)) {
+                    os << " -- reissue at (" << ux << "," << uy << "," << z
+                       << ") to set ONLY this one;";
+                } else {
+                    os << " -- NO tile in its footprint belongs to it alone, so only its "
+                          "stockpile_number can select it;";
+                }
+            }
+            error = os.str();
+            return false;
+        }
+
+        bld = matches[0];
+    }
+
+    auto *sp = strict_virtual_cast<df::building_stockpilest>(bld);
+    if (!sp) {
+        error = "the addressed building reports type Stockpile but is not a building_stockpilest";
+        return false;
+    }
+
+    int bboxArea = (bld->x2 - bld->x1 + 1) * (bld->y2 - bld->y1 + 1);
+    int tiles = Buildings::countExtentTiles(bld, bboxArea);
+    int16_t defBins = 0, defBarrels = 0, defWheelbarrows = 0;
+    computeDefaultStockpileContainers(sp, tiles, defBins, defBarrels, defWheelbarrows);
+
+    const int16_t oldBins = sp->storage.max_bins;
+    const int16_t oldBarrels = sp->storage.max_barrels;
+    const int16_t oldWheelbarrows = sp->storage.max_wheelbarrows;
+
+    // WHEELBARROWS ARE CLAMPED HERE; BINS AND BARRELS DELIBERATELY ARE NOT.
+    // quickfort's init_containers (scripts/internal/quickfort/place.lua:
+    // 270-291) bounds all three, but at DIFFERENT ceilings and for different
+    // reasons: bins/barrels resolve to ntiles, wheelbarrows to ntiles-1
+    // (":288 -- (max_wb >= ntiles - 1) and ntiles-1 or max_wb"). The off-by-one
+    // is the whole point: a wheelbarrow physically OCCUPIES a stockpile tile,
+    // so max_wheelbarrows >= tiles denies the pile all of its own storage,
+    // while a bin or barrel ceiling above the tile count is merely unreachable
+    // and inert. Only the harmful bound is enforced -- silently rewriting an
+    // explicit bins/barrels number that costs nothing would be overriding the
+    // caller for no gain. Floor at 0 for the degenerate zero-tile pile.
+    int16_t wantWheelbarrows = hasMaxWheelbarrows ? maxWheelbarrows : defWheelbarrows;
+    int16_t wheelbarrowCeiling = (int16_t)(tiles > 0 ? tiles - 1 : 0);
+    bool wheelbarrowsClamped = wantWheelbarrows > wheelbarrowCeiling;
+    int16_t finalWheelbarrows = wheelbarrowsClamped ? wheelbarrowCeiling : wantWheelbarrows;
+
+    sp->storage.max_bins = hasMaxBins ? maxBins : defBins;
+    sp->storage.max_barrels = hasMaxBarrels ? maxBarrels : defBarrels;
+    sp->storage.max_wheelbarrows = finalWheelbarrows;
+
+    std::ostringstream os;
+    os << "stockpile #" << sp->stockpile_number;
+    if (!bld->name.empty()) os << " \"" << bld->name << "\"";
+    os << " (" << tiles << " tiles): bins " << oldBins << "->" << sp->storage.max_bins
+       << (hasMaxBins ? " (explicit)" : " (auto)")
+       << ", barrels " << oldBarrels << "->" << sp->storage.max_barrels
+       << (hasMaxBarrels ? " (explicit)" : " (auto)")
+       << ", wheelbarrows " << oldWheelbarrows << "->" << sp->storage.max_wheelbarrows
+       << (hasMaxWheelbarrows ? " (explicit" : " (auto");
+    if (wheelbarrowsClamped)
+        os << ", clamped from " << wantWheelbarrows << " -- a wheelbarrow occupies a tile";
+    os << ")"
+       << ". Currently holding " << sp->storage.container_item_id.size()
+       << " container(s); DF's hauling AI assigns more over game-days, not instantly.";
+    error = os.str();
     return true;
 }
 
@@ -1420,9 +1884,9 @@ bool placeDoor(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t mater
     }
 }
 
-// placeTrap handles four MORE df::trap_type subtypes (building_type::Trap)
+// placeTrap handles five MORE df::trap_type subtypes (building_type::Trap)
 // beyond Lever, which stays in placeDoor above (BUILD_TYPE_LEVER, doors/
-// hatches range) sharing its single-mechanism-item shape. All four are 1x1
+// hatches range) sharing its single-mechanism-item shape. All five are 1x1
 // ACTUAL buildings (getCorrectSize has no case for building_type::Trap, so
 // every subtype falls to its default branch, Buildings.cpp:736-739 -- same
 // as Lever/Door/Hatch/Floodgate/Well/Support above).
@@ -1485,17 +1949,35 @@ bool placeDoor(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t mater
 //                             linkage, friction/dump-menu settings, and the
 //                             rest of DF's minecart system are a separate,
 //                             more niche system this pass does not chase.
+//   CageTrap       :331-337  1x mechanism (TRAPPARTS/TRAPPARTS) -- the SAME
+//                             construction filter as StoneFallTrap, verified
+//                             field-for-field against trap_inputs; NO cage is
+//                             consumed at build time. Like StoneFallTrap it
+//                             builds UNARMED, and DF arms it through its own
+//                             separate post-construction job
+//                             (df::job_type::LoadCageTrap, LOAD_TRAP_CAGE,
+//                             df.job.xml:875 -- an exact structural sibling of
+//                             LoadStoneTrap at :880: same Hauling category,
+//                             same MECHANICS skill). That follow-on job is not
+//                             queued by this command, exactly as for
+//                             StoneFallTrap.
 //
-// materialClass is rejected for PressurePlate/StoneFallTrap/WeaponTrap (each
-// already a specific finished item, not a raw material class DF could
-// narrow) but honored for TrackStop, mirroring placeSupport/
+// CORRECTION (this comment block previously said the opposite): an earlier
+// pass excluded CageTrap here on two claims, BOTH of which are false against
+// the 53.16-r1 source. (1) Its construction filter is NOT "mechanism + cage" --
+// trap_inputs gives it a lone mechanism, identical to StoneFallTrap's entry.
+// (2) It is NOT "craftable but can never be armed" -- DF declares a
+// first-class LoadCageTrap job for exactly that step, so this is DF's own
+// vanilla two-step build-then-load flow, which this file ALREADY ships and
+// documents as an acceptable, precedented carve-out for StoneFallTrap. The
+// separate df::building_type::Cage / ::Chain BUILDING exclusion (a
+// prisoner/justice restraint fixture, a different DF system) is unrelated to
+// this trap subtype and stays exactly as it was.
+//
+// materialClass is rejected for PressurePlate/StoneFallTrap/WeaponTrap/
+// CageTrap (each already a specific finished item, not a raw material class DF
+// could narrow) but honored for TrackStop, mirroring placeSupport/
 // placeArcheryTarget's acceptance further up this file.
-//
-// Deliberately NOT here: df::trap_type::CageTrap. Its ammunition is a cage
-// item (MakeCage job_type), excluded this project alongside the Cage/Chain
-// BUILDING types for justice/restraint reasons -- adding CageTrap would
-// repeat the exact "craftable but can never be armed" anti-pattern this
-// project already fixed once (ConstructCoffin).
 bool placeTrap(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, std::string &error) {
     df::trap_type trapType;
     std::vector<df::job_item*> filters;
@@ -1524,6 +2006,14 @@ bool placeTrap(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t mater
             trapType = df::trap_type::WeaponTrap;
             filters.push_back(makeItemFilter(df::item_type::TRAPPARTS, df::job_item_vector_id::TRAPPARTS));
             filters.push_back(makeItemFilter(df::item_type::NONE, df::job_item_vector_id::ANY_WEAPON));
+            break;
+        case BUILD_TYPE_CAGE_TRAP:
+            if (materialClass != MATERIAL_CLASS_ANY) {
+                error = "material class constraint does not apply to a cage trap (a specific mechanism item, not a raw building-material reagent)";
+                return false;
+            }
+            trapType = df::trap_type::CageTrap;
+            filters.push_back(makeItemFilter(df::item_type::TRAPPARTS, df::job_item_vector_id::TRAPPARTS));
             break;
         case BUILD_TYPE_TRACK_STOP:
             trapType = df::trap_type::TrackStop;
@@ -1606,6 +2096,121 @@ bool placeArcheryTarget(int16_t x, int16_t y, int16_t z, uint8_t materialClass, 
     filters.push_back(makeBuildMatFilter(materialClass));
     return placeBuilding(df::coord(x, y, z), df::building_type::ArcheryTarget,
                          -1, -1, 1, 1, filters, error);
+}
+
+// placeFixture places any of the ten specific-item FIXTURE building types
+// (BUILD_TYPE_WEAPON_RACK..BUILD_TYPE_WEAPON_SPIKE, protocol.h's 0xC0-0xCF
+// range) -- each a standalone df::building_type with no subtype, each a 1x1
+// ACTUAL building (getCorrectSize has no case for any of the ten, so all
+// fall to its default branch, Buildings.cpp:736-739, exactly like
+// placeWell/placeSupport/placeRoomValueFurniture above), and each placed
+// from ONE already-existing item.
+//
+// This is the same code shape placeRoomValueFurniture uses; it is a
+// SEPARATE function purely because that one's byte range (0x92-0x9D) has
+// only two free slots left, not because anything about the mechanism
+// differs. Filters per buildings.lua building_inputs (dfhack-build
+// library/lua/dfhack/buildings.lua):
+//   Weaponrack   :55-60    item_type=WEAPONRACK,  vector_id=WEAPONRACK
+//   Armorstand   :61-66    item_type=ARMORSTAND,  vector_id=ARMORSTAND
+//   AnimalTrap   :104-110  item_type=ANIMALTRAP,  vector_id=ANIMALTRAP,
+//                           flags1.empty -- the ONE fixture here with an
+//                           extra flag, and the same flags1.empty makeItemFilter
+//                           already applies to Coffer/Box (buildings.lua:48-54):
+//                           a trap that already holds a caught vermin cannot
+//                           be re-placed as a new one.
+//   Chain        :113      item_type=CHAIN,       vector_id=CHAIN
+//   Cage         :114      item_type=CAGE,        vector_id=CAGE
+//   BarsVertical :143-145  item_type=BAR,         vector_id=BAR
+//   BarsFloor    :146-148  item_type=BAR,         vector_id=BAR
+//   GrateWall    :139      item_type=GRATE,       vector_id=GRATE
+//   GrateFloor   :140      item_type=GRATE,       vector_id=GRATE
+//   Weapon       :115      NO item_type at all,   vector_id=ANY_SPIKE --
+//                           the vector-only filter shape placeTrap's own
+//                           WeaponTrap weapon reagent (ANY_WEAPON) already
+//                           established; item_type stays at its df.job.xml
+//                           init-value NONE, mirroring the reference table
+//                           exactly rather than guessing a narrower type.
+//
+// NO type-specific init is done here and none is needed: DF's own
+// Buildings::allocInstance (called by placeBuilding below) already sets
+// gate_flags.bits.closed for GrateWall/GrateFloor/BarsVertical/BarsFloor and
+// gate_flags.bits.retracted=false for Weapon (Buildings.cpp:536-571) -- the
+// identical mechanism that already gives Floodgate its closed default
+// through this same path.
+//
+// KNOWN LIMITATION -- those five gate_flags types are NOT yet accepted as
+// link_building trigger TARGETS: mechanisms.cpp's applyLinkBuilding casts the
+// target to bridge/floodgate/door/hatch/support/gear_assembly and rejects
+// anything else. So a grate/bars/spike placed by this command can be BUILT
+// but not yet wired to a lever or pressure plate. That is a real, separate
+// gap in a different file, not something this placer can paper over -- the
+// building_types tool states it rather than implying a lever will work them.
+//
+// materialClass is rejected for all ten, same as placeDoor/placeWell/
+// placeRoomValueFurniture: every reagent here is already a specific finished
+// item (or a specific item VECTOR), never a raw building-material class DF
+// could narrow. No quality-tier support either, for the same reason
+// placeRoomValueFurniture has none -- see its doc comment.
+bool placeFixture(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, std::string &error) {
+    if (materialClass != MATERIAL_CLASS_ANY) {
+        error = "material class constraint does not apply to this building type "
+                "(already a specific finished item, not a raw building-material reagent)";
+        return false;
+    }
+
+    std::vector<df::job_item*> filters;
+    df::building_type bt;
+    switch (buildType) {
+        case BUILD_TYPE_WEAPON_RACK:
+            filters.push_back(makeItemFilter(df::item_type::WEAPONRACK, df::job_item_vector_id::WEAPONRACK));
+            bt = df::building_type::Weaponrack;
+            break;
+        case BUILD_TYPE_ARMOR_STAND:
+            filters.push_back(makeItemFilter(df::item_type::ARMORSTAND, df::job_item_vector_id::ARMORSTAND));
+            bt = df::building_type::Armorstand;
+            break;
+        case BUILD_TYPE_ANIMAL_TRAP:
+            filters.push_back(makeItemFilter(df::item_type::ANIMALTRAP, df::job_item_vector_id::ANIMALTRAP,
+                                             /*requireEmpty=*/true));
+            bt = df::building_type::AnimalTrap;
+            break;
+        case BUILD_TYPE_CHAIN:
+            filters.push_back(makeItemFilter(df::item_type::CHAIN, df::job_item_vector_id::CHAIN));
+            bt = df::building_type::Chain;
+            break;
+        case BUILD_TYPE_CAGE:
+            filters.push_back(makeItemFilter(df::item_type::CAGE, df::job_item_vector_id::CAGE));
+            bt = df::building_type::Cage;
+            break;
+        case BUILD_TYPE_BARS_VERTICAL:
+            filters.push_back(makeItemFilter(df::item_type::BAR, df::job_item_vector_id::BAR));
+            bt = df::building_type::BarsVertical;
+            break;
+        case BUILD_TYPE_BARS_FLOOR:
+            filters.push_back(makeItemFilter(df::item_type::BAR, df::job_item_vector_id::BAR));
+            bt = df::building_type::BarsFloor;
+            break;
+        case BUILD_TYPE_GRATE_WALL:
+            filters.push_back(makeItemFilter(df::item_type::GRATE, df::job_item_vector_id::GRATE));
+            bt = df::building_type::GrateWall;
+            break;
+        case BUILD_TYPE_GRATE_FLOOR:
+            filters.push_back(makeItemFilter(df::item_type::GRATE, df::job_item_vector_id::GRATE));
+            bt = df::building_type::GrateFloor;
+            break;
+        case BUILD_TYPE_WEAPON_SPIKE:
+            filters.push_back(makeItemFilter(df::item_type::NONE, df::job_item_vector_id::ANY_SPIKE));
+            bt = df::building_type::Weapon;
+            break;
+        default: {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Unknown fixture build type: 0x%02X", buildType);
+            error = buf;
+            return false;
+        }
+    }
+    return placeBuilding(df::coord(x, y, z), bt, -1, -1, 1, 1, filters, error);
 }
 
 // placeRoomValueFurniture places any of the eight "room-value furniture"

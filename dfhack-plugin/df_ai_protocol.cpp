@@ -11,7 +11,11 @@
 #include "modules/Units.h"
 #include "modules/Buildings.h"
 #include "modules/World.h"
+#include "TileTypes.h"
 
+#include "df/construction.h"
+#include "df/tiletype.h"
+#include "df/tiletype_material.h"
 #include "df/map_block.h"
 #include "df/world.h"
 #include "df/coord.h"
@@ -98,6 +102,12 @@ bool applySquadOrder(int32_t squadID, uint8_t orderType, int16_t x, int16_t y, i
 
 // Forward declarations for functions in buildings.cpp
 bool placeStockpile(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint32_t groupMask, std::string &error, bool &partial);
+bool applySetStockpileContainers(int16_t x, int16_t y, int16_t z,
+                                 bool hasStockpileNumber, int32_t stockpileNumber,
+                                 bool hasMaxBins, int16_t maxBins,
+                                 bool hasMaxBarrels, int16_t maxBarrels,
+                                 bool hasMaxWheelbarrows, int16_t maxWheelbarrows,
+                                 std::string &error);
 bool placeFarmPlot(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, std::string &error);
 bool applySetFarmCrop(int16_t x, int16_t y, int16_t z, uint8_t season, const std::string &cropName, std::string &error);
 bool placeBridge(int16_t x1, int16_t y1, int16_t z, int16_t x2, int16_t y2, uint8_t wireDirection, std::string &error);
@@ -113,7 +123,8 @@ bool applyAssignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::strin
 bool applyUnassignZone(int16_t x, int16_t y, int16_t z, int32_t unitID, std::string &error);
 
 // Forward declaration from locations.cpp
-bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, const std::string &profession, std::string &error);
+bool applyCreateLocation(int16_t x, int16_t y, int16_t z, uint8_t locationType, const std::string &profession,
+                         bool hasDeity, int32_t deityHfId, std::string &error);
 bool applyAssignLodging(int16_t tavernX, int16_t tavernY, int16_t tavernZ, int16_t bedroomX, int16_t bedroomY, int16_t bedroomZ, std::string &error);
 bool applyUnassignLodging(int16_t bedroomX, int16_t bedroomY, int16_t bedroomZ, std::string &error);
 
@@ -431,15 +442,55 @@ bool applyUnsuspend(int16_t x, int16_t y, int16_t z, std::string &error)
 // findUnambiguousTileFor): the stockpile set at a given z is invariant
 // across such a loop, while findAtTile/containsTile are per-tile by nature.
 // The membership rule itself still has exactly one definition.
-static void collectStockpilesAtZ(int32_t z, std::vector<df::building*> &out)
+// EXTERNAL LINKAGE (not static): buildings.cpp's applySetStockpileContainers
+// addresses a stockpile by tile too and faces the identical findAtTile
+// blindness, so it forward-declares and reuses this rather than growing a
+// second definition of the membership rule.
+//
+// THE OUTPUT IS A SET KEYED BY BUILDING id, NOT A BAG. A live fort produced a
+// "2 buildings overlap" ACK whose two candidates printed byte-identical
+// descriptors -- same id, same stockpile #, same rect, same tile count -- i.e.
+// one building reported twice, which nothing in this loop explains (one pass
+// over one vector). The upstream cause -- most plausibly two entries in
+// world->buildings.all whose id/number/extent are equal -- could not be
+// reproduced without a live DF process, so the duplicate is filtered HERE, at
+// the single definition of the membership rule, rather than in one caller's
+// wrapper. Filtering here is what makes the rule actually shared: the
+// containers path (buildings.cpp) reads this vector directly and would
+// otherwise inherit the duplicate and refuse to configure a pile forever --
+// with `matches.size()==2` and both entries pointing at the same building,
+// every reissued coordinate reproduces the identical error. A genuine overlap
+// of two DIFFERENT stockpiles (the real, already-working case) keeps both
+// entries and is unaffected.
+void collectStockpilesAtZ(int32_t z, std::vector<df::building*> &out)
 {
     out.clear();
     if (!df::global::world) return;
     for (auto *b : df::global::world->buildings.all) {
         if (!b || b->getType() != df::building_type::Stockpile) continue;
         if (b->z != z) continue;
+        bool dup = false;
+        for (auto *existing : out) {
+            if (existing == b || (existing && existing->id == b->id)) { dup = true; break; }
+        }
+        if (dup) continue;
         out.push_back(b);
     }
+}
+
+// pushRemovalCandidate: append b unless an entry with the same building id is
+// already present -- the same set-keyed-by-id rule collectStockpilesAtZ above
+// applies to its own output, enforced again here because the removal candidate
+// list MERGES two independent sources (Buildings::findAtTile plus the
+// stockpile scan) and a merge can duplicate across sources even when each
+// source is internally deduped.
+static void pushRemovalCandidate(std::vector<df::building*> &out, df::building *b)
+{
+    if (!b) return;
+    for (auto *existing : out) {
+        if (existing == b || (existing && existing->id == b->id)) return;
+    }
+    out.push_back(b);
 }
 
 static void collectRemovalCandidatesFrom(df::coord pos,
@@ -449,12 +500,12 @@ static void collectRemovalCandidatesFrom(df::coord pos,
     using namespace DFHack;
     out.clear();
     if (df::building *real = Buildings::findAtTile(pos)) {
-        out.push_back(real);
+        pushRemovalCandidate(out, real);
     }
     df::coord2d pos2d(pos.x, pos.y);
     for (auto *b : stockpilesAtZ) {
         if (!Buildings::containsTile(b, pos2d)) continue;
-        out.push_back(b);
+        pushRemovalCandidate(out, b);
     }
 }
 
@@ -539,6 +590,41 @@ bool applyRemoveBuilding(int16_t x, int16_t y, int16_t z, std::string &error)
 
     if (candidates.empty()) {
         std::ostringstream os;
+        // A COMPLETED construction is not a building at all, so "no building
+        // here" -- while literally true -- is the least useful thing to say
+        // about a wall the caller is staring at. DF deletes the
+        // df::building_constructionst the moment construction finishes and
+        // converts the tile's material to tiletype_material::CONSTRUCTION,
+        // leaving only a lightweight df::construction record in
+        // world->event.constructions (a different vector from
+        // world->buildings.all entirely). DFHack's own canonical
+        // Constructions::designateRemove (modules/Constructions.cpp:117-161)
+        // has exactly these two branches: findAtTile -> deconstruct while the
+        // plan is still pending (which our candidate scan already covers), and
+        // dsgn.bits.dig = tile_dig_designation::Default once it is finished.
+        // So redirect to the designation, which is what DF actually models.
+        if (df::tiletype *tt = Maps::getTileType(pos)) {
+            if (tileMaterial(*tt) == df::tiletype_material::CONSTRUCTION) {
+                df::construction *constr = df::construction::find(pos);
+                if (constr && !constr->flags.bits.top_of_wall) {
+                    os << "(" << x << "," << y << "," << z << ") holds a COMPLETED constructed wall/floor/stair/ramp, "
+                       << "not a building -- DF deleted the building object when construction finished and turned the "
+                       << "tile into terrain. Use designate_dig type=default on this tile to remove it "
+                       << "(that is exactly what DFHack's own Constructions::designateRemove does once a construction "
+                       << "is complete).";
+                } else {
+                    os << "(" << x << "," << y << "," << z << ") is construction material, but DF has no removable "
+                       << "construction record for it"
+                       << (constr ? " (it is a top-of-wall pseudo-construction, auto-generated above a constructed "
+                                    "wall -- remove the wall on the z-level below instead)"
+                                  : " (no df::construction entry at this tile)")
+                       << " -- DF itself refuses to designate this tile for removal, so neither remove_building nor "
+                          "designate_dig type=default will clear it.";
+                }
+                error = os.str();
+                return false;
+            }
+        }
         os << "no building at (" << x << "," << y << "," << z << ")";
         error = os.str();
         return false;
@@ -1235,7 +1321,10 @@ void executeCommand(const std::vector<uint8_t> &payload)
         }
         case COMMAND_TYPE_CREATE_LOCATION: {
             // Payload: [4:cmdID][1:cmdType][2:X][2:Y][2:Z][1:LocationType][2:ProfessionLen][N:ProfessionName]
-            // (the trailing length-prefixed name mirrors QUEUE_JOB's existing by-name trailing field)
+            //          [1:HasDeity][4:DeityHfID]
+            // (the length-prefixed name mirrors QUEUE_JOB's existing by-name trailing field; the
+            //  presence-byte + int32 pair mirrors EDIT_ORDER's hasAmount/hasFrequency shape, chosen
+            //  over a -1 sentinel because historical-figure id 0 is a valid deity id)
             if (payload.size() < 12) {
                 sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid CREATE_LOCATION payload");
                 return;
@@ -1245,13 +1334,26 @@ void executeCommand(const std::vector<uint8_t> &payload)
             int16_t z = ((int16_t)payload[9] << 8) | payload[10];
             uint8_t locationType = payload[11];
             std::string profession;
+            size_t afterProfession = 12;
             if (payload.size() >= 14) {
                 uint16_t nameLen = ((uint16_t)payload[12] << 8) | payload[13];
-                if (payload.size() >= 14 + nameLen) {
+                if (payload.size() >= 14 + (size_t)nameLen) {
                     profession.assign(payload.begin() + 14, payload.begin() + 14 + nameLen);
+                    afterProfession = 14 + (size_t)nameLen;
                 }
             }
-            success = applyCreateLocation(x, y, z, locationType, profession, error);
+            // Optional trailing deity field. Absent (an older peer's payload)
+            // decodes as "no dedication", exactly the pre-existing behavior.
+            bool hasDeity = false;
+            int32_t deityHfId = 0;
+            if (payload.size() >= afterProfession + 5) {
+                hasDeity = payload[afterProfession] != 0;
+                deityHfId = (int32_t)(((uint32_t)payload[afterProfession + 1] << 24) |
+                                      ((uint32_t)payload[afterProfession + 2] << 16) |
+                                      ((uint32_t)payload[afterProfession + 3] << 8) |
+                                      ((uint32_t)payload[afterProfession + 4]));
+            }
+            success = applyCreateLocation(x, y, z, locationType, profession, hasDeity, deityHfId, error);
             break;
         }
         case COMMAND_TYPE_ASSIGN_LODGING: {
@@ -1582,6 +1684,38 @@ void executeCommand(const std::vector<uint8_t> &payload)
             bool traderRequested = payload[11] != 0;
             bool anyoneCanTrade = payload[12] != 0;
             success = applySetDepotTradeFlags(x, y, z, traderRequested, anyoneCanTrade, error);
+            break;
+        }
+        case COMMAND_TYPE_SET_STOCKPILE_CONTAINERS: {
+            // Payload: [4:cmdID][1:cmdType][2:X][2:Y][2:Z]
+            //          [1:HasMaxBins][2:MaxBins]
+            //          [1:HasMaxBarrels][2:MaxBarrels]
+            //          [1:HasMaxWheelbarrows][2:MaxWheelbarrows]
+            //          [1:HasStockpileNumber][4:StockpileNumber]
+            // Strict 25, not a tolerated short tail: silently ignoring an
+            // unparsed StockpileNumber would fall back to the tile scan and
+            // reconfigure a DIFFERENT pile than the caller named.
+            if (payload.size() < 25) {
+                sendCommandAck(cmdID, ACK_STATUS_FAILURE, "Invalid SET_STOCKPILE_CONTAINERS payload");
+                return;
+            }
+            int16_t x = ((int16_t)payload[5] << 8) | payload[6];
+            int16_t y = ((int16_t)payload[7] << 8) | payload[8];
+            int16_t z = ((int16_t)payload[9] << 8) | payload[10];
+            bool hasMaxBins = payload[11] != 0;
+            int16_t maxBins = ((int16_t)payload[12] << 8) | payload[13];
+            bool hasMaxBarrels = payload[14] != 0;
+            int16_t maxBarrels = ((int16_t)payload[15] << 8) | payload[16];
+            bool hasMaxWheelbarrows = payload[17] != 0;
+            int16_t maxWheelbarrows = ((int16_t)payload[18] << 8) | payload[19];
+            bool hasStockpileNumber = payload[20] != 0;
+            int32_t stockpileNumber = (int32_t)read_uint32_be(payload, 21);
+            success = applySetStockpileContainers(x, y, z,
+                                                  hasStockpileNumber, stockpileNumber,
+                                                  hasMaxBins, maxBins,
+                                                  hasMaxBarrels, maxBarrels,
+                                                  hasMaxWheelbarrows, maxWheelbarrows,
+                                                  error);
             break;
         }
         case COMMAND_TYPE_APPOINT_POSITION: {

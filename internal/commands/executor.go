@@ -261,14 +261,21 @@ func (e *CommandExecutor) SendUnassignZone(x, y, z int16, unitID int32) (*Comman
 
 // SendCreateLocation converts the MeetingHall civzone at (x,y,z) into a
 // Location of locationType. profession is required only when locationType
-// is protocol.LocationTypeGuildhall.
-func (e *CommandExecutor) SendCreateLocation(x, y, z int16, locationType uint8, profession string) (*CommandResult, error) {
+// is protocol.LocationTypeGuildhall. deityHfID, when non-nil, dedicates a
+// temple to that historical figure — see CreateLocationDesignation for why
+// this is a pointer rather than a -1 sentinel.
+func (e *CommandExecutor) SendCreateLocation(x, y, z int16, locationType uint8, profession string, deityHfID *int32) (*CommandResult, error) {
+	loc := protocol.CreateLocationDesignation{
+		X: x, Y: y, Z: z, LocationType: locationType, Profession: profession,
+	}
+	if deityHfID != nil {
+		loc.HasDeity = true
+		loc.DeityHfID = *deityHfID
+	}
 	cmd := &protocol.CommandMessage{
-		CommandID:   e.tracker.GenerateCommandID(),
-		CommandType: protocol.CommandTypeCreateLocation,
-		CreateLocation: protocol.CreateLocationDesignation{
-			X: x, Y: y, Z: z, LocationType: locationType, Profession: profession,
-		},
+		CommandID:      e.tracker.GenerateCommandID(),
+		CommandType:    protocol.CommandTypeCreateLocation,
+		CreateLocation: loc,
 	}
 	return e.SendCommand(cmd)
 }
@@ -463,6 +470,38 @@ func (e *CommandExecutor) SendStockpileCommand(x1, y1, z, x2, y2 int16, groupMas
 			X1: x1, Y1: y1, Z: z,
 			X2: x2, Y2: y2,
 			GroupMask: groupMask,
+		},
+	}
+	return e.SendCommand(cmd)
+}
+
+// SendSetStockpileContainers writes the container ceilings (max bins /
+// barrels / wheelbarrows) on an EXISTING stockpile — the one covering tile
+// (x,y,z), or, when hasStockpileNumber is true, the one whose
+// stockpile_number is stockpileNumber (in which case x/y/z are ignored).
+// Each has* gates its field independently: false means "recompute this
+// field's vanilla-mirroring default from the pile's current categories and
+// tile count", true pins the paired value verbatim (0 included). All three
+// false is the ordinary retrofit call — see
+// protocol.SetStockpileContainersDesignation for the full contract.
+func (e *CommandExecutor) SendSetStockpileContainers(x, y, z int16,
+	hasMaxBins bool, maxBins int16,
+	hasMaxBarrels bool, maxBarrels int16,
+	hasMaxWheelbarrows bool, maxWheelbarrows int16,
+	hasStockpileNumber bool, stockpileNumber int32) (*CommandResult, error) {
+	cmd := &protocol.CommandMessage{
+		CommandID:   e.tracker.GenerateCommandID(),
+		CommandType: protocol.CommandTypeSetStockpileContainers,
+		SetStockpileContainers: protocol.SetStockpileContainersDesignation{
+			X: x, Y: y, Z: z,
+			HasMaxBins:         hasMaxBins,
+			MaxBins:            maxBins,
+			HasMaxBarrels:      hasMaxBarrels,
+			MaxBarrels:         maxBarrels,
+			HasMaxWheelbarrows: hasMaxWheelbarrows,
+			MaxWheelbarrows:    maxWheelbarrows,
+			HasStockpileNumber: hasStockpileNumber,
+			StockpileNumber:    stockpileNumber,
 		},
 	}
 	return e.SendCommand(cmd)

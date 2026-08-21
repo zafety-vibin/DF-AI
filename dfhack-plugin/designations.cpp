@@ -577,12 +577,13 @@ extern bool placeArcheryTarget(int16_t x, int16_t y, int16_t z, uint8_t material
 extern bool placeRoomValueFurniture(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, std::string &error);
 extern bool placeWaterPowerBuilding(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, uint8_t orientation, std::string &error);
 extern bool placeTrap(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, std::string &error);
+extern bool placeFixture(int16_t x, int16_t y, int16_t z, uint8_t buildType, uint8_t materialClass, std::string &error);
 
 // Forward declarations of the generalized by-name build-type resolution
 // (implemented in buildings.cpp, next to the enums it scans). Primitive
 // int in/out params only -- no shared struct/header exists between .cpp
 // files in this plugin, and neither function needs designations.cpp to
-// include any building_type/workshop_type/furnace_type/trap_type header.
+// include any building_type/workshop_type/furnace_type/trap_type/construction_type header.
 // See buildings.cpp for full doc comments (KNOWN LIMITATION included).
 extern bool resolveBuildTypeByName(const std::string &name, int &outBuildingType, int &outSubtype, std::string &error);
 extern int resolveCuratedBuildTypeByte(int buildingType, int subtype, const std::string &name, std::string &error);
@@ -591,8 +592,9 @@ extern int resolveCuratedBuildTypeByte(int buildingType, int subtype, const std:
 // placers based on the BuildType byte's range:
 //   0x00       → BUILD_TYPE_BY_NAME: resolve BuildTypeName, then re-dispatch
 //                below using the curated byte it resolves to (if any)
-//   0x01-0x0F → constructions (wall, floor, stairs, ramp)
-//   0x10-0x2F → workshops (incl. MetalsmithsForge)
+//   0x01-0x0F → constructions (wall, fortification, floor, stairs, ramp,
+//               reinforced wall)
+//   0x10-0x2F → workshops (incl. MetalsmithsForge, Quern, Millstone)
 //   0x30-0x4F → furniture
 //   0x50-0x6F → doors / hatches
 //   0x70-0x7F → furnaces (Smelter, WoodFurnace)
@@ -605,7 +607,10 @@ extern int resolveCuratedBuildTypeByte(int buildingType, int subtype, const std:
 //               GearAssembly, AxleHorizontal, AxleVertical, WaterWheel,
 //               Windmill, Rollers)
 //   0xB0-0xBF → more df::trap_type subtypes beyond Lever (PressurePlate,
-//               StoneFallTrap, WeaponTrap, TrackStop)
+//               StoneFallTrap, WeaponTrap, TrackStop, CageTrap)
+//   0xC0-0xCF → specific-item fixtures (Weaponrack, Armorstand, AnimalTrap,
+//               Chain, Cage, BarsVertical, BarsFloor, GrateWall, GrateFloor,
+//               Weapon/retractable spike)
 bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &error)
 {
     // Parse: [4: cmdID] [1: cmdType] [2: X] [2: Y] [2: Z] [1: BuildType]
@@ -723,6 +728,9 @@ bool applyBuildDesignation(const std::vector<uint8_t> &payload, std::string &err
     }
     if (isBuildTypeTrap(buildType)) {
         return placeTrap(x, y, z, buildType, materialClass, error);
+    }
+    if (isBuildTypeFixture(buildType)) {
+        return placeFixture(x, y, z, buildType, materialClass, error);
     }
 
     char buf[64];

@@ -100,6 +100,9 @@
 #include "df/world_site.h"
 #include "df/abstract_building.h"
 #include "df/abstract_building_inn_tavernst.h"
+#include "df/abstract_building_templest.h"
+#include "df/religious_practice_type.h"
+#include "df/religious_practice_data.h"
 #include "df/rental_roomst.h"
 #include "df/reaction.h"
 #include "df/reaction_reagent.h"
@@ -2004,7 +2007,24 @@ static std::string handleListBuildings(const std::string &args, uint8_t &status)
                    << ",\"sp_categories\":" << jsonStr(stockpileCategoryList(sp))
                    << ",\"sp_tiles\":" << jsonInt(tiles)
                    << ",\"sp_occupied\":" << jsonInt(occupied)
-                   << ",\"sp_items\":" << jsonInt(items);
+                   << ",\"sp_items\":" << jsonInt(items)
+                   // Container ceilings + the live container roster. A pile
+                   // whose max_bins/max_barrels are 0 can never hold more
+                   // than one loose item per tile no matter how much floor it
+                   // has -- exactly the state every DF-AI-created stockpile
+                   // was silently in until placeStockpile started writing
+                   // sp->storage (buildings.cpp). Surfacing the ceiling next
+                   // to the fill turns that from something inferred by
+                   // cross-referencing `stocks category=bin` against tile math
+                   // into a one-glance read. container_item_id is DF's OWN
+                   // bookkeeping of containers assigned to this pile
+                   // (df.building.xml:978-983, original name b_id) -- free to
+                   // read, nothing computed here. Additive JSON, same
+                   // backward-compat shape as the sp_* fields above.
+                   << ",\"sp_max_bins\":" << jsonInt(sp->storage.max_bins)
+                   << ",\"sp_max_barrels\":" << jsonInt(sp->storage.max_barrels)
+                   << ",\"sp_max_wheelbarrows\":" << jsonInt(sp->storage.max_wheelbarrows)
+                   << ",\"sp_containers\":" << jsonInt((int)sp->storage.container_item_id.size());
             }
         }
 
@@ -2317,6 +2337,41 @@ static std::string handleListLocations(const std::string &args, uint8_t &status)
                 os << ",\"x1\":" << jsonInt(zone->x1) << ",\"y1\":" << jsonInt(zone->y1)
                    << ",\"x2\":" << jsonInt(zone->x2) << ",\"y2\":" << jsonInt(zone->y2)
                    << ",\"z\":" << jsonInt(zone->z);
+            }
+        }
+
+        // Dedication -- Temple only. create_location can WRITE a temple's
+        // deity_type/deity_data (locations.cpp applyCreateLocation) and its ACK
+        // truthfully calls that write UNVERIFIED, telling the caller to confirm
+        // in-game -- an instruction the playing model, which has no in-game
+        // eyes, cannot follow. Reading the two fields back here turns "trust
+        // the ACK" into a check the model can perform in one call. The fields
+        // are df::abstract_building_templest's religious_practice_type
+        // `deity_type` plus the religious_practice_data UNION `deity_data`
+        // (df.abstract_building.xml:235-246) -- the union member is chosen BY
+        // deity_type, so reading Deity when the type says RELIGION_ENID would
+        // report a historical_entity id as a historical figure. Additive JSON,
+        // same backward-compat shape as the sp_* fields above.
+        if (bld->getType() == df::abstract_building_type::TEMPLE) {
+            auto *temple = strict_virtual_cast<df::abstract_building_templest>(bld);
+            if (temple) {
+                os << ",\"deity_type\":"
+                   << jsonStr(ENUM_KEY_STR(religious_practice_type, temple->deity_type));
+                if (temple->deity_type == df::religious_practice_type::WORSHIP_HFID) {
+                    os << ",\"deity_hf_id\":" << jsonInt(temple->deity_data.Deity);
+                    if (df::historical_figure *deityHf =
+                            df::historical_figure::find(temple->deity_data.Deity)) {
+                        std::string deityName = Translation::translateName(&deityHf->name, true);
+                        if (!deityName.empty()) os << ",\"deity_name\":" << jsonStr(deityName);
+                    }
+                } else if (temple->deity_type == df::religious_practice_type::RELIGION_ENID) {
+                    os << ",\"deity_entity_id\":" << jsonInt(temple->deity_data.Religion);
+                    if (df::historical_entity *religion =
+                            df::historical_entity::find(temple->deity_data.Religion)) {
+                        std::string religionName = Translation::translateName(&religion->name, true);
+                        if (!religionName.empty()) os << ",\"deity_name\":" << jsonStr(religionName);
+                    }
+                }
             }
         }
 

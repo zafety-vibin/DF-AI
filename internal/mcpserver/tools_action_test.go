@@ -631,6 +631,99 @@ func TestBuildWireCoords(t *testing.T) {
 	}
 }
 
+// TestBuildWireCoordsWorkshopFootprintExceptions pins the three DIFFERENT
+// footprints DF forces inside the single workshop byte range — the reason
+// buildWireCoords consults a table instead of treating 0x10-0x2F as
+// uniformly 3x3 (Buildings::getCorrectSize's Workshop case, dfhack-build
+// library/modules/Buildings.cpp:653-686) — plus windmill, the one forced
+// multi-tile building that lives OUTSIDE those ranges entirely.
+func TestBuildWireCoordsWorkshopFootprintExceptions(t *testing.T) {
+	// Quern and Millstone are forced 1x1, so center == corner: shifting
+	// them by -1 like an ordinary workshop would place them one tile NW of
+	// where the caller asked.
+	for _, bt := range []uint8{protocol.BuildTypeWorkshopQuern, protocol.BuildTypeWorkshopMillstone} {
+		if x, y := buildWireCoords(bt, 28, 52); x != 28 || y != 52 {
+			t.Fatalf("1x1 workshop 0x%02X must pass through unshifted, got (%d,%d)", bt, x, y)
+		}
+	}
+	// Siege and Kennels are forced 5x5, not 3x3 — same offset as the depot.
+	for _, bt := range []uint8{protocol.BuildTypeWorkshopSiege, protocol.BuildTypeWorkshopKennels} {
+		if x, y := buildWireCoords(bt, 28, 52); x != 26 || y != 50 {
+			t.Fatalf("5x5 workshop 0x%02X center (28,52) should wire as corner (26,50), got (%d,%d)", bt, x, y)
+		}
+	}
+	// Windmill (0xA5) sits in the water/power byte range but DF forces it
+	// 3x3 unconditionally — `case Windmill: case Wagon:` in getCorrectSize
+	// (Buildings.cpp:634-638) has no subtype or direction branch. Treating
+	// the range as uniformly 1x1 placed every windmill one tile NW of the
+	// requested center.
+	if x, y := buildWireCoords(protocol.BuildTypeWindmill, 28, 52); x != 27 || y != 51 {
+		t.Fatalf("windmill center (28,52) should wire as corner (27,51), got (%d,%d)", x, y)
+	}
+	// Its water/power neighbors stay unshifted: their footprint is an
+	// orientation-dependent line, so their coordinate is the anchor corner.
+	for _, bt := range []uint8{
+		protocol.BuildTypeScrewPump, protocol.BuildTypeWaterWheel,
+		protocol.BuildTypeAxleHorizontal, protocol.BuildTypeRollers,
+	} {
+		if x, y := buildWireCoords(bt, 28, 52); x != 28 || y != 52 {
+			t.Fatalf("orientation-dependent water/power type 0x%02X must pass through unshifted, got (%d,%d)", bt, x, y)
+		}
+	}
+	// Every fixture (0xC0-0xCF) is forced 1x1 by DF.
+	for _, bt := range []uint8{
+		protocol.BuildTypeWeaponRack, protocol.BuildTypeArmorStand, protocol.BuildTypeAnimalTrap,
+		protocol.BuildTypeChain, protocol.BuildTypeCage, protocol.BuildTypeBarsVertical,
+		protocol.BuildTypeBarsFloor, protocol.BuildTypeGrateWall, protocol.BuildTypeGrateFloor,
+		protocol.BuildTypeWeaponSpike,
+	} {
+		if x, y := buildWireCoords(bt, 28, 52); x != 28 || y != 52 {
+			t.Fatalf("fixture 0x%02X must pass through unshifted, got (%d,%d)", bt, x, y)
+		}
+	}
+}
+
+// TestBuildTypesCoverNewPlacements pins that every building type this wave
+// taught the plugin to place is reachable by a curated name, and that each
+// name maps to the wire byte the plugin actually dispatches on. A typo here
+// would silently route a build to a different building.
+func TestBuildTypesCoverNewPlacements(t *testing.T) {
+	for name, want := range map[string]uint8{
+		"fortification":   protocol.BuildTypeFortification,
+		"reinforced_wall": protocol.BuildTypeReinforcedWall,
+		"quern":           protocol.BuildTypeWorkshopQuern,
+		"millstone":       protocol.BuildTypeWorkshopMillstone,
+		"weapon_rack":     protocol.BuildTypeWeaponRack,
+		"armor_stand":     protocol.BuildTypeArmorStand,
+		"animal_trap":     protocol.BuildTypeAnimalTrap,
+		"chain":           protocol.BuildTypeChain,
+		"cage":            protocol.BuildTypeCage,
+		"bars_vertical":   protocol.BuildTypeBarsVertical,
+		"bars_floor":      protocol.BuildTypeBarsFloor,
+		"grate_wall":      protocol.BuildTypeGrateWall,
+		"grate_floor":     protocol.BuildTypeGrateFloor,
+		"weapon_spike":    protocol.BuildTypeWeaponSpike,
+	} {
+		got, ok := buildTypes[name]
+		if !ok {
+			t.Fatalf("build vocabulary is missing %q", name)
+		}
+		if got != want {
+			t.Fatalf("build type %q maps to 0x%02X, want 0x%02X", name, got, want)
+		}
+	}
+	// cage and cage_trap are two different DF buildings that a model will
+	// reach for with nearly the same word — a collision would arm a floor
+	// trap when the caller wanted a holding pen, or vice versa.
+	if buildTypes["cage"] == buildTypes["cage_trap"] {
+		t.Fatal("cage (a built holding pen) and cage_trap (an armed floor trap) must not share a wire byte")
+	}
+	// Same hazard for the retractable spike vs the floor weapon trap.
+	if buildTypes["weapon_spike"] == buildTypes["weapon_trap"] {
+		t.Fatal("weapon_spike (retractable spike) and weapon_trap (floor trap) must not share a wire byte")
+	}
+}
+
 func TestBuildFootprintCorner(t *testing.T) {
 	// Odd footprints match the fixed-size buildWireCoords offsets exactly
 	// (3/2==1, 5/2==2 -- same center=size/2 formula DF itself uses).
@@ -647,5 +740,48 @@ func TestBuildFootprintCorner(t *testing.T) {
 	// Even footprint (bridges are not forced to odd sizes): 4/2==2.
 	if x, y := buildFootprintCorner(28, 52, 4, 2); x != 26 || y != 51 {
 		t.Fatalf("4x2 center (28,52) should wire as corner (26,51), got (%d,%d)", x, y)
+	}
+}
+
+// TestContainerLimitArgRange pins the pre-narrowing range check. Without it,
+// bins:100000 wrapped to -31072 on the wire and the plugin answered "container
+// limits must be >= 0" — an ACK contradicting the positive number the caller
+// sent. The message must quote the value as passed, not the wrapped one.
+func TestContainerLimitArgRange(t *testing.T) {
+	over := 100000
+	has, val, errMsg := containerLimitArg("bins", &over)
+	if errMsg == "" {
+		t.Fatalf("bins=100000 must be rejected locally, got has=%v val=%d", has, val)
+	}
+	if !strings.Contains(errMsg, "100000") {
+		t.Fatalf("the rejection must quote the value the caller passed, got %q", errMsg)
+	}
+	if strings.Contains(errMsg, "-31072") {
+		t.Fatalf("the rejection must not report the wrapped value, got %q", errMsg)
+	}
+	if has {
+		t.Fatalf("a rejected value must not be sent, got has=%v", has)
+	}
+
+	neg := -1
+	if _, _, errMsg := containerLimitArg("barrels", &neg); errMsg == "" {
+		t.Fatal("barrels=-1 must be rejected locally (quickfort's -1 sentinel is never a stored value)")
+	}
+
+	// The boundary and the explicit zero both survive: 0 is "assign no
+	// container of this type", not "omitted".
+	for _, tc := range []struct{ in int }{{0}, {32767}} {
+		v := tc.in
+		has, val, errMsg := containerLimitArg("wheelbarrows", &v)
+		if errMsg != "" {
+			t.Fatalf("%d must be accepted, got %q", tc.in, errMsg)
+		}
+		if !has || int(val) != tc.in {
+			t.Fatalf("%d round-tripped as has=%v val=%d", tc.in, has, val)
+		}
+	}
+
+	if has, val, errMsg := containerLimitArg("bins", nil); has || val != 0 || errMsg != "" {
+		t.Fatalf("omitted must stay omitted, got has=%v val=%d err=%q", has, val, errMsg)
 	}
 }

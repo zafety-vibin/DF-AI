@@ -235,8 +235,21 @@ func (p *Populator) OnEntityUpdate(msg *protocol.EntityUpdateMessage) {
 	}
 	p.wm.mu.Unlock()
 
-	if worldSwitched && p.wm.Observed.Alerts != nil {
-		p.wm.Observed.Alerts.Reset()
+	if p.wm.Observed.Alerts != nil {
+		if worldSwitched {
+			p.wm.Observed.Alerts.Reset()
+		} else if msg.World != nil {
+			// First identity this process has seen (or a re-confirmation of
+			// the same one): settle any dismissal seed AlertStore.Load
+			// restored at FULL_STATE, which had no world identity to check
+			// against. A seed from a different fort is reverted here.
+			newWorld := WorldSnapshot{SaveDir: msg.World.SaveDir, ID1: msg.World.ID1, ID2: msg.World.ID2, Known: true}
+			if reverted := p.wm.Observed.Alerts.ReconcileWorld(newWorld); reverted > 0 && p.logger != nil {
+				p.logger.Info("worldmodel: persisted alert dismissals belonged to a different fort -- reverted",
+					logging.Field{Key: "reverted", Value: reverted},
+					logging.Field{Key: "save_dir", Value: msg.World.SaveDir})
+			}
+		}
 	}
 
 	p.wm.markUpdated()

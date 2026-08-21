@@ -461,6 +461,16 @@ bool applyWorkOrder(uint8_t orderType, uint16_t quantity, const std::string &job
 // doesn't add. MakeCage deliberately excluded (justice-adjacent, out of
 // scope this pass) despite appearing in the same Carpenters list.
 //
+// 2026-08-21 CORRECTION to the MakeCage sentence directly above: that
+// exclusion is REVERSED -- MakeCage now has a case label in the Carpenters
+// group below. The "justice-adjacent" reasoning conflated the crafted CAGE
+// ITEM with df::building_type::Cage, a different DF system; the item is
+// ordinary Carpenters output sharing the same WOOD/WOOD defaults as the
+// MakeBarrel/MakeBucket/MakeAnimalTrap entries beside it (workshops.lua:215,
+// 233-237), so it needed no new job_item shape -- only the whitelist line.
+// Added for queue_job parity with `build type=cage`, which places an
+// already-crafted cage. Full source citation sits at the case label itself.
+//
 // 2026-07-18 pass: added MakeChain, MetalsmithsForge-only — needed for the
 // Well building's chain reagent (buildings.cpp placeWell). Confirmed
 // metal-only, NOT the wood/Carpenters shape MakePipeSection got above:
@@ -540,6 +550,18 @@ static bool jobTypeAllowedAtWorkshop(df::job_type jobType, df::workshop_type wsT
         case df::job_type::MakeBarrel:
         case df::job_type::MakeBucket:
         case df::job_type::MakeAnimalTrap:
+        // MakeCage (original-name CONSTRUCT_CAGE, df.job.xml:743) --
+        // Carpenters-only, confirmed against workshops.lua's jobs_workshop
+        // [Carpenters] block (dfhack-build library/lua/dfhack/workshops.lua:
+        // 233-237, "make cage"), which sits in the same table and inherits
+        // the same WOOD/WOOD `defaults` (workshops.lua:215) as the
+        // MakeBarrel/MakeBucket/MakeAnimalTrap entries directly above it --
+        // so it needs no new job_item shape in applyQueueJob, only this
+        // whitelist line. Added for queue_job parity with `build
+        // type=cage`, which places an already-crafted cage as a holding
+        // pen; without it the ONLY way to craft one was `order`'s
+        // unrestricted by-name path.
+        case df::job_type::MakeCage:
         case df::job_type::ConstructBed:
         case df::job_type::ConstructBin:
         case df::job_type::ConstructSplint:

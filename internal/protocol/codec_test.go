@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 )
 
@@ -263,6 +264,68 @@ func TestEncodeDecodeCreateLocationCommand_NoProfession(t *testing.T) {
 	}
 	if decoded.CreateLocation.Profession != "" {
 		t.Fatalf("expected empty profession, got %q", decoded.CreateLocation.Profession)
+	}
+}
+
+// TestEncodeDecodeCreateLocationCommand_TempleDeity covers the temple
+// dedication field. HasDeity is a presence FLAG, not a -1 sentinel, because
+// historical-figure id 0 is a valid deity id — so id 0 with HasDeity=true
+// must survive the round trip as a real dedication, distinct from the
+// zero-value "no dedication" struct.
+func TestEncodeDecodeCreateLocationCommand_TempleDeity(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		loc  CreateLocationDesignation
+	}{
+		{"named deity", CreateLocationDesignation{X: 12, Y: 34, Z: 128, LocationType: LocationTypeTemple, HasDeity: true, DeityHfID: 5}},
+		{"deity id zero", CreateLocationDesignation{X: 1, Y: 2, Z: 3, LocationType: LocationTypeTemple, HasDeity: true, DeityHfID: 0}},
+		{"no dedication", CreateLocationDesignation{X: 1, Y: 2, Z: 3, LocationType: LocationTypeTemple}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := &CommandMessage{CommandID: 3, CommandType: CommandTypeCreateLocation, CreateLocation: tc.loc}
+			encoded, err := EncodeCommand(msg)
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			decoded, err := DecodeCommand(encoded)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if decoded.CreateLocation != tc.loc {
+				t.Fatalf("round-trip mismatch: got %+v, want %+v", decoded.CreateLocation, tc.loc)
+			}
+		})
+	}
+}
+
+// TestDecodeCreateLocationCommand_ShortPayloadHasNoDeity locks in the
+// backward-compatible decode: a payload written before the deity field
+// existed ends after the profession bytes and must decode as "no
+// dedication" rather than erroring.
+func TestDecodeCreateLocationCommand_ShortPayloadHasNoDeity(t *testing.T) {
+	full, err := EncodeCommand(&CommandMessage{
+		CommandID:      4,
+		CommandType:    CommandTypeCreateLocation,
+		CreateLocation: CreateLocationDesignation{X: 7, Y: 8, Z: 9, LocationType: LocationTypeTemple, HasDeity: true, DeityHfID: 42},
+	})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	// Drop the trailing [1:HasDeity][4:DeityHfID] the old wire never carried,
+	// fixing up the frame's own length header the way a real short frame
+	// would have had it.
+	short := append([]byte(nil), full[:len(full)-5]...)
+	binary.BigEndian.PutUint32(short[0:4], uint32(len(short)))
+
+	decoded, err := DecodeCommand(short)
+	if err != nil {
+		t.Fatalf("decode short payload: %v", err)
+	}
+	if decoded.CreateLocation.HasDeity || decoded.CreateLocation.DeityHfID != 0 {
+		t.Fatalf("expected no dedication from a pre-field payload, got %+v", decoded.CreateLocation)
+	}
+	if decoded.CreateLocation.LocationType != LocationTypeTemple || decoded.CreateLocation.X != 7 {
+		t.Fatalf("expected the preceding fields to decode unchanged, got %+v", decoded.CreateLocation)
 	}
 }
 

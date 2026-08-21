@@ -852,7 +852,7 @@ func TestIsBuildTypeWaterPower(t *testing.T) {
 // BuildTypeLever (a trap_type subtype that deliberately lives OUTSIDE this
 // range, in the doors/hatches family instead).
 func TestIsBuildTypeTrap(t *testing.T) {
-	for _, bt := range []uint8{BuildTypePressurePlate, BuildTypeStoneFallTrap, BuildTypeWeaponTrap, BuildTypeTrackStop} {
+	for _, bt := range []uint8{BuildTypePressurePlate, BuildTypeStoneFallTrap, BuildTypeWeaponTrap, BuildTypeTrackStop, BuildTypeCageTrap} {
 		if !IsBuildTypeTrap(bt) {
 			t.Fatalf("IsBuildTypeTrap(0x%02X) = false, want true", bt)
 		}
@@ -864,10 +864,10 @@ func TestIsBuildTypeTrap(t *testing.T) {
 	}
 }
 
-// TestBuildTrapTypesRoundTrip covers the four new df::trap_type BuildType
-// values end to end (encode -> decode), mirroring TestBuildMaterialRoundTrip.
+// TestBuildTrapTypesRoundTrip covers the five df::trap_type BuildType values
+// end to end (encode -> decode), mirroring TestBuildMaterialRoundTrip.
 // TrackStop additionally accepts a Material constraint (see
-// dfhack-plugin/buildings.cpp placeTrap); the other three always send
+// dfhack-plugin/buildings.cpp placeTrap); the other four always send
 // MaterialClassAny since the plugin rejects any other value for them.
 func TestBuildTrapTypesRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
@@ -879,6 +879,7 @@ func TestBuildTrapTypesRoundTrip(t *testing.T) {
 		{BuildTypeWeaponTrap, MaterialClassAny},
 		{BuildTypeTrackStop, MaterialClassAny},
 		{BuildTypeTrackStop, MaterialClassStone},
+		{BuildTypeCageTrap, MaterialClassAny},
 	} {
 		orig := &CommandMessage{
 			CommandID:   21,
@@ -900,6 +901,116 @@ func TestBuildTrapTypesRoundTrip(t *testing.T) {
 		if got.Build != orig.Build {
 			t.Fatalf("buildType 0x%02X round-trip mismatch: %+v", tc.buildType, got.Build)
 		}
+	}
+}
+
+// TestIsBuildTypeFixture checks the specific-item fixture range helper's
+// boundaries against every curated BuildType constant in that family plus
+// its immediate lower neighbor (the trap family just below it). The upper
+// bound matters too: 0xD0 is unallocated, and a helper that swallowed it
+// would route a future range into placeFixture.
+func TestIsBuildTypeFixture(t *testing.T) {
+	for _, bt := range []uint8{
+		BuildTypeWeaponRack, BuildTypeArmorStand, BuildTypeAnimalTrap, BuildTypeChain,
+		BuildTypeCage, BuildTypeBarsVertical, BuildTypeBarsFloor, BuildTypeGrateWall,
+		BuildTypeGrateFloor, BuildTypeWeaponSpike,
+	} {
+		if !IsBuildTypeFixture(bt) {
+			t.Fatalf("IsBuildTypeFixture(0x%02X) = false, want true", bt)
+		}
+	}
+	for _, bt := range []uint8{BuildTypeCageTrap, BuildTypeTrackStop, 0xD0, 0xFF} {
+		if IsBuildTypeFixture(bt) {
+			t.Fatalf("IsBuildTypeFixture(0x%02X) = true, want false", bt)
+		}
+	}
+	// The fixture and trap ranges must stay disjoint: BuildTypeCage (a
+	// built holding pen) and BuildTypeCageTrap (an armed floor trap) are
+	// different DF buildings with near-identical names.
+	if IsBuildTypeTrap(BuildTypeCage) || IsBuildTypeFixture(BuildTypeCageTrap) {
+		t.Fatal("cage (fixture) and cage_trap (trap) must not fall in each other's dispatch range")
+	}
+}
+
+// TestBuildNewTypesRoundTrip covers every BuildType this wave added, end to
+// end (encode -> decode), mirroring TestBuildTrapTypesRoundTrip. It doubles
+// as the Validate() gate check: a byte range the encoder accepts but
+// Validate rejects would fail here before it ever reached the plugin.
+func TestBuildNewTypesRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		buildType uint8
+		material  uint8
+	}{
+		// Constructions still take a material class.
+		{BuildTypeFortification, MaterialClassAny},
+		{BuildTypeFortification, MaterialClassBlocks},
+		{BuildTypeReinforcedWall, MaterialClassStone},
+		// Quern/Millstone take specific items only; the plugin rejects any
+		// non-ANY material class for them.
+		{BuildTypeWorkshopQuern, MaterialClassAny},
+		{BuildTypeWorkshopMillstone, MaterialClassAny},
+		// Fixtures: one existing item each, material never applies.
+		{BuildTypeWeaponRack, MaterialClassAny},
+		{BuildTypeArmorStand, MaterialClassAny},
+		{BuildTypeAnimalTrap, MaterialClassAny},
+		{BuildTypeChain, MaterialClassAny},
+		{BuildTypeCage, MaterialClassAny},
+		{BuildTypeBarsVertical, MaterialClassAny},
+		{BuildTypeBarsFloor, MaterialClassAny},
+		{BuildTypeGrateWall, MaterialClassAny},
+		{BuildTypeGrateFloor, MaterialClassAny},
+		{BuildTypeWeaponSpike, MaterialClassAny},
+	} {
+		orig := &CommandMessage{
+			CommandID:   22,
+			CommandType: CommandTypeBuild,
+			Build:       BuildDesignation{X: 5, Y: 6, Z: 7, BuildType: tc.buildType, Material: tc.material, Quality: QualityTierAny, Orientation: BuildOrientAny},
+		}
+		if err := orig.Validate(); err != nil {
+			t.Fatalf("buildType 0x%02X must validate: %v", tc.buildType, err)
+		}
+		data, err := SerializeMessage(orig)
+		if err != nil {
+			t.Fatalf("buildType 0x%02X encode: %v", tc.buildType, err)
+		}
+		decoded, err := DeserializeMessage(data)
+		if err != nil {
+			t.Fatalf("buildType 0x%02X decode: %v", tc.buildType, err)
+		}
+		got, ok := decoded.(*CommandMessage)
+		if !ok {
+			t.Fatalf("decoded wrong type %T", decoded)
+		}
+		if got.Build != orig.Build {
+			t.Fatalf("buildType 0x%02X round-trip mismatch: %+v", tc.buildType, got.Build)
+		}
+	}
+}
+
+// TestBuildTypeBytesAreUnique guards the whole curated BuildType table
+// against a copy-paste collision: two names sharing a byte would silently
+// place the wrong building, and the ACK would truthfully describe the
+// building DF actually got, not the one asked for.
+func TestBuildTypeBytesAreUnique(t *testing.T) {
+	all := map[uint8]string{}
+	for name, bt := range map[string]uint8{
+		"Wall": BuildTypeWall, "Floor": BuildTypeFloor, "UpStair": BuildTypeUpStair,
+		"DownStair": BuildTypeDownStair, "UpDownStair": BuildTypeUpDownStair, "Ramp": BuildTypeRamp,
+		"Fortification": BuildTypeFortification, "ReinforcedWall": BuildTypeReinforcedWall,
+		"WorkshopAshery": BuildTypeWorkshopAshery, "WorkshopDyers": BuildTypeWorkshopDyers,
+		"WorkshopQuern": BuildTypeWorkshopQuern, "WorkshopMillstone": BuildTypeWorkshopMillstone,
+		"CageTrap": BuildTypeCageTrap, "TrackStop": BuildTypeTrackStop,
+		"WeaponTrap": BuildTypeWeaponTrap,
+		"WeaponRack": BuildTypeWeaponRack, "ArmorStand": BuildTypeArmorStand,
+		"AnimalTrap": BuildTypeAnimalTrap, "Chain": BuildTypeChain, "Cage": BuildTypeCage,
+		"BarsVertical": BuildTypeBarsVertical, "BarsFloor": BuildTypeBarsFloor,
+		"GrateWall": BuildTypeGrateWall, "GrateFloor": BuildTypeGrateFloor,
+		"WeaponSpike": BuildTypeWeaponSpike,
+	} {
+		if prev, dup := all[bt]; dup {
+			t.Fatalf("BuildType 0x%02X is claimed by both %s and %s", bt, prev, name)
+		}
+		all[bt] = name
 	}
 }
 
@@ -1918,5 +2029,148 @@ func TestSetDepotTradeFlagsBothFalseRoundTrip(t *testing.T) {
 	}
 	if got.SetDepotTradeFlags.TraderRequested || got.SetDepotTradeFlags.AnyoneCanTrade {
 		t.Fatalf("expected both flags false, got: %+v", got.SetDepotTradeFlags)
+	}
+}
+
+// roundTripSetStockpileContainers encodes, decodes, and returns the decoded
+// designation — the three cases below differ only in which Has* gates are on.
+func roundTripSetStockpileContainers(t *testing.T, id uint32, d SetStockpileContainersDesignation) SetStockpileContainersDesignation {
+	t.Helper()
+	orig := &CommandMessage{
+		CommandID:              id,
+		CommandType:            CommandTypeSetStockpileContainers,
+		SetStockpileContainers: d,
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DeserializeMessage(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, ok := decoded.(*CommandMessage)
+	if !ok {
+		t.Fatalf("decoded wrong type %T", decoded)
+	}
+	if got.CommandID != id || got.CommandType != CommandTypeSetStockpileContainers {
+		t.Fatalf("header mismatch: id=%d type=0x%02X", got.CommandID, got.CommandType)
+	}
+	return got.SetStockpileContainers
+}
+
+func TestSetStockpileContainersAllAutoRoundTrip(t *testing.T) {
+	// The ordinary retrofit call: point at a pile, send no numbers at all.
+	// Unlike EditOrder, "no Has* set" is LEGAL here — it means "recompute
+	// every ceiling from this pile's current categories" — so this must both
+	// pass validation and survive the round trip.
+	want := SetStockpileContainersDesignation{X: 88, Y: 90, Z: 128}
+	got := roundTripSetStockpileContainers(t, 60, want)
+	if got != want {
+		t.Fatalf("round-trip mismatch: got %+v want %+v", got, want)
+	}
+	if got.HasMaxBins || got.HasMaxBarrels || got.HasMaxWheelbarrows {
+		t.Fatalf("expected every Has* false (auto), got %+v", got)
+	}
+}
+
+func TestSetStockpileContainersAllExplicitRoundTrip(t *testing.T) {
+	// Explicit 0 is a real value ("assign no container of this type") and
+	// must stay distinguishable from the auto case above — that distinction
+	// is the whole reason the wire carries a presence byte per field.
+	want := SetStockpileContainersDesignation{
+		X: 12, Y: 34, Z: 56,
+		HasMaxBins: true, MaxBins: 15,
+		HasMaxBarrels: true, MaxBarrels: 0,
+		HasMaxWheelbarrows: true, MaxWheelbarrows: 3,
+	}
+	got := roundTripSetStockpileContainers(t, 61, want)
+	if got != want {
+		t.Fatalf("round-trip mismatch: got %+v want %+v", got, want)
+	}
+	if !got.HasMaxBarrels || got.MaxBarrels != 0 {
+		t.Fatalf("explicit zero collapsed into auto: %+v", got)
+	}
+}
+
+func TestSetStockpileContainersMixedRoundTrip(t *testing.T) {
+	want := SetStockpileContainersDesignation{
+		X: -1, Y: 200, Z: 7,
+		HasMaxBins: true, MaxBins: 40,
+		HasMaxWheelbarrows: true, MaxWheelbarrows: 1,
+	}
+	got := roundTripSetStockpileContainers(t, 62, want)
+	if got != want {
+		t.Fatalf("round-trip mismatch: got %+v want %+v", got, want)
+	}
+	if got.HasMaxBarrels || got.MaxBarrels != 0 {
+		t.Fatalf("barrels should have stayed auto: %+v", got)
+	}
+}
+
+// TestSetStockpileContainersWireLayout pins the exact byte layout documented
+// in dfhack-plugin/protocol.h COMMAND_TYPE_SET_STOCKPILE_CONTAINERS, which
+// parses these offsets by hand. The two sides must stay byte-for-byte in
+// sync; a silent reorder here would be read as garbage coordinates in-game.
+func TestSetStockpileContainersWireLayout(t *testing.T) {
+	orig := &CommandMessage{
+		CommandID:   0x01020304,
+		CommandType: CommandTypeSetStockpileContainers,
+		SetStockpileContainers: SetStockpileContainersDesignation{
+			X: 0x1112, Y: 0x1314, Z: 0x1516,
+			HasMaxBins: true, MaxBins: 0x2122,
+			HasMaxBarrels: false, MaxBarrels: 0x3132,
+			HasMaxWheelbarrows: true, MaxWheelbarrows: 0x4142,
+			HasStockpileNumber: true, StockpileNumber: 0x51525354,
+		},
+	}
+	data, err := SerializeMessage(orig)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	// 6-byte frame header (4 length + 1 version + 1 message type) then the
+	// 25-byte command payload the plugin indexes from 0.
+	const frameHeader = 6
+	payload := data[frameHeader:]
+	if len(payload) != 25 {
+		t.Fatalf("payload is %d bytes, protocol.h documents a fixed 25", len(payload))
+	}
+	want := []byte{
+		0x01, 0x02, 0x03, 0x04, // CommandID
+		CommandTypeSetStockpileContainers,
+		0x11, 0x12, // X
+		0x13, 0x14, // Y
+		0x15, 0x16, // Z
+		0x01, 0x21, 0x22, // HasMaxBins, MaxBins
+		0x00, 0x31, 0x32, // HasMaxBarrels, MaxBarrels
+		0x01, 0x41, 0x42, // HasMaxWheelbarrows, MaxWheelbarrows
+		0x01, 0x51, 0x52, 0x53, 0x54, // HasStockpileNumber, StockpileNumber
+	}
+	if !bytes.Equal(payload, want) {
+		t.Fatalf("wire layout drift:\n got %v\nwant %v", payload, want)
+	}
+}
+
+// TestSetStockpileContainersByNumberRoundTrip covers the addressing escape
+// hatch for stockpiles that share an identical rectangle, where no tile can
+// ever name one of them alone. Explicit 0 must survive here for the same
+// reason it must for the limits: #0 is a value, "not addressing by number" is
+// not.
+func TestSetStockpileContainersByNumberRoundTrip(t *testing.T) {
+	want := SetStockpileContainersDesignation{
+		HasStockpileNumber: true, StockpileNumber: 0,
+	}
+	got := roundTripSetStockpileContainers(t, 63, want)
+	if got != want {
+		t.Fatalf("round-trip mismatch: got %+v want %+v", got, want)
+	}
+	if !got.HasStockpileNumber || got.StockpileNumber != 0 {
+		t.Fatalf("stockpile #0 collapsed into tile addressing: %+v", got)
+	}
+
+	byTile := SetStockpileContainersDesignation{X: 88, Y: 90, Z: 128}
+	gotTile := roundTripSetStockpileContainers(t, 64, byTile)
+	if gotTile.HasStockpileNumber {
+		t.Fatalf("tile addressing grew a stockpile number: %+v", gotTile)
 	}
 }

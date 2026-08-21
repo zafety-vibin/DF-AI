@@ -40,6 +40,57 @@ type locationListEntry struct {
 	Y2      int            `json:"y2"`
 	Z       int            `json:"z"`
 	Lodging []lodgingEntry `json:"lodging"`
+
+	// Temple only (queries.cpp handleListLocations): the dedication
+	// create_location can write. Without these the write was one-way — the
+	// plugin's own ACK calls a deity dedication UNVERIFIED and says to confirm
+	// it in-game, which the playing model cannot do.
+	//
+	// DeityType is the religious_practice_type enum key ("NONE" /
+	// "WORSHIP_HFID" / "RELIGION_ENID"); empty means a plugin build that
+	// predates this field, which is NOT the same as "dedicated to no one" —
+	// renderLocations keeps those two apart rather than reporting an absent
+	// field as a measured NONE. DeityHfID/DeityEntityID are pointers because 0
+	// is a valid id, the same nil-as-presence convention the stockpile
+	// container ceilings use.
+	DeityType     string `json:"deity_type,omitempty"`
+	DeityHfID     *int   `json:"deity_hf_id,omitempty"`
+	DeityEntityID *int   `json:"deity_entity_id,omitempty"`
+	DeityName     string `json:"deity_name,omitempty"`
+}
+
+// templeDedication renders a temple's dedication clause, or "" for anything
+// that isn't a temple. Degradation is layered exactly like stockpileLine's:
+// no field at all from an older plugin says so instead of inventing "no
+// dedication", and an id with no resolvable name still reports the id.
+func templeDedication(loc locationListEntry) string {
+	if loc.Type != "TEMPLE" {
+		return ""
+	}
+	switch loc.DeityType {
+	case "":
+		return " — dedication not reported by this plugin build"
+	case "NONE":
+		return " — dedicated to no particular deity"
+	case "WORSHIP_HFID":
+		if loc.DeityHfID == nil {
+			return " — dedicated to a deity (hf id not reported)"
+		}
+		if loc.DeityName != "" {
+			return fmt.Sprintf(" — dedicated to %s (hf %d)", loc.DeityName, *loc.DeityHfID)
+		}
+		return fmt.Sprintf(" — dedicated to historical figure %d (name unresolved)", *loc.DeityHfID)
+	case "RELIGION_ENID":
+		if loc.DeityEntityID == nil {
+			return " — dedicated to a religion (entity id not reported)"
+		}
+		if loc.DeityName != "" {
+			return fmt.Sprintf(" — dedicated to the religion %s (entity %d)", loc.DeityName, *loc.DeityEntityID)
+		}
+		return fmt.Sprintf(" — dedicated to religion entity %d (name unresolved)", *loc.DeityEntityID)
+	default:
+		return fmt.Sprintf(" — deity_type=%s", loc.DeityType)
+	}
 }
 
 func renderLocations(raw []byte) string {
@@ -61,6 +112,7 @@ func renderLocations(raw []byte) string {
 			name = loc.Type
 		}
 		fmt.Fprintf(&sb, "- %s at (%d,%d)-(%d,%d) z=%d", name, loc.X1, loc.Y1, loc.X2, loc.Y2, loc.Z)
+		sb.WriteString(templeDedication(loc))
 		if len(loc.Lodging) > 0 {
 			fmt.Fprintf(&sb, " — %d lodging room(s)", len(loc.Lodging))
 		}
@@ -79,6 +131,7 @@ func registerLocationTools(srv *mcp.Server, b *Bridge) {
 		Z          int    `json:"z"`
 		Type       string `json:"type" jsonschema:"tavern|temple|library|guildhall|hospital"`
 		Profession string `json:"profession,omitempty" jsonschema:"required for guildhall only — the profession this guild serves, e.g. CARPENTER, MASON"`
+		DeityHfID  *int   `json:"deity_hf_id,omitempty" jsonschema:"temple only — a historical figure id from fort_story mode=social kind=worship (the b_id of a relation=deity edge); omit for a temple dedicated to no one in particular"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "create_location",
@@ -91,14 +144,19 @@ func registerLocationTools(srv *mcp.Server, b *Bridge) {
 		if !ok {
 			return withDash(b, ctx, fmt.Sprintf("unknown location type %q", in.Type)), nil, nil
 		}
-		res, err := b.Exec.SendCreateLocation(int16(in.X), int16(in.Y), int16(in.Z), lt, in.Profession)
+		var deity *int32
+		if in.DeityHfID != nil {
+			v := int32(*in.DeityHfID)
+			deity = &v
+		}
+		res, err := b.Exec.SendCreateLocation(int16(in.X), int16(in.Y), int16(in.Z), lt, in.Profession, deity)
 		what := fmt.Sprintf("create_location %s at (%d,%d,%d)", in.Type, in.X, in.Y, in.Z)
 		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_locations",
-		Description: "List every Tavern/Temple/Library/Guildhall/Hospital Location, with the founding zone's extents and (for taverns) the lodging roster.",
+		Description: "List every Tavern/Temple/Library/Guildhall/Hospital Location, with the founding zone's extents, (for taverns) the lodging roster, and (for temples) the deity dedication.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 		raw, err := b.Query(ctx, "list_locations", "{}")
 		if err != nil {

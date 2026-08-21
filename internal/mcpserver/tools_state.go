@@ -69,6 +69,21 @@ type buildingListEntry struct {
 	SPTiles      *int   `json:"sp_tiles,omitempty"`
 	SPOccupied   *int   `json:"sp_occupied,omitempty"`
 	SPItems      *int   `json:"sp_items,omitempty"`
+
+	// Container ceilings (df::building_stockpilest::storage's max_bins/
+	// max_barrels/max_wheelbarrows) and the live container roster size. A
+	// ceiling of 0 means DF's hauling AI will never assign a container of
+	// that type, capping the pile at one loose item per tile — the state
+	// every DF-AI-created stockpile was silently in before the plugin
+	// started writing sp->storage at creation. Pointers for the same reason
+	// as the group above: a plugin build predating these fields omits them,
+	// and rendering that absence as "max bins=0" would invent a measurement
+	// indistinguishable from the actual bug. SPMaxBins != nil is the
+	// presence sentinel for this group.
+	SPMaxBins         *int `json:"sp_max_bins,omitempty"`
+	SPMaxBarrels      *int `json:"sp_max_barrels,omitempty"`
+	SPMaxWheelbarrows *int `json:"sp_max_wheelbarrows,omitempty"`
+	SPContainers      *int `json:"sp_containers,omitempty"`
 }
 
 // hasExtents reports whether the entry carries a real footprint rectangle.
@@ -124,7 +139,29 @@ func stockpileLine(bl buildingListEntry) string {
 	if bl.SPItems != nil {
 		fmt.Fprintf(&sb, ", %d items", *bl.SPItems)
 	}
+	// Container ceilings — gated on SPMaxBins the same way the fill clause is
+	// gated on SPTiles. An older plugin omits the whole group; saying nothing
+	// is correct, printing "max bins=0" would be an invented measurement that
+	// reads exactly like the real zero-ceiling bug.
+	if bl.SPMaxBins != nil {
+		containers := 0
+		if bl.SPContainers != nil {
+			containers = *bl.SPContainers
+		}
+		fmt.Fprintf(&sb, ", containers: %d (max bins=%d barrels=%d wheelbarrows=%d)",
+			containers, *bl.SPMaxBins, derefOrZero(bl.SPMaxBarrels), derefOrZero(bl.SPMaxWheelbarrows))
+	}
 	return sb.String()
+}
+
+// derefOrZero reads an optional plugin-reported count. Only ever called for
+// fields the group's presence sentinel already vouched for, so a nil here is
+// a malformed payload rather than an old plugin build.
+func derefOrZero(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // stockpileFootprintsOverlap counts how many of the given stockpile entries
@@ -1955,11 +1992,21 @@ const maxBuildingTypesList = 100
 // prerequisite facts aren't exposed by any DFHack enum scan, so there is no
 // live query to round-trip for this tool. Every Name shown here
 // round-trips into build's type param verbatim.
+// The filter also matches buildingTypeAliases, and that is the point rather
+// than a convenience: DF's building_type key is frequently NOT the word a
+// player — or a model that just crafted the item — knows it by. A fort that
+// made an ITEM_TOOL_ALTAR searched "altar", got "No building types matched",
+// and concluded the capability did not exist, while offering_place (the real
+// placement name, implemented and working) sat in this very catalog. See
+// buildingTypeAliases' doc comment.
 func renderBuildingTypes(filter string) string {
 	lf := strings.ToLower(filter)
 	var matched []buildingTypeEntry
 	for _, e := range buildingTypeCatalog {
-		if lf == "" || strings.Contains(strings.ToLower(e.Name), lf) || strings.Contains(strings.ToLower(e.Category), lf) {
+		if lf == "" ||
+			strings.Contains(strings.ToLower(e.Name), lf) ||
+			strings.Contains(strings.ToLower(e.Category), lf) ||
+			strings.Contains(strings.ToLower(buildingTypeAliases[e.Name]), lf) {
 			matched = append(matched, e)
 		}
 	}
@@ -1979,7 +2026,15 @@ func renderBuildingTypes(filter string) string {
 	}
 	sb.WriteString(":\n")
 	for _, e := range matched {
-		fmt.Fprintf(&sb, "- %s [%s] footprint=%s — %s\n", e.Name, e.Category, e.Footprint, e.Requires)
+		// Aliases print inline right after the name, not just in the search
+		// index: a model that found this row by searching "altar" needs to
+		// SEE that offering_place is what altar is called here, or it learns
+		// nothing and searches the same wrong word again next time.
+		alias := ""
+		if a := buildingTypeAliases[e.Name]; a != "" {
+			alias = " (aka " + a + ")"
+		}
+		fmt.Fprintf(&sb, "- %s%s [%s] footprint=%s — %s\n", e.Name, alias, e.Category, e.Footprint, e.Requires)
 	}
 	if filter == "" && !truncated {
 		sb.WriteString("(pass filter next time to narrow this list)\n")
@@ -3631,7 +3686,7 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 		store := b.WM.Observed.Alerts
 		if in.All {
 			n := store.DismissAll()
-			return withDash(b, ctx, fmt.Sprintf("dismissed all %d active alerts", n)), nil, nil
+			return withDash(b, ctx, fmt.Sprintf("dismissed all %d active alerts%s", n, b.persistAlertDismissals())), nil, nil
 		}
 		if len(in.IDs) == 0 {
 			return withDash(b, ctx, "no ids given and all=false — nothing to dismiss"), nil, nil
@@ -3649,7 +3704,7 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 		if len(notFound) > 0 {
 			msg += fmt.Sprintf(" (not found or already dismissed: %v)", notFound)
 		}
-		return withDash(b, ctx, msg), nil, nil
+		return withDash(b, ctx, msg+b.persistAlertDismissals()), nil, nil
 	})
 
 	type dwarvesIn struct {
@@ -3905,11 +3960,11 @@ func registerStateTools(srv *mcp.Server, b *Bridge) {
 	})
 
 	type buildingTypesIn struct {
-		Filter string `json:"filter,omitempty" jsonschema:"optional case-insensitive substring filter against the building type's name or category (e.g. 'workshop', 'bed') — narrows the catalog instead of dumping all of it"`
+		Filter string `json:"filter,omitempty" jsonschema:"optional case-insensitive substring filter against a building type's name, category, or common synonyms — an item name or raw token like 'altar' or 'ITEM_TOOL_PEDESTAL' finds the build type that places it (e.g. 'workshop', 'bed', 'altar')"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "building_types",
-		Description: "Look up build's type vocabulary: per-entry category, footprint, and required materials/prerequisites. The curated names here are exactly build's short vocabulary; any other DFHack building_type/workshop_type/furnace_type/trap_type enum name can also be passed to build's type param verbatim, though resolving does not guarantee this plugin can place it yet (build's ACK is truthful about that either way). Call this ONLY when you need a name's specifics; it is a separate tool from build precisely so it isn't paid on every call. Pass filter to narrow.",
+		Description: "Look up build's type vocabulary: per-entry category, footprint, and required materials/prerequisites. The curated names here are exactly build's short vocabulary; any other DFHack building_type/workshop_type/furnace_type/trap_type/construction_type enum name can also be passed to build's type param verbatim, though resolving does not guarantee this plugin can place it yet (build's ACK is truthful about that either way). Call this ONLY when you need a name's specifics; it is a separate tool from build precisely so it isn't paid on every call. Pass filter to narrow.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in buildingTypesIn) (*mcp.CallToolResult, any, error) {
 		return withDash(b, ctx, renderBuildingTypes(in.Filter)), nil, nil
 	})

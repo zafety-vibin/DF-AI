@@ -213,6 +213,65 @@ func TestRenderBuildingsStockpileOldPlugin(t *testing.T) {
 	}
 }
 
+// Container ceilings + live container count. A pile whose max_bins/
+// max_barrels read 0 can never exceed one loose item per tile no matter how
+// much floor it has — the state every DF-AI-created stockpile was silently
+// in — so the numbers must be on the line, not inferred by cross-referencing
+// `stocks category=bin` against tile math.
+func TestRenderBuildingsStockpileContainers(t *testing.T) {
+	raw := []byte(`{"buildings":[
+		{"type":"Stockpile","x":95,"y":97,"z":132,"x1":90,"y1":95,"x2":100,"y2":99,"done":true,
+		 "sp_number":2,"sp_name":"FoodHall","sp_categories":"food","sp_tiles":52,"sp_occupied":47,"sp_items":209,
+		 "sp_max_bins":0,"sp_max_barrels":52,"sp_max_wheelbarrows":0,"sp_containers":11},
+		{"type":"Stockpile","x":10,"y":10,"z":132,"x1":9,"y1":9,"x2":11,"y2":11,"done":true,
+		 "sp_number":9,"sp_categories":"finished_goods","sp_tiles":9,"sp_occupied":9,"sp_items":9,
+		 "sp_max_bins":0,"sp_max_barrels":0,"sp_max_wheelbarrows":0,"sp_containers":0}
+	]}`)
+	out := renderBuildings(raw)
+	if !strings.Contains(out, "209 items, containers: 11 (max bins=0 barrels=52 wheelbarrows=0)\n") {
+		t.Fatalf("container clause wrong on the barrel pile:\n%s", out)
+	}
+	// The zeroed pile is the bug's own signature and must render its zeros
+	// verbatim — this is a MEASURED zero, unlike the old-plugin case below.
+	if !strings.Contains(out, "9 items, containers: 0 (max bins=0 barrels=0 wheelbarrows=0)\n") {
+		t.Fatalf("zero-ceiling pile must show its zeros:\n%s", out)
+	}
+}
+
+// VERSION SKEW, container fields: a plugin build predating them omits
+// sp_max_* / sp_containers entirely. Rendering that absence as "max bins=0"
+// would invent a measurement indistinguishable from the real zero-ceiling
+// bug, so the clause must be dropped whole while the rest of the line (which
+// that build DOES report) stays intact.
+func TestRenderBuildingsStockpileContainersOldPlugin(t *testing.T) {
+	raw := []byte(`{"buildings":[
+		{"type":"Stockpile","x":95,"y":97,"z":132,"x1":90,"y1":95,"x2":100,"y2":99,"done":true,
+		 "sp_number":2,"sp_name":"FoodHall","sp_categories":"food","sp_tiles":52,"sp_occupied":47,"sp_items":209}
+	]}`)
+	out := renderBuildings(raw)
+	if !strings.Contains(out, "- Stockpile #2 \"FoodHall\" at (90,95)-(100,99) z=132 — accepts food, 47/52 tiles occupied (90%), 209 items\n") {
+		t.Fatalf("fill clause must survive without the container fields:\n%s", out)
+	}
+	if strings.Contains(out, "containers") || strings.Contains(out, "max bins") {
+		t.Fatalf("an old plugin must not produce invented container numbers:\n%s", out)
+	}
+}
+
+// A malformed payload carrying only some of the group still renders: the
+// presence sentinel is sp_max_bins, and the rest degrade to 0 rather than
+// panicking on a nil dereference.
+func TestRenderBuildingsStockpileContainersPartialFields(t *testing.T) {
+	raw := []byte(`{"buildings":[
+		{"type":"Stockpile","x":10,"y":10,"z":100,"x1":9,"y1":9,"x2":11,"y2":11,"done":true,
+		 "sp_number":7,"sp_categories":"gems","sp_tiles":9,"sp_occupied":0,"sp_items":0,
+		 "sp_max_bins":9}
+	]}`)
+	out := renderBuildings(raw)
+	if !strings.Contains(out, "containers: 0 (max bins=9 barrels=0 wheelbarrows=0)\n") {
+		t.Fatalf("partial container group must render without panicking:\n%s", out)
+	}
+}
+
 // An even older plugin sends no extents at all, and an unfinished
 // stockpile plan has no fill to speak of — both fall through to the
 // generic building line rather than rendering a half-formed rectangle.
@@ -1334,6 +1393,85 @@ func TestRenderBuildingTypes(t *testing.T) {
 	}
 	if !strings.Contains(out, "- carpenter [workshop] footprint=3x3 — ") {
 		t.Fatalf("carpenter entry rendered wrong:\n%s", out)
+	}
+}
+
+// TestRenderBuildingTypesAliasFilter is a regression test for the Fort #6
+// failure this wave exists to fix: the fort crafted an ITEM_TOOL_ALTAR,
+// searched building_types for "altar", got "No building types matched", and
+// concluded altars could not be placed — while offering_place, the real
+// (and already working) placement name, sat in the catalog the whole time.
+// Each case below is a word a model would plausibly search after crafting
+// the item or reading the DF wiki, mapped to the name build actually wants.
+func TestRenderBuildingTypesAliasFilter(t *testing.T) {
+	for _, tc := range []struct{ filter, want string }{
+		{"altar", "offering_place"},
+		{"ITEM_TOOL_ALTAR", "offering_place"},
+		{"shrine", "offering_place"},
+		{"pedestal", "display_furniture"},
+		{"display case", "display_furniture"},
+		// A display case and a pedestal are two DIFFERENT raw tokens that
+		// both place display_furniture, and a model that just crafted one
+		// searches the token it typed into queue_job. The underscored form
+		// falls out of the token itself (item_tool_display_case contains
+		// display_case), so both spellings are pinned here.
+		{"ITEM_TOOL_DISPLAY_CASE", "display_furniture"},
+		{"display_case", "display_furniture"},
+		{"library", "bookcase"},
+		{"bookshelf", "bookcase"},
+		{"beekeeping", "hive"},
+		{"apiary", "hive"},
+		{"eggs", "nest_box"},
+		{"arrow slit", "fortification"},
+		{"jail bars", "bars_vertical"},
+		{"hand mill", "quern"},
+		{"holding pen", "cage"},
+		{"memorial", "slab"},
+	} {
+		out := renderBuildingTypes(tc.filter)
+		if !strings.Contains(out, "- "+tc.want) {
+			t.Fatalf("building_types filter=%q must find %q, got:\n%s", tc.filter, tc.want, out)
+		}
+	}
+}
+
+// TestRenderBuildingTypesShowsAliases pins that a row found by an alias also
+// PRINTS that alias. Matching silently would let a model find the row once
+// and still not learn that "altar" is spelled offering_place at build time.
+func TestRenderBuildingTypesShowsAliases(t *testing.T) {
+	out := renderBuildingTypes("altar")
+	if !strings.Contains(out, "- offering_place (aka altar,") {
+		t.Fatalf("alias list must render inline next to the name:\n%s", out)
+	}
+	// An entry with no alias must not grow an empty "(aka )".
+	if strings.Contains(renderBuildingTypes("bed"), "(aka )") {
+		t.Fatal("entries without aliases must not render an empty alias group")
+	}
+}
+
+// TestBuildingTypeAliasesMatchCatalog keeps the alias side table from
+// drifting: an alias keyed to a name build no longer accepts would advertise
+// a type that fails at the plugin.
+func TestBuildingTypeAliasesMatchCatalog(t *testing.T) {
+	names := make(map[string]bool, len(buildingTypeCatalog))
+	for _, e := range buildingTypeCatalog {
+		names[e.Name] = true
+	}
+	for name := range buildingTypeAliases {
+		if !names[name] {
+			t.Fatalf("buildingTypeAliases key %q names no building_types catalog entry", name)
+		}
+	}
+}
+
+// TestRenderBuildingTypesFilterIgnoresRequiresProse guards the reason
+// aliases are their own field: Requires is prose full of incidental nouns
+// ("craft it at a carpenter's"), so filtering against it would make a search
+// for the carpenter's WORKSHOP return every item a carpenter can make.
+func TestRenderBuildingTypesFilterIgnoresRequiresProse(t *testing.T) {
+	out := renderBuildingTypes("carpenter")
+	if !strings.Contains(out, "1 building types:") {
+		t.Fatalf("filter=carpenter must match only the carpenter workshop:\n%s", out)
 	}
 }
 

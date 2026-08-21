@@ -61,6 +61,9 @@ var minToolArgs = map[string]map[string]any{
 	"unassign_lodging": {"bedroom_x": 2, "bedroom_y": 2, "bedroom_z": 2},
 	// list_locations has no required fields — {} default is fine, no entry needed.
 	"stockpile":          {"category": "all", "x1": 1, "y1": 1, "z": 1, "x2": 2, "y2": 2},
+	// bins/barrels/wheelbarrows are optional pointers — exercise the
+	// all-omitted (auto-recompute) path the retrofit call actually uses.
+	"set_stockpile_containers": {"x": 1, "y": 1, "z": 1},
 	"order":              {"item": "bed", "count": 1},
 	"queue_job":          {"x": 1, "y": 1, "z": 1, "item": "bed", "count": 1},
 	"set_labor":          {"id": 1, "labor": "mine", "enable": true},

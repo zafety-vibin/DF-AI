@@ -308,6 +308,60 @@ constexpr uint8_t COMMAND_TYPE_UNMARK_TRADE_GOODS = 0x2B;
 // trade.cpp's applySetDepotTradeFlags for the exact sequence.
 constexpr uint8_t COMMAND_TYPE_SET_DEPOT_TRADE_FLAGS = 0x2C;
 
+// COMMAND_TYPE_SET_STOCKPILE_CONTAINERS writes an EXISTING stockpile's
+// df::building_stockpilest::storage ceilings -- max_bins / max_barrels /
+// max_wheelbarrows (df.building.xml:973-976, original names bin_seek_num /
+// barrel_seek_num / wheelbarrow_seek_num). `storage` is a SIBLING compound to
+// `settings` (df.building.xml:990-993); STOCKPILE (0x0A) only ever wrote the
+// latter, so every pile this plugin created before this command existed had
+// all three ceilings at zero and DF's hauling AI never assigned it a single
+// bin or barrel. Creation now sets them itself (buildings.cpp
+// computeDefaultStockpileContainers); this command exists to retrofit piles
+// built before that fix, and to override the defaults either way.
+// Payload: [4:cmdID][1:cmdType][2:X][2:Y][2:Z]
+//          [1:HasMaxBins][2:MaxBins]
+//          [1:HasMaxBarrels][2:MaxBarrels]
+//          [1:HasMaxWheelbarrows][2:MaxWheelbarrows]
+//          [1:HasStockpileNumber][4:StockpileNumber]
+// 25 bytes, fixed -- a brand-new command type has no legacy shorter-payload
+// peer, so none of the EOF-tolerant-tail parsing used when EXTENDING an
+// existing command applies here. A strict length check is also the SAFER
+// choice for the trailing addressing field: a build that silently ignored an
+// unparsed StockpileNumber tail would fall back to the tile scan and
+// reconfigure a DIFFERENT pile than the caller named.
+// Each Has*==0 means "recompute the vanilla-mirroring default for this pile's
+// CURRENT categories and CURRENT tile count" (all three false is the ordinary
+// retrofit call); Has*==1 pins the paired int16 verbatim, including an
+// explicit 0 meaning "assign no container of this type". Negative values are
+// rejected -- quickfort's -1 "unlimited" is a settings-layer sentinel it
+// resolves to a tile count before writing the struct, never a stored value.
+// MaxWheelbarrows is additionally CLAMPED to tiles-1: a wheelbarrow physically
+// occupies a stockpile tile, so a ceiling >= the tile count denies the pile
+// all its own storage. quickfort bounds all three container fields but at
+// different ceilings for exactly that reason -- bins/barrels to ntiles,
+// wheelbarrows to ntiles-1 (scripts/internal/quickfort/place.lua:270-291) --
+// and only the harmful bound is enforced here; an explicit bins/barrels number
+// above the tile count is inert, so it is passed through as given. The ACK
+// reports the clamp when it fires.
+// ADDRESSING, two ways:
+//  - HasStockpileNumber==0: (X,Y,Z) is ANY tile of the pile's footprint. The
+//    lookup CANNOT use Buildings::findAtTile -- that call skips every building
+//    with isSettingOccupancy()==false (library/modules/Buildings.cpp:399-400)
+//    and Stockpile is abstract, hence invisible to it. buildings.cpp's
+//    applySetStockpileContainers uses collectStockpilesAtZ +
+//    Buildings::containsTile instead, and reports N>1 overlapping candidates
+//    as a truthful FAILURE rather than guessing.
+//  - HasStockpileNumber==1: StockpileNumber is
+//    df::building_stockpilest::stockpile_number (the "#N" the buildings query
+//    reports as sp_number and every ambiguity ACK prints), and (X,Y,Z) is
+//    ignored entirely. This exists because tile addressing has a permanently
+//    unresolvable case: a live fort has had two stockpiles sharing the exact
+//    rectangle (88,88)-(92,91), and neither of them owns a tile the other does
+//    not -- no coordinate can ever name one of them alone. stockpile_number is
+//    assigned as max+1 over live piles (Buildings.cpp:1069-1099), so it is
+//    unique among existing stockpiles.
+constexpr uint8_t COMMAND_TYPE_SET_STOCKPILE_CONTAINERS = 0x2D;
+
 // Location types -- DF-AI's own wire values for df::abstract_building_type's
 // INN_TAVERN/TEMPLE/LIBRARY/GUILDHALL/HOSPITAL. A Location is created FROM an
 // existing MeetingHall civzone (see designate_zone), not designated
@@ -316,6 +370,14 @@ constexpr uint8_t COMMAND_TYPE_SET_DEPOT_TRADE_FLAGS = 0x2C;
 // applyCreateLocation) -- confirmed via DFHack's own quickfort reference
 // (scripts/internal/quickfort/zone.lua's set_location(), which refuses
 // to create a guildhall without one); the other four need no extra input.
+//
+// Temple additionally accepts an OPTIONAL deity dedication, carried by
+// CREATE_LOCATION's trailing [1:HasDeity][4:DeityHfID] field (see that
+// command's payload comment in df_ai_protocol.cpp). A presence BYTE rather
+// than a -1 sentinel because historical-figure id 0 is a perfectly valid
+// deity id, so "absent" and "id 0" must stay distinguishable on the wire --
+// same reasoning as EDIT_ORDER's hasAmount/hasFrequency bytes and
+// ENTITY_UPDATE's HasWorldIdentity byte. Ignored for the other four types.
 constexpr uint8_t LOCATION_TYPE_TAVERN    = 0x01;
 constexpr uint8_t LOCATION_TYPE_TEMPLE    = 0x02;
 constexpr uint8_t LOCATION_TYPE_LIBRARY   = 0x03;
@@ -553,14 +615,26 @@ constexpr uint8_t ORDER_TYPE_CUSTOM_REACTION = 0x0D;
 // BUILD_TYPE_SCREW_PUMP et al below), 0xB0-0xBF more df::trap_type
 // subtypes beyond Lever (which stays at BUILD_TYPE_LEVER in the
 // doors/hatches range above, sharing placeDoor's single-mechanism-item
-// shape) — PressurePlate, StoneFallTrap, WeaponTrap, TrackStop, see
-// BUILD_TYPE_PRESSURE_PLATE et al below.
+// shape) — PressurePlate, StoneFallTrap, WeaponTrap, TrackStop, CageTrap,
+// see BUILD_TYPE_PRESSURE_PLATE et al below. 0xC0-0xCF specific-item
+// FIXTURES — standalone df::building_type values, every one forced 1x1 by
+// DF and placed from ONE already-existing item (Weaponrack, Armorstand,
+// AnimalTrap, Chain, Cage, BarsVertical, BarsFloor, GrateWall, GrateFloor,
+// Weapon/retractable spike), see BUILD_TYPE_WEAPON_RACK et al below.
 constexpr uint8_t BUILD_TYPE_WALL          = 0x01;
 constexpr uint8_t BUILD_TYPE_FLOOR         = 0x02;
 constexpr uint8_t BUILD_TYPE_UP_STAIR      = 0x03;
 constexpr uint8_t BUILD_TYPE_DOWN_STAIR    = 0x04;
 constexpr uint8_t BUILD_TYPE_UPDOWN_STAIR  = 0x05;
 constexpr uint8_t BUILD_TYPE_RAMP          = 0x06;
+// Two more df::construction_type subtypes reachable through the SAME
+// placeConstruction path as the six above (all are building_type::
+// Construction with a construction_type subtype, never their own
+// building_type). Recipes per buildings.lua get_inputs_by_type's
+// Construction branch (dfhack-build library/lua/dfhack/buildings.lua:
+// 403-407).
+constexpr uint8_t BUILD_TYPE_FORTIFICATION    = 0x07; // df::construction_type::Fortification -- 1x generic building material (buildings.lua:407, the same default Construction reagent Wall/Floor/stairs/Ramp use); a shootable-through, unwalkable defensive wall for marksdwarves
+constexpr uint8_t BUILD_TYPE_REINFORCED_WALL  = 0x08; // df::construction_type::ReinforcedWall -- the ONE construction_type with its own reagent list (buildings.lua:404-405): 2x generic building material PLUS 1x metal BAR (flags3.metal, item_type=BAR, vector_id=BAR)
 
 constexpr uint8_t BUILD_TYPE_WS_CARPENTER  = 0x10;
 constexpr uint8_t BUILD_TYPE_WS_MASON      = 0x11;
@@ -603,6 +677,16 @@ constexpr uint8_t BUILD_TYPE_WS_LOOM        = 0x21; // df::workshop_type::Loom -
 constexpr uint8_t BUILD_TYPE_WS_KENNELS     = 0x22; // df::workshop_type::Kennels -- 1x generic building material (buildings.lua:249)
 constexpr uint8_t BUILD_TYPE_WS_ASHERY      = 0x23; // df::workshop_type::Ashery -- 3 SPECIFIC-item reagents, no generic building-material reagent at all: BLOCKS/BLOCKS (no flags), an EMPTY BARREL/BARREL, and a lye_milk_free BUCKET/BUCKET (buildings.lua:251-268) -- materialClass is rejected, same reasoning as placeWell
 constexpr uint8_t BUILD_TYPE_WS_DYERS       = 0x24; // df::workshop_type::Dyers -- 2 SPECIFIC-item reagents, no generic building-material reagent: an EMPTY BARREL/BARREL and a lye_milk_free BUCKET/BUCKET (buildings.lua:269-282) -- materialClass is rejected, same reasoning as placeWell
+
+// The two MILLING workshop types -- df::workshop_type values like every
+// other 0x10-0x2F entry, but the only two DF forces to a 1x1 footprint
+// instead of 3x3/5x5 (Buildings::getCorrectSize's Workshop case explicitly
+// lists Quern/Millstone/Tool together at dfhack-build library/modules/
+// Buildings.cpp:659-664). Both take SPECIFIC finished items rather than a
+// generic building material, so materialClass is rejected for both (same
+// reasoning as Ashery/Dyers above).
+constexpr uint8_t BUILD_TYPE_WS_QUERN       = 0x25; // df::workshop_type::Quern -- 1x QUERN item, vector_id=QUERN (buildings.lua:248); hand-powered mill, needs no machine power at all -- the cheap pre-water-power milling option
+constexpr uint8_t BUILD_TYPE_WS_MILLSTONE   = 0x26; // df::workshop_type::Millstone -- 2 reagents: 1x MILLSTONE item (vector_id=MILLSTONE) + 1x mechanism (TRAPPARTS/TRAPPARTS) (buildings.lua:283-293); machine-powered mill -- needs a connected axle/gear power train to actually run (same engine-level adjacency DF handles itself, see the water/power family's KNOWN LIMITATION below)
 
 constexpr uint8_t BUILD_TYPE_BED      = 0x30;
 constexpr uint8_t BUILD_TYPE_TABLE    = 0x31;
@@ -687,7 +771,7 @@ constexpr uint8_t BUILD_TYPE_ROLLERS         = 0xA6; // df::building_type::Rolle
 
 // More df::trap_type subtypes (building_type::Trap) beyond Lever, which
 // stays at BUILD_TYPE_LEVER (0x52, doors/hatches range) sharing placeDoor's
-// single-mechanism-item shape. All four below are 1x1 ACTUAL buildings
+// single-mechanism-item shape. All five below are 1x1 ACTUAL buildings
 // (getCorrectSize has no case for building_type::Trap, same default branch
 // as Lever/Well/Support) placed via buildings.cpp's placeTrap. Recipes per
 // buildings.lua trap_inputs (dfhack-build library/lua/dfhack/buildings.lua:
@@ -697,6 +781,40 @@ constexpr uint8_t BUILD_TYPE_PRESSURE_PLATE  = 0xB0; // df::trap_type::PressureP
 constexpr uint8_t BUILD_TYPE_STONE_FALL_TRAP = 0xB1; // df::trap_type::StoneFallTrap -- 1x mechanism (TRAPPARTS), same shape as Lever (buildings.lua:299-305); builds UNARMED -- arming with a boulder is DF's own separate post-construction Load Stone Trap job, not queued by this command
 constexpr uint8_t BUILD_TYPE_WEAPON_TRAP     = 0xB2; // df::trap_type::WeaponTrap -- 2x reagents: mechanism (TRAPPARTS) + weapon/trap-component (vector_id=ANY_WEAPON, buildings.lua:306-316) -- UNLIKE StoneFallTrap this one IS armed at construction time, matching DF's own build-menu behavior
 constexpr uint8_t BUILD_TYPE_TRACK_STOP      = 0xB3; // df::trap_type::TrackStop -- 1x generic building material (buildings.lua:338, same shape as Support/ArcheryTarget) -- basic placement only, no minecart track-piece linkage/friction/dump-menu configuration
+constexpr uint8_t BUILD_TYPE_CAGE_TRAP       = 0xB4; // df::trap_type::CageTrap -- 1x mechanism (TRAPPARTS), the SAME construction filter as StoneFallTrap (buildings.lua:331-337 vs :299-305, verified identical); builds UNARMED -- arming with a cage is DF's own separate post-construction Load Cage Trap job (df::job_type::LoadCageTrap, df.job.xml:875, an exact structural sibling of LoadStoneTrap at :880), not queued by this command (same carve-out as StoneFallTrap). No isBuildTypeTrap change needed -- 0xB4 already falls inside its 0xB0-0xC0 range.
+
+// ---------------------------------------------------------------------------
+// Specific-item FIXTURE family (0xC0-0xCF) -- ten standalone
+// df::building_type values, none with a subtype, every one forced 1x1 by DF
+// (getCorrectSize has no case for any of them, so all fall to its default
+// branch at dfhack-build library/modules/Buildings.cpp:736-739 -- the same
+// branch Well/Support/Statue/Door/Hatch already rely on). Each is placed
+// from exactly ONE already-existing item, so materialClass is rejected for
+// all ten (identical reasoning to placeDoor/placeWell/
+// placeRoomValueFurniture). Recipes per buildings.lua building_inputs
+// (dfhack-build library/lua/dfhack/buildings.lua) -- see buildings.cpp
+// placeFixture for the exact filter shape of each.
+//
+// NOTE on the four gate_flags types (GrateWall/GrateFloor/BarsVertical/
+// BarsFloor) and Weapon: DF's own Buildings::allocInstance already performs
+// their type-specific init (gate_flags.bits.closed = true for the four
+// grate/bars types, gate_flags.bits.retracted = false for Weapon --
+// Buildings.cpp:536-571), so nothing here has to set it. They are NOT yet
+// accepted as link_building trigger TARGETS, though (mechanisms.cpp's
+// applyLinkBuilding accepts bridge/floodgate/door/hatch/support/
+// gear_assembly only) -- a real, separate gap this pass does not close, and
+// the building_types tool says so rather than implying a lever can work
+// them.
+constexpr uint8_t BUILD_TYPE_WEAPON_RACK   = 0xC0; // df::building_type::Weaponrack -- 1x WEAPONRACK item, vector_id=WEAPONRACK (buildings.lua:55-60); barracks equipment furniture, crafted via ConstructWeaponRack at a Carpenter's/Mason's (already whitelisted for queue_job)
+constexpr uint8_t BUILD_TYPE_ARMOR_STAND   = 0xC1; // df::building_type::Armorstand -- 1x ARMORSTAND item, vector_id=ARMORSTAND (buildings.lua:61-66); barracks equipment furniture, crafted via ConstructArmorStand at a Carpenter's/Mason's
+constexpr uint8_t BUILD_TYPE_ANIMAL_TRAP   = 0xC2; // df::building_type::AnimalTrap -- 1x EMPTY ANIMALTRAP item (flags1.empty, vector_id=ANIMALTRAP, buildings.lua:104-110); the baited vermin trap, entirely distinct from trap_type::CageTrap; crafted via MakeAnimalTrap at a Carpenter's
+constexpr uint8_t BUILD_TYPE_CHAIN         = 0xC3; // df::building_type::Chain -- 1x CHAIN item, vector_id=CHAIN (buildings.lua:113); a restraint post for chaining an animal (or a prisoner) in place, NOT the chain reagent a well consumes; crafted via MakeChain at a Metalsmith's forge
+constexpr uint8_t BUILD_TYPE_CAGE          = 0xC4; // df::building_type::Cage -- 1x CAGE item, vector_id=CAGE (buildings.lua:114); places a BUILT cage as a holding pen/display, distinct from arming a trap_type::CageTrap; crafted via MakeCage (job_type CONSTRUCT_CAGE) at a Carpenter's
+constexpr uint8_t BUILD_TYPE_BARS_VERTICAL = 0xC5; // df::building_type::BarsVertical -- 1x BAR item, vector_id=BAR (buildings.lua:143-145); a see-through vertical barrier built from the SAME metal/glass bars the smelter chain already produces
+constexpr uint8_t BUILD_TYPE_BARS_FLOOR    = 0xC6; // df::building_type::BarsFloor -- 1x BAR item, vector_id=BAR (buildings.lua:146-148); the floor-plane twin of BarsVertical
+constexpr uint8_t BUILD_TYPE_GRATE_WALL    = 0xC7; // df::building_type::GrateWall -- 1x GRATE item, vector_id=GRATE (buildings.lua:139); passes water/light while blocking creatures; crafted via ConstructGrate at a Carpenter's/Mason's
+constexpr uint8_t BUILD_TYPE_GRATE_FLOOR   = 0xC8; // df::building_type::GrateFloor -- 1x GRATE item, vector_id=GRATE (buildings.lua:140); the floor-plane twin of GrateWall -- lets water fall through a shaft while sealing the level to walkers
+constexpr uint8_t BUILD_TYPE_WEAPON_SPIKE  = 0xC9; // df::building_type::Weapon -- 1x reagent with NO item_type at all, vector_id=ANY_SPIKE only (buildings.lua:115) -- the same "vector-only" filter shape BUILD_TYPE_WEAPON_TRAP's own weapon reagent already uses. This is DF's retractable SPIKE building (its own HOTKEY_BUILDING_TRAP_SPIKE, df.g_src.keybindings.xml:550), NOT trap_type::WeaponTrap
 
 // Sentinel BuildType for COMMAND_TYPE_BUILD's generalized name-based path
 // (0x00 was never assigned to one of the curated BuildType values above) --
@@ -715,7 +833,7 @@ constexpr uint8_t BUILD_TYPE_TRACK_STOP      = 0xB3; // df::trap_type::TrackStop
 // exact byte.
 //
 // KNOWN LIMITATION (mirrors ORDER_TYPE_BY_NAME): resolving a name to a real
-// DFHack building_type/workshop_type/furnace_type/trap_type does NOT by
+// DFHack building_type/workshop_type/furnace_type/trap_type/construction_type does NOT by
 // itself mean this plugin knows how to PLACE it -- job_item filter recipes
 // (buildings.lua workshop_inputs/furnace_inputs/trap_inputs) are hand-ported
 // domain knowledge, one building type at a time. Only names matching one of
@@ -771,6 +889,7 @@ inline bool isBuildTypeDepot(uint8_t t)        { return t >= 0x80 && t < 0x90; }
 inline bool isBuildTypeInfra(uint8_t t)        { return t >= 0x90 && t < 0xA0; }
 inline bool isBuildTypeWaterPower(uint8_t t)   { return t >= 0xA0 && t < 0xB0; }
 inline bool isBuildTypeTrap(uint8_t t)         { return t >= 0xB0 && t < 0xC0; }
+inline bool isBuildTypeFixture(uint8_t t)      { return t >= 0xC0 && t < 0xD0; }
 
 // Bridge direction byte -- COMMAND_TYPE_BUILD_BRIDGE's trailing byte.
 // DF-AI's own wire values, translated by the plugin (buildings.cpp:

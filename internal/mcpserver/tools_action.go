@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -271,24 +272,64 @@ func resultDetail(res *commands.CommandResult, err error) string {
 	return fmt.Sprintf("ack in %s", res.Duration)
 }
 
+// forcedFootprint reports the square footprint DF itself forces for a
+// curated BuildType byte, mirroring Buildings::getCorrectSize (dfhack-build
+// library/modules/Buildings.cpp:589-741) — and mirroring the plugin's own
+// workshopFootprint helper (dfhack-plugin/buildings.cpp), which is written
+// from the same table so the two never drift.
+//
+// The workshop range is NOT uniformly 3x3, which is why this exists as a
+// table rather than a range check: getCorrectSize's Workshop case forces
+// Quern/Millstone (and Tool, which this plugin does not place) to 1x1 and
+// Siege/Kennels to 5x5, with 3x3 only as the default for everything else.
+// Furnaces are uniformly 3x3 and the trade depot uniformly 5x5. Every other
+// curated byte is a 1x1 building.
+//
+// Windmill is the one forced multi-tile building OUTSIDE the workshop/
+// furnace/depot ranges: getCorrectSize's `case Windmill: case Wagon:` arm
+// (Buildings.cpp:634-638) forces size (3,3) center (1,1) unconditionally —
+// no subtype branch, no direction branch. It sits in the water/power byte
+// range (0xA5) purely by protocol grouping, so a range check would leave it
+// at 1 and place every windmill one tile NW of where the caller pointed.
+//
+// Deliberately NOT covered here: the rest of the water/power family
+// (screw_pump, water_wheel, axle_horizontal, rollers), whose footprint is a
+// non-square, orientation-dependent line DF computes from the direction
+// byte. DF does still compute a center for those (makeOneDim,
+// Buildings.cpp:580-587), but it depends on the orientation byte rather
+// than the type alone, so their coordinates travel as the anchor CORNER
+// the build tool's schema and their building_types rows both document.
+func forcedFootprint(buildType uint8) int {
+	switch buildType {
+	case protocol.BuildTypeWorkshopQuern, protocol.BuildTypeWorkshopMillstone:
+		return 1
+	case protocol.BuildTypeWorkshopSiege, protocol.BuildTypeWorkshopKennels:
+		return 5
+	case protocol.BuildTypeWindmill:
+		return 3
+	}
+	switch {
+	case protocol.IsBuildTypeWorkshop(buildType), protocol.IsBuildTypeFurnace(buildType):
+		return 3
+	case protocol.IsBuildTypeDepot(buildType):
+		return 5
+	default:
+		return 1
+	}
+}
+
 // buildWireCoords converts the model-facing build coordinate to the wire
 // semantic. The protocol's (x,y) is a building's NW CORNER (DFHack
 // allocInstance), but the tool promises CENTER for square multi-tile
 // footprints — the natural way to think about placement. The corner
-// offset is (footprint-1)/2 in both axes (DF centers odd footprints,
-// Buildings.cpp getCorrectSize: 3x3 → center (1,1), 5x5 → center (2,2)):
-// workshops and furnaces (3x3) shift by -1,-1; the trade depot (5x5,
-// forced by DF regardless of requested size) shifts by -2,-2; everything
-// else is 1x1 where center == corner.
+// offset is footprint/2 in both axes (DF centers odd footprints,
+// Buildings.cpp getCorrectSize: 3x3 → center (1,1), 5x5 → center (2,2)),
+// with the per-type footprint coming from forcedFootprint above — which is
+// a table, not a range check, because DF forces three different sizes
+// inside the workshop range alone.
 func buildWireCoords(buildType uint8, x, y int) (int16, int16) {
-	switch {
-	case protocol.IsBuildTypeWorkshop(buildType), protocol.IsBuildTypeFurnace(buildType):
-		return int16(x - 1), int16(y - 1)
-	case protocol.IsBuildTypeDepot(buildType):
-		return int16(x - 2), int16(y - 2)
-	default:
-		return int16(x), int16(y)
-	}
+	off := forcedFootprint(buildType) / 2
+	return int16(x - off), int16(y - off)
 }
 
 // buildFootprintCorner is buildWireCoords generalized to an arbitrary WxH
@@ -375,6 +416,7 @@ var buildTypes = map[string]uint8{
 	"wall": protocol.BuildTypeWall, "floor": protocol.BuildTypeFloor,
 	"upstair": protocol.BuildTypeUpStair, "downstair": protocol.BuildTypeDownStair,
 	"updownstair": protocol.BuildTypeUpDownStair, "ramp": protocol.BuildTypeRamp,
+	"fortification": protocol.BuildTypeFortification, "reinforced_wall": protocol.BuildTypeReinforcedWall,
 	"carpenter": protocol.BuildTypeWorkshopCarpenter, "mason": protocol.BuildTypeWorkshopMason,
 	"still": protocol.BuildTypeWorkshopStill, "farmer": protocol.BuildTypeWorkshopFarmer,
 	"craftsdwarf": protocol.BuildTypeWorkshopCraftsdwarf, "mechanic": protocol.BuildTypeWorkshopMechanic,
@@ -386,6 +428,7 @@ var buildTypes = map[string]uint8{
 	"tanners": protocol.BuildTypeWorkshopTanners, "clothiers": protocol.BuildTypeWorkshopClothiers,
 	"loom": protocol.BuildTypeWorkshopLoom, "kennels": protocol.BuildTypeWorkshopKennels,
 	"ashery": protocol.BuildTypeWorkshopAshery, "dyers": protocol.BuildTypeWorkshopDyers,
+	"quern": protocol.BuildTypeWorkshopQuern, "millstone": protocol.BuildTypeWorkshopMillstone,
 	"bed": protocol.BuildTypeBed, "table": protocol.BuildTypeTable,
 	"chair": protocol.BuildTypeChair, "cabinet": protocol.BuildTypeCabinet,
 	"coffer": protocol.BuildTypeCoffer, "coffin": protocol.BuildTypeCoffin,
@@ -393,6 +436,7 @@ var buildTypes = map[string]uint8{
 	"lever": protocol.BuildTypeLever, "floodgate": protocol.BuildTypeFloodgate,
 	"pressure_plate": protocol.BuildTypePressurePlate, "stone_fall_trap": protocol.BuildTypeStoneFallTrap,
 	"weapon_trap": protocol.BuildTypeWeaponTrap, "track_stop": protocol.BuildTypeTrackStop,
+	"cage_trap": protocol.BuildTypeCageTrap,
 	"smelter": protocol.BuildTypeFurnaceSmelter, "wood_furnace": protocol.BuildTypeFurnaceWood,
 	"kiln": protocol.BuildTypeFurnaceKiln, "glass_furnace": protocol.BuildTypeFurnaceGlass,
 	"magma_smelter": protocol.BuildTypeFurnaceMagmaSmelter, "magma_glass_furnace": protocol.BuildTypeFurnaceMagmaGlass,
@@ -409,6 +453,11 @@ var buildTypes = map[string]uint8{
 	"axle_horizontal": protocol.BuildTypeAxleHorizontal, "axle_vertical": protocol.BuildTypeAxleVertical,
 	"water_wheel": protocol.BuildTypeWaterWheel, "windmill": protocol.BuildTypeWindmill,
 	"rollers": protocol.BuildTypeRollers,
+	"weapon_rack": protocol.BuildTypeWeaponRack, "armor_stand": protocol.BuildTypeArmorStand,
+	"animal_trap": protocol.BuildTypeAnimalTrap, "chain": protocol.BuildTypeChain,
+	"cage": protocol.BuildTypeCage, "bars_vertical": protocol.BuildTypeBarsVertical,
+	"bars_floor": protocol.BuildTypeBarsFloor, "grate_wall": protocol.BuildTypeGrateWall,
+	"grate_floor": protocol.BuildTypeGrateFloor, "weapon_spike": protocol.BuildTypeWeaponSpike,
 }
 
 // waterPowerOrientations maps the build tool's model-facing orientation
@@ -445,6 +494,61 @@ type buildingTypeEntry struct {
 	Requires  string // required materials/prerequisites, one line
 }
 
+// buildingTypeAliases maps a buildingTypeCatalog Name to the OTHER words that
+// building is known by — the DF wiki's common name, the crafted item's own
+// raws token, the room it furnishes. renderBuildingTypes prints these next to
+// the name AND matches its filter against them.
+//
+// This exists because of a real, expensive miss: a fort crafted an
+// ITEM_TOOL_ALTAR, searched building_types for "altar", got "No building types
+// matched", and concluded the capability was missing — while offering_place,
+// DF's actual building_type key and this plugin's long-standing name for it,
+// sat right there in the catalog with a working placement recipe. A crafted
+// item's raw token is systematically NOT its building's placement name, so the
+// catalog has to carry the bridge between the two.
+//
+// It is a side table rather than a fifth buildingTypeEntry field only to keep
+// the ~90 existing positional literals untouched; and it is a distinct field
+// rather than extra words inside Requires because Requires is prose full of
+// incidental nouns ("craft it at a carpenter's"), so filtering against that
+// would make a search for "carpenter" return every item a carpenter can make
+// instead of the carpenter's workshop.
+//
+// Only entries with a genuinely different common name need a row here — a
+// name that already reads the way a player would say it (bed, well, windmill)
+// needs no alias, and TestBuildingTypeAliasesMatchCatalog only enforces that
+// every key names a real catalog entry, never that every entry has a key.
+var buildingTypeAliases = map[string]string{
+	"offering_place":    "altar, shrine, temple furniture, ITEM_TOOL_ALTAR",
+	"display_furniture": "pedestal, display case, museum, artifact display, ITEM_TOOL_PEDESTAL, ITEM_TOOL_DISPLAY_CASE",
+	"bookcase":          "bookshelf, shelf, library, ITEM_TOOL_BOOKCASE",
+	"nest_box":          "nestbox, nest, eggs, egg laying, ITEM_TOOL_NEST_BOX",
+	"hive":              "apiary, beehive, beekeeping, honey, wax, ITEM_TOOL_HIVE",
+	"instrument":        "stationary instrument, music, performance",
+	"traction_bench":    "hospital bed, splint bench",
+	"coffer":            "box, chest, strongbox",
+	"tradedepot":        "trade depot, caravan, merchants",
+	"weapon_rack":       "weapon stand, barracks equipment",
+	"armor_stand":       "armour stand, barracks equipment",
+	"animal_trap":       "vermin trap, small animal trap",
+	"chain":             "restraint, rope, tether, animal post",
+	"cage":              "holding pen, animal cage, prison cage",
+	"bars_vertical":     "metal bars, jail bars, prison wall",
+	"bars_floor":        "floor bars, pit cover, grating",
+	"grate_wall":        "wall grate, screen",
+	"grate_floor":       "floor grate, drain",
+	"weapon_spike":      "spike, retractable spike, spear wall",
+	"fortification":     "arrow slit, embrasure, battlement, firing line",
+	"reinforced_wall":   "strong wall, vault wall",
+	"quern":             "hand mill, grindstone, flour, mill",
+	"millstone":         "powered mill, flour, mill",
+	"archery_target":    "archery range, marksdwarf training",
+	"slab":              "memorial, engraved slab, ghost",
+	"support":           "cave-in trigger, collapse",
+	"screw_pump":        "pump, water pump",
+	"gear_assembly":     "gear, power shutoff",
+}
+
 // buildingTypeCatalog is the building_types discovery tool's backing data —
 // see buildingTypeEntry's doc comment above for why this is a static Go
 // table rather than a plugin query.
@@ -455,6 +559,8 @@ var buildingTypeCatalog = []buildingTypeEntry{
 	{"downstair", "construction", "1x1", "1x building material (any|wood|stone|blocks)"},
 	{"updownstair", "construction", "1x1", "1x building material (any|wood|stone|blocks)"},
 	{"ramp", "construction", "1x1", "1x building material (any|wood|stone|blocks)"},
+	{"fortification", "construction", "1x1", "1x building material (any|wood|stone|blocks); a wall dwarves can shoot and see through but nothing can walk through — the marksdwarf firing line for a wall-top or gatehouse (also known as an arrow slit or embrasure)"},
+	{"reinforced_wall", "construction", "1x1", "2x building material (any|wood|stone|blocks) PLUS 1x metal bar in stock — the only construction with a second reagent; a stronger wall for vaults and aquifer seals"},
 	{"carpenter", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
 	{"mason", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
 	{"still", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
@@ -468,14 +574,16 @@ var buildingTypeCatalog = []buildingTypeEntry{
 	{"magma_forge", "workshop", "3x3", "1x ANVIL item + 1x magma-safe building material; magma-fueled twin of metalsmith — needs real magma access to actually WORK once built, but that is not validated at placement time (DFHack has no magma-adjacency check; see build tool notes)"},
 	{"jewelers", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
 	{"bowyers", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
-	{"siege", "workshop", "3x3", "3x building material (any|wood|stone|blocks); preps siege ammunition — NOT the SiegeEngine catapult/ballista building (out of scope)"},
+	{"siege", "workshop", "5x5 (forced by DF)", "3x building material (any|wood|stone|blocks); preps siege ammunition — NOT the SiegeEngine catapult/ballista building (out of scope)"},
 	{"leatherworks", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
 	{"tanners", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
 	{"clothiers", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
 	{"loom", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
-	{"kennels", "workshop", "3x3", "1x building material (any|wood|stone|blocks)"},
+	{"kennels", "workshop", "5x5 (forced by DF)", "1x building material (any|wood|stone|blocks)"},
 	{"ashery", "workshop", "3x3", "1x blocks + 1x empty barrel + 1x lye/milk-free bucket, all in stock — no generic building-material reagent, material param does not apply"},
 	{"dyers", "workshop", "3x3", "1x empty barrel + 1x lye/milk-free bucket, both in stock — no generic building-material reagent, material param does not apply"},
+	{"quern", "workshop", "1x1 (forced by DF — not 3x3 like most workshops)", "1x quern item in stock (order/queue_job ConstructQuern at a mason's first) — no generic building-material reagent, material param does not apply. Hand-powered milling (grinding plants to flour/dye): needs no machine power at all, so this is the mill to build before any water/wind power exists"},
+	{"millstone", "workshop", "1x1 (forced by DF — not 3x3 like most workshops)", "1x millstone item (order/queue_job ConstructMillstone at a mason's) + 1x mechanism, both in stock — material param does not apply. Machine-powered milling: does NOTHING until a connected axle/gear train drives it (place gear_assembly/axle_* adjacent, powered by water_wheel or windmill) — that adjacency is DF's own engine concern and is not verified at placement time"},
 	// df::workshop_type::Tool and ::Custom are deliberately NOT curated here
 	// (and so carry no buildTypes entry either, unlike every other workshop
 	// above -- see TestBuildingTypeCatalogMatchesBuildTypes) -- neither has
@@ -510,28 +618,43 @@ var buildingTypeCatalog = []buildingTypeEntry{
 	{"stone_fall_trap", "trap", "1x1", "1x mechanism item in stock; builds UNARMED — DF's own vanilla flow loads a boulder afterward via a separate Load Stone Trap job at the built trap, not yet exposed by any tool here"},
 	{"weapon_trap", "trap", "1x1", "1x mechanism item + 1x weapon or trap-component item, both in stock; armed at construction time (unlike stone_fall_trap)"},
 	{"track_stop", "trap", "1x1", "1x building material (any|wood|stone|blocks); anchors minecart track infrastructure — basic placement only, no track-piece linkage/friction/dump-menu configuration"},
+	{"cage_trap", "trap", "1x1", "1x mechanism item in stock — no cage is consumed at build time; builds UNARMED (same shape as stone_fall_trap) — DF's own vanilla flow loads an actual cage afterward via a separate Load Cage Trap job at the built trap, not yet exposed by any tool here"},
 	{"bridge", "mechanism", "width x height (caller-chosen, max 31x31)", "building material scaled to footprint (DF computes the amount); takes width/height/direction instead of material/quality"},
 	{"well", "infrastructure", "1x1", "1x blocks + 1x bucket + 1x chain + 1x mechanism, all in stock (order/queue_job each first); needs a reachable water tile below to draw from once built"},
 	{"support", "infrastructure", "1x1", "1x building material (any|wood|stone|blocks); cave-in/collapse-trigger fixture — can be a link_building trigger TARGET (bridge/floodgate/door/hatch/support/gear_assembly)"},
 	{"archery_target", "infrastructure", "1x1", "1x building material (any|wood|stone|blocks); marksman-dwarf training target, not justice-related"},
 	{"traction_bench", "furniture", "1x1", "1x traction bench item in stock; craft it first with queue_job (ConstructTractionBench at a mechanic's workshop consumes 1x table + 1x mechanism + 1x chain, all in stock) — hospital furniture for injured dwarves"},
-	{"nest_box", "furniture", "1x1", "1x tool item capable of nest-box function in stock; egg-laying animal nesting — crafting that specific tool item hits a pre-existing, out-of-scope gap (queue_job cannot select a TOOL item's subtype), so it must already exist on the map"},
-	{"hive", "furniture", "1x1", "1x tool item capable of hive function in stock; beekeeping — same pre-existing tool-subtype crafting gap as nest_box"},
+	{"nest_box", "furniture", "1x1", "1x tool item capable of nest-box function in stock — craft one with order/queue_job item=MakeTool subtype=ITEM_TOOL_NEST_BOX at a carpenter's/mason's/forge (job_types subtype_of=MakeTool lists the exact tokens this world's raws define). Where a hen lays eggs a fort can collect"},
+	{"hive", "furniture", "1x1", "1x tool item capable of hive function in stock — craft one with order/queue_job item=MakeTool subtype=ITEM_TOOL_HIVE at a carpenter's/mason's/forge (job_types subtype_of=MakeTool lists the exact tokens). Needs the beekeeping labor and a nearby wild bee colony to fill"},
 	{"statue", "furniture", "1x1", "1x statue item in stock (order/queue_job ConstructStatue at a carpenter/mason first); no quality-tier selection support yet"},
 	{"slab", "furniture", "1x1", "1x slab item in stock (order/queue_job ConstructSlab at a carpenter/mason first); no quality-tier selection support yet"},
 	{"window_glass", "furniture", "1x1", "1x window item in stock; no quality-tier selection support yet"},
 	{"window_gem", "furniture", "1x1", "3x small gem items in stock; no quality-tier selection support yet"},
-	{"bookcase", "furniture", "1x1", "1x tool item capable of bookcase function in stock; no quality-tier selection support yet"},
-	{"display_furniture", "furniture", "1x1", "1x tool item capable of display-case function in stock; no quality-tier selection support yet"},
-	{"offering_place", "furniture", "1x1", "1x tool item capable of offering-place function in stock; no quality-tier selection support yet"},
-	{"instrument", "furniture", "1x1", "1x stationary instrument item in stock; no quality-tier selection support yet"},
-	{"screw_pump", "infrastructure", "1x2 or 2x1 (orientation-dependent)", "1x blocks + 1x screw (trap component) + 1x pipe section, all in stock; orientation=north|east|south|west selects intake side; adjacency to a power source or manual pumping is not automated — see building_types tool notes"},
+	{"bookcase", "furniture", "1x1", "1x tool item capable of bookcase function in stock — craft one with order/queue_job item=MakeTool subtype=ITEM_TOOL_BOOKCASE at a carpenter's/mason's/forge (job_types subtype_of=MakeTool lists the exact tokens this world's raws define). Furnishes a library location; no quality-tier selection support yet"},
+	{"display_furniture", "furniture", "1x1", "1x tool item capable of display-object function in stock — craft one with order/queue_job item=MakeTool subtype=ITEM_TOOL_PEDESTAL or ITEM_TOOL_DISPLAY_CASE at a carpenter's/mason's/forge (job_types subtype_of=MakeTool lists the exact tokens). Assigning a specific artifact to a built one is a separate step no tool here exposes yet; no quality-tier selection support"},
+	{"offering_place", "furniture", "1x1", "THIS is the placement name for a crafted altar — an item's raw token is never a build type. 1x tool item capable of place-offering function in stock — craft one with order/queue_job item=MakeTool subtype=ITEM_TOOL_ALTAR at a carpenter's/mason's/forge (job_types subtype_of=MakeTool lists the exact tokens). Furnishes a temple location; no quality-tier selection support yet"},
+	{"instrument", "furniture", "1x1", "1x STATIONARY instrument item in stock (handheld instruments cannot be placed — performers carry those from a stockpile); no quality-tier selection support yet"},
+	{"screw_pump", "infrastructure", "1x2 or 2x1 (orientation-dependent, so (x,y) is the anchor CORNER, not a center)", "1x blocks + 1x screw (trap component) + 1x pipe section, all in stock; orientation=north|east|south|west selects intake side; adjacency to a power source or manual pumping is not automated — see building_types tool notes"},
 	{"gear_assembly", "infrastructure", "1x1", "1x mechanism item in stock; orientation not applicable; must be placed touching another machine part to transmit power — adjacency is not automated; can be a link_building trigger TARGET (bridge/floodgate/door/hatch/support/gear_assembly) for a mechanism-controlled power shutoff"},
-	{"axle_horizontal", "infrastructure", "1x1 (ALWAYS — no length parameter yet, see notes)", "1x wood in stock; orientation=horizontal|vertical selects the line's axis; vanilla DF supports a longer single multi-tile axle, but this tool builds one tile at a time — chain adjacent placements to span further (costs more wood than a native multi-tile axle, but works via the same adjacency linking); must also connect to another machine part by adjacency — not automated"},
+	{"axle_horizontal", "infrastructure", "1x1 (ALWAYS — no length parameter yet, see notes; (x,y) is that one anchor tile)", "1x wood in stock; orientation=horizontal|vertical selects the line's axis; vanilla DF supports a longer single multi-tile axle, but this tool builds one tile at a time — chain adjacent placements to span further (costs more wood than a native multi-tile axle, but works via the same adjacency linking); must also connect to another machine part by adjacency — not automated"},
 	{"axle_vertical", "infrastructure", "1x1", "1x wood in stock; orientation not applicable; connects machine parts across z-levels by adjacency — not automated"},
-	{"water_wheel", "infrastructure", "3x3, one dimension flattened to 1 (orientation-dependent)", "3x wood in stock; orientation=horizontal|vertical selects the line's axis; needs adjacent flowing water to generate power"},
-	{"windmill", "infrastructure", "3x3", "4x wood in stock; no orientation; needs open sky above to catch wind"},
-	{"rollers", "infrastructure", "1x1 (ALWAYS — no length parameter yet, see notes)", "1x mechanism + 1x chain, both in stock; orientation=north|east|south|west selects push direction; vanilla DF supports a longer single multi-tile rollers run, but this tool builds one tile at a time — chain adjacent placements to span further; needs power (an adjacent connected axle/gear) to run — not automated"},
+	{"water_wheel", "infrastructure", "1x3 or 3x1 (orientation-dependent, so (x,y) is the anchor CORNER, not a center)", "3x wood in stock; orientation=horizontal|vertical selects the line's axis; needs adjacent flowing water to generate power"},
+	{"windmill", "infrastructure", "3x3 (forced by DF regardless of orientation — (x,y) is the CENTER, like a workshop)", "4x wood in stock; no orientation; needs open sky above to catch wind"},
+	{"rollers", "infrastructure", "1x1 (ALWAYS — no length parameter yet, see notes; (x,y) is that one anchor tile)", "1x mechanism + 1x chain, both in stock; orientation=north|east|south|west selects push direction; vanilla DF supports a longer single multi-tile rollers run, but this tool builds one tile at a time — chain adjacent placements to span further; needs power (an adjacent connected axle/gear) to run — not automated"},
+	// Specific-item fixture family (protocol.BuildTypeWeaponRack et al,
+	// wire range 0xC0-0xCF; dfhack-plugin/buildings.cpp placeFixture). Every
+	// one is 1x1 and consumes exactly one existing item, so neither material
+	// nor quality applies to any of them.
+	{"weapon_rack", "furniture", "1x1", "1x weapon rack item in stock (order/queue_job ConstructWeaponRack at a carpenter's/mason's first). Furnishes a barracks so a squad can store and train with weapons"},
+	{"armor_stand", "furniture", "1x1", "1x armor stand item in stock (order/queue_job ConstructArmorStand at a carpenter's/mason's first). Furnishes a barracks so a squad can store armor"},
+	{"animal_trap", "trap", "1x1", "1x EMPTY animal trap item in stock (order/queue_job MakeAnimalTrap at a carpenter's first) — an already-occupied trap cannot be re-placed. Catches vermin/small creatures where it stands; this is NOT cage_trap, which is a floor trap for intruders and takes a mechanism instead"},
+	{"chain", "furniture", "1x1", "1x chain item in stock (order/queue_job MakeChain at a metalsmith's forge first). A post to tie one animal (or prisoner) to a spot — distinct from the chain a well consumes as a reagent"},
+	{"cage", "furniture", "1x1", "1x cage item in stock (order/queue_job MakeCage at a carpenter's first). Places a BUILT cage that can hold a captured creature — distinct from cage_trap, which is the armed floor trap that catches one"},
+	{"bars_vertical", "mechanism", "1x1", "1x bar item in stock — DF's filter takes any BAR item, and metal bars off the smelter chain are the usual choice, so no new crafting step is needed. A see-through vertical barrier: blocks creatures where a wall would also block sight. NOT yet wireable to a lever — link_building does not accept it as a target yet"},
+	{"bars_floor", "mechanism", "1x1", "1x bar item in stock, same reagent as bars_vertical. The floor-plane twin of it — covers a pit or shaft so nothing walks in. NOT yet wireable to a lever — link_building does not accept it as a target yet"},
+	{"grate_wall", "mechanism", "1x1", "1x grate item in stock (order/queue_job ConstructGrate at a carpenter's/mason's first). Blocks creatures while passing water and light — the aquifer/cistern intake screen. NOT yet wireable to a lever — link_building does not accept it as a target yet"},
+	{"grate_floor", "mechanism", "1x1", "1x grate item in stock (order/queue_job ConstructGrate at a carpenter's/mason's first). Seals a level to walkers while letting water fall through the shaft below — the drain half of a cistern. NOT yet wireable to a lever — link_building does not accept it as a target yet"},
+	{"weapon_spike", "trap", "1x1", "1x item from DF's spike vector in stock — a weapon or a trap component (order MakeTrapComponent, or queue_job/order MakeWeapon with a subtype), the same reagent family weapon_trap's weapon slot accepts. A lever-retracted spike block, distinct from weapon_trap (a floor trap that fires on its own). DF builds it not-retracted; link_building does not accept it as a lever target yet, so its state cannot be toggled — placement only for now"},
 }
 
 // bridgeDirections maps the build tool's model-facing bridge direction
@@ -649,6 +772,33 @@ func noExec(b *Bridge) *mcp.CallToolResult {
 	return nil
 }
 
+// containerArgText renders one set_stockpile_containers limit for the ACK's
+// echo line, keeping "auto" (omitted) distinct from an explicit 0 — the whole
+// reason those params are pointers.
+func containerArgText(p *int) string {
+	if p == nil {
+		return "auto"
+	}
+	return fmt.Sprintf("%d", *p)
+}
+
+// containerLimitArg narrows one set_stockpile_containers limit to the wire's
+// int16, returning a non-empty error string instead when the value cannot be
+// represented. The range check has to happen HERE, before the conversion: a
+// bare int16(*p) turns bins:100000 into -31072, and the plugin then answers
+// "container limits must be >= 0" — an ACK that flatly contradicts the
+// positive number the caller actually sent. The message quotes the value as
+// passed.
+func containerLimitArg(name string, p *int) (has bool, val int16, errMsg string) {
+	if p == nil {
+		return false, 0, ""
+	}
+	if *p < 0 || *p > math.MaxInt16 {
+		return false, 0, fmt.Sprintf("%s=%d is outside the storable range 0..%d (DF stores these ceilings as int16); nothing was changed", name, *p, math.MaxInt16)
+	}
+	return true, int16(*p), ""
+}
+
 func registerActionTools(srv *mcp.Server, b *Bridge) {
 	type digIn struct {
 		Type string `json:"type" jsonschema:"default|stairs|channel|ramp|upstair|downstair"`
@@ -728,8 +878,8 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	})
 
 	type buildIn struct {
-		Type        string `json:"type" jsonschema:"curated: wall|floor|upstair|downstair|updownstair|ramp|carpenter|mason|still|farmer|craftsdwarf|mechanic|butcher|kitchen|fishery|metalsmith|smelter|wood_furnace|tradedepot|bed|table|chair|cabinet|coffer|coffin|door|hatch|lever|floodgate|bridge|well|support — or any DFHack building_type/workshop_type/furnace_type/trap_type enum name (e.g. Statue, ScrewPump) for anything else; look one up with the building_types tool, which also lists footprint/material/prerequisite specifics for every name here."`
-		X           int    `json:"x" jsonschema:"for the curated vocabulary above: CENTER of the footprint (workshops/furnaces 3x3, tradedepot 5x5, bridge width x height; surrounding tiles must be clear floor). For any other name: the footprint's NW CORNER instead — its size isn't known client-side."`
+		Type        string `json:"type" jsonschema:"curated: wall|floor|upstair|downstair|updownstair|ramp|carpenter|mason|still|farmer|craftsdwarf|mechanic|butcher|kitchen|fishery|metalsmith|smelter|wood_furnace|tradedepot|bed|table|chair|cabinet|coffer|coffin|door|hatch|lever|floodgate|bridge|well|support — or any DFHack building_type/workshop_type/furnace_type/trap_type/construction_type enum name (e.g. Statue, ScrewPump, OfferingPlace) for anything else; look one up with the building_types tool, which also lists footprint/material/prerequisite specifics for every name here."`
+		X           int    `json:"x" jsonschema:"for the curated vocabulary above: CENTER of the footprint, whose size per type is DF's own (building_types reports it, and names the few orientation-dependent types that anchor at a corner instead; bridge uses width x height) — surrounding tiles must be clear floor. For any other name: the footprint's NW CORNER instead, since its size isn't known client-side."`
 		Y           int    `json:"y"`
 		Z           int    `json:"z"`
 		Material    string `json:"material,omitempty" jsonschema:"any|wood|stone|blocks — constrains the item CLASS claimed for the build (default any); ignored for bridge and furniture"`
@@ -741,7 +891,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "build",
-		Description: "Place a building at (x,y,z). See building_types for per-name footprint, required materials, and prerequisites — check it before build if you don't already know a name's specifics. The curated vocabulary (see type) needs no lookup; any other DFHack building_type/workshop_type/furnace_type/trap_type name is also accepted, though a resolvable name is not a guarantee this plugin can place it yet — the ACK is truthful either way. bridge takes width/height/direction instead of material/quality.",
+		Description: "Place a building at (x,y,z). See building_types for per-name footprint, required materials, and prerequisites — check it before build if you don't already know a name's specifics. The curated vocabulary (see type) needs no lookup; any other DFHack building_type/workshop_type/furnace_type/trap_type/construction_type name is also accepted, though a resolvable name is not a guarantee this plugin can place it yet — the ACK is truthful either way. bridge takes width/height/direction instead of material/quality.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in buildIn) (*mcp.CallToolResult, any, error) {
 		if r := noExec(b); r != nil {
 			return r, nil, nil
@@ -810,7 +960,7 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		// generalized name-based resolution (protocol.BuildTypeByName — see
 		// dfhack-plugin/buildings.cpp resolveBuildTypeByName) using the
 		// caller's string VERBATIM (not lowercased): DFHack building_type/
-		// workshop_type/furnace_type/trap_type keys are case-sensitive
+		// workshop_type/furnace_type/trap_type/construction_type keys are case-sensitive
 		// CamelCase, e.g. "Well". No footprint is known client-side for
 		// these, so (x,y) travels as-is (NW corner), not center-adjusted —
 		// see the type param's doc comment above.
@@ -839,6 +989,77 @@ func registerActionTools(srv *mcp.Server, b *Bridge) {
 		}
 		res, err := b.Exec.SendStockpileCommand(int16(in.X1), int16(in.Y1), int16(in.Z), int16(in.X2), int16(in.Y2), mask)
 		return withDash(b, ctx, ackText(res, err, fmt.Sprintf("stockpile %s (%d,%d)-(%d,%d) z=%d", in.Category, in.X1, in.Y1, in.X2, in.Y2, in.Z))), nil, nil
+	})
+
+	// Pointer-typed limit params, not plain ints: 0 is a legal explicit value
+	// ("assign no container of this type") and must stay distinguishable from
+	// "not sent" (auto-compute). Same nil-as-presence convention the read side
+	// already uses for tools_state.go's SPTiles/SPOccupied/SPItems.
+	//
+	// x/y/z are pointers for a different reason: they are one of TWO addressing
+	// modes, not a required trio. Two stockpiles can share an identical
+	// rectangle, in which case no tile names either of them alone and the
+	// tile-scan path can never resolve them — stockpile_number is the way out,
+	// and demanding dummy coordinates alongside it would be noise.
+	type setStockpileContainersIn struct {
+		X               *int `json:"x,omitempty" jsonschema:"any tile inside the stockpile's footprint; with y and z"`
+		Y               *int `json:"y,omitempty"`
+		Z               *int `json:"z,omitempty"`
+		StockpileNumber *int `json:"stockpile_number,omitempty" jsonschema:"the pile's own number (buildings reports it as sp_number); addresses the pile directly instead of by tile"`
+		Bins            *int `json:"bins,omitempty" jsonschema:"max bins this pile may be assigned; omit to auto-set this pile's default for its current categories"`
+		Barrels         *int `json:"barrels,omitempty" jsonschema:"max barrels; omit to auto-set"`
+		Wheelbarrows    *int `json:"wheelbarrows,omitempty" jsonschema:"max wheelbarrows; omit to auto-set"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "set_stockpile_containers",
+		Description: "Set how many bins/barrels/wheelbarrows an existing stockpile may be assigned. Address it either by any tile inside it (x, y, z) or by stockpile_number, which wins if both are given. Omit a limit field to auto-set it from the pile's current categories and tile count; pass a number (0 included) to pin it. Overlapping stockpiles are reported, never guessed. Current values show in the buildings tool's stockpile lines.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in setStockpileContainersIn) (*mcp.CallToolResult, any, error) {
+		if r := noExec(b); r != nil {
+			return r, nil, nil
+		}
+		hasNumber := in.StockpileNumber != nil
+		hasCoords := in.X != nil && in.Y != nil && in.Z != nil
+		if !hasNumber && !hasCoords {
+			return withDash(b, ctx, "FAILED: set_stockpile_containers — no stockpile addressed: pass a tile inside the pile (x, y and z together) or stockpile_number (the buildings tool reports it as sp_number)"), nil, nil
+		}
+		var spNumber int32
+		if hasNumber {
+			if *in.StockpileNumber < 0 || *in.StockpileNumber > math.MaxInt32 {
+				return withDash(b, ctx, fmt.Sprintf("FAILED: set_stockpile_containers — stockpile_number=%d is not a stockpile number (they are non-negative and assigned in creation order); nothing was changed", *in.StockpileNumber)), nil, nil
+			}
+			spNumber = int32(*in.StockpileNumber)
+		}
+		coord := func(p *int) int16 {
+			if p == nil {
+				return 0
+			}
+			return int16(*p)
+		}
+		hasBins, bins, binsErr := containerLimitArg("bins", in.Bins)
+		hasBarrels, barrels, barrelsErr := containerLimitArg("barrels", in.Barrels)
+		hasWheelbarrows, wheelbarrows, wheelbarrowsErr := containerLimitArg("wheelbarrows", in.Wheelbarrows)
+		for _, rangeErr := range []string{binsErr, barrelsErr, wheelbarrowsErr} {
+			if rangeErr != "" {
+				return withDash(b, ctx, "FAILED: set_stockpile_containers — "+rangeErr), nil, nil
+			}
+		}
+		res, err := b.Exec.SendSetStockpileContainers(coord(in.X), coord(in.Y), coord(in.Z),
+			hasBins, bins, hasBarrels, barrels, hasWheelbarrows, wheelbarrows,
+			hasNumber, spNumber)
+		// The ACK names the addressing actually used, so "stockpile_number wins
+		// over coordinates" is visible in the response rather than only in the
+		// tool description.
+		addressed := fmt.Sprintf("at (%d,%d,%d)", coord(in.X), coord(in.Y), coord(in.Z))
+		if hasNumber {
+			addressed = fmt.Sprintf("for stockpile #%d", spNumber)
+			if hasCoords {
+				addressed += " (coordinates ignored)"
+			}
+		}
+		what := fmt.Sprintf("set stockpile containers %s [%s bins, %s barrels, %s wheelbarrows]",
+			addressed,
+			containerArgText(in.Bins), containerArgText(in.Barrels), containerArgText(in.Wheelbarrows))
+		return withDash(b, ctx, ackText(res, err, what)), nil, nil
 	})
 
 	type orderIn struct {

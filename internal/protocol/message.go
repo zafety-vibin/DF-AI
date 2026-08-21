@@ -434,6 +434,15 @@ const (
 	// applySetDepotTradeFlags for the full sequence (including the
 	// trader_requested true->false job-cleanup companion mutation).
 	CommandTypeSetDepotTradeFlags uint8 = 0x2C
+
+	// CommandTypeSetStockpileContainers writes an existing stockpile's
+	// df::building_stockpilest::storage container ceilings (max_bins/
+	// max_barrels/max_wheelbarrows) -- the compound sibling to `settings`
+	// that CommandTypeStockpile never touched, leaving every DF-AI pile at
+	// zero containers. See SetStockpileContainersDesignation's doc comment
+	// and dfhack-plugin/protocol.h COMMAND_TYPE_SET_STOCKPILE_CONTAINERS /
+	// buildings.cpp applySetStockpileContainers.
+	CommandTypeSetStockpileContainers uint8 = 0x2D
 )
 
 // ItemClass* constants -- the curated bucket vocabulary shared by
@@ -791,10 +800,13 @@ const (
 // into ranges by category so plugin-side switch statements can quickly
 // route to the right handler:
 //
-//	0x01 – 0x0F : Constructions (wall, floor, ramp, stairs) — built from
-//	              a single material reagent against a tile.
+//	0x01 – 0x0F : Constructions (wall, fortification, floor, ramp, stairs,
+//	              reinforced wall) — built from a single material reagent
+//	              against a tile, except ReinforcedWall, the one
+//	              construction_type with its own two-reagent list.
 //	0x10 – 0x2F : Workshops — built from one of several material reagents
-//	              over a multi-tile footprint. This includes
+//	              over a footprint DF forces per subtype (3x3 for most, 5x5
+//	              for Siege/Kennels, 1x1 for Quern/Millstone). This includes
 //	              MetalsmithsForge AND MagmaForge: DF models BOTH as
 //	              Workshop subtypes (df::workshop_type), not a separate
 //	              building_type — confirmed against df.building.xml, where
@@ -835,9 +847,17 @@ const (
 //	0xB0 – 0xBF : More df::trap_type subtypes (building_type::Trap) beyond
 //	              Lever, which stays at BuildTypeLever in the doors/hatches
 //	              range, sharing its single-mechanism-item shape —
-//	              PressurePlate, StoneFallTrap, WeaponTrap, TrackStop. See
-//	              dfhack-plugin/buildings.cpp placeTrap for the exact filter
-//	              shape and known limitations of each.
+//	              PressurePlate, StoneFallTrap, WeaponTrap, TrackStop,
+//	              CageTrap. See dfhack-plugin/buildings.cpp placeTrap for the
+//	              exact filter shape and known limitations of each.
+//	0xC0 – 0xCF : Specific-item fixtures (Weaponrack, Armorstand,
+//	              AnimalTrap, Chain, Cage, BarsVertical, BarsFloor,
+//	              GrateWall, GrateFloor, Weapon/retractable spike) — each
+//	              its own top-level building_type, forced 1x1 by DF, each
+//	              placed from exactly one already-existing item. Same code
+//	              shape as the room-value furniture family in 0x90-0x9F;
+//	              their own range only because that one filled up. See
+//	              dfhack-plugin/buildings.cpp placeFixture.
 //
 // Add new values at the end of each range as plugin support expands.
 const (
@@ -848,6 +868,14 @@ const (
 	BuildTypeDownStair   uint8 = 0x04
 	BuildTypeUpDownStair uint8 = 0x05
 	BuildTypeRamp        uint8 = 0x06
+
+	// Two more df::construction_type subtypes reachable through the same
+	// plugin-side placeConstruction path as the six above (all six are
+	// building_type::Construction with a construction_type subtype, never
+	// their own building_type). Recipes per buildings.lua
+	// get_inputs_by_type's Construction branch.
+	BuildTypeFortification   uint8 = 0x07 // df::construction_type::Fortification -- 1x generic building material, the same default Construction reagent Wall/Floor/stairs/Ramp use; a shootable-through, unwalkable defensive wall for marksdwarves
+	BuildTypeReinforcedWall  uint8 = 0x08 // df::construction_type::ReinforcedWall -- the ONE construction_type with its own reagent list: 2x generic building material PLUS 1x metal BAR (job_item flags3.metal)
 
 	// Workshops (3x3 unless noted; require a build material).
 	BuildTypeWorkshopCarpenter   uint8 = 0x10
@@ -886,6 +914,17 @@ const (
 	BuildTypeWorkshopKennels      uint8 = 0x22 // df::workshop_type::Kennels -- 1x generic building material
 	BuildTypeWorkshopAshery       uint8 = 0x23 // df::workshop_type::Ashery -- 3 specific-item reagents (BLOCKS, empty BARREL, lye_milk_free BUCKET), no generic building-material reagent -- materialClass is rejected
 	BuildTypeWorkshopDyers        uint8 = 0x24 // df::workshop_type::Dyers -- 2 specific-item reagents (empty BARREL, lye_milk_free BUCKET), no generic building-material reagent -- materialClass is rejected
+
+	// The two MILLING workshop types -- df::workshop_type values like every
+	// other entry in this range, but the only two DF forces to a 1x1
+	// footprint instead of 3x3/5x5 (Buildings::getCorrectSize's Workshop
+	// case lists Quern/Millstone/Tool together). Both take SPECIFIC finished
+	// items rather than a generic building material, so materialClass is
+	// rejected for both, same as Ashery/Dyers. Their 1x1 footprint is why
+	// buildWireCoords cannot treat the whole workshop range as 3x3 --
+	// see that function in internal/mcpserver/tools_action.go.
+	BuildTypeWorkshopQuern     uint8 = 0x25 // df::workshop_type::Quern -- 1x QUERN item; hand-powered mill, needs no machine power at all
+	BuildTypeWorkshopMillstone uint8 = 0x26 // df::workshop_type::Millstone -- 1x MILLSTONE item + 1x mechanism (TRAPPARTS); machine-powered mill, needs a connected axle/gear train to actually run
 
 	// Furniture (single-tile, requires an item from stockpile).
 	BuildTypeBed     uint8 = 0x30
@@ -972,30 +1011,59 @@ const (
 	// More df::trap_type subtypes (building_type::Trap) beyond
 	// BuildTypeLever below -- see dfhack-plugin/buildings.cpp placeTrap for
 	// the exact filter shape of each and for known limitations
-	// (StoneFallTrap builds unarmed; PressurePlate's trigger-condition
-	// fields are left at DF's raw constructor defaults; TrackStop is basic
-	// placement only, no minecart track-piece linkage).
+	// (StoneFallTrap and CageTrap build unarmed; PressurePlate's
+	// trigger-condition fields are left at DF's raw constructor defaults;
+	// TrackStop is basic placement only, no minecart track-piece linkage).
 	BuildTypePressurePlate uint8 = 0xB0 // df::trap_type::PressurePlate -- 1x mechanism (TRAPPARTS), same shape as Lever; can also serve as a link_building SOURCE, same as Lever (see LinkBuildingDesignation)
 	BuildTypeStoneFallTrap uint8 = 0xB1 // df::trap_type::StoneFallTrap -- 1x mechanism (TRAPPARTS), same shape as Lever; builds UNARMED -- arming with a boulder is DF's own separate post-construction Load Stone Trap job, not queued by this command
 	BuildTypeWeaponTrap    uint8 = 0xB2 // df::trap_type::WeaponTrap -- 2x reagents: mechanism (TRAPPARTS) + weapon/trap-component (ANY_WEAPON) -- armed at construction time (unlike StoneFallTrap)
 	BuildTypeTrackStop     uint8 = 0xB3 // df::trap_type::TrackStop -- 1x generic building material, same shape as Support/ArcheryTarget; anchors minecart track infrastructure -- basic placement only
+	BuildTypeCageTrap      uint8 = 0xB4 // df::trap_type::CageTrap -- 1x mechanism (TRAPPARTS), the SAME construction filter as StoneFallTrap (verified against buildings.lua trap_inputs); builds UNARMED -- arming with a cage is DF's own separate post-construction Load Cage Trap job (df::job_type::LoadCageTrap), not queued by this command
+
+	// Specific-item FIXTURE family (0xC0-0xCF) -- ten standalone
+	// df::building_type values, none with a subtype, every one forced 1x1 by
+	// DF (getCorrectSize has no case for any of them) and placed from
+	// exactly ONE already-existing item, so the material and quality params
+	// apply to none of them. Recipes per buildings.lua building_inputs; see
+	// dfhack-plugin/buildings.cpp placeFixture for the exact filter shape of
+	// each. They share placeRoomValueFurniture's code shape exactly and got
+	// their own byte range only because the 0x90-0x9F range ran out of room.
+	//
+	// KNOWN LIMITATION -- GrateWall/GrateFloor/BarsVertical/BarsFloor and
+	// Weapon all carry DF gate_flags (DF's own allocInstance initializes
+	// them: closed=true for the four grate/bars types, retracted=false for
+	// Weapon), but link_building does NOT yet accept any of the five as a
+	// trigger TARGET (dfhack-plugin/mechanisms.cpp applyLinkBuilding takes
+	// bridge/floodgate/door/hatch/support/gear_assembly only). They can be
+	// built, not yet lever-wired -- a real, separate gap the building_types
+	// tool states rather than implying otherwise.
+	BuildTypeWeaponRack   uint8 = 0xC0 // df::building_type::Weaponrack -- 1x WEAPONRACK item; barracks equipment furniture, crafted via ConstructWeaponRack at a carpenter's/mason's
+	BuildTypeArmorStand   uint8 = 0xC1 // df::building_type::Armorstand -- 1x ARMORSTAND item; barracks equipment furniture, crafted via ConstructArmorStand at a carpenter's/mason's
+	BuildTypeAnimalTrap   uint8 = 0xC2 // df::building_type::AnimalTrap -- 1x EMPTY ANIMALTRAP item (flags1.empty); the baited vermin trap, entirely distinct from BuildTypeCageTrap; crafted via MakeAnimalTrap at a carpenter's
+	BuildTypeChain        uint8 = 0xC3 // df::building_type::Chain -- 1x CHAIN item; a restraint post for chaining an animal or prisoner in place, NOT the chain reagent a well consumes; crafted via MakeChain at a metalsmith's forge
+	BuildTypeCage         uint8 = 0xC4 // df::building_type::Cage -- 1x CAGE item; places a BUILT cage as a holding pen, distinct from arming a BuildTypeCageTrap; crafted via MakeCage at a carpenter's
+	BuildTypeBarsVertical uint8 = 0xC5 // df::building_type::BarsVertical -- 1x BAR item; a see-through vertical barrier built from the same metal/glass bars the smelter chain produces
+	BuildTypeBarsFloor    uint8 = 0xC6 // df::building_type::BarsFloor -- 1x BAR item; the floor-plane twin of BarsVertical
+	BuildTypeGrateWall    uint8 = 0xC7 // df::building_type::GrateWall -- 1x GRATE item; passes water/light while blocking creatures; crafted via ConstructGrate at a carpenter's/mason's
+	BuildTypeGrateFloor   uint8 = 0xC8 // df::building_type::GrateFloor -- 1x GRATE item; the floor-plane twin of GrateWall -- lets water fall through a shaft while sealing the level to walkers
+	BuildTypeWeaponSpike  uint8 = 0xC9 // df::building_type::Weapon -- 1x reagent with NO item_type at all, vector_id=ANY_SPIKE only (the same vector-only shape BuildTypeWeaponTrap's weapon reagent uses); DF's retractable SPIKE building, NOT BuildTypeWeaponTrap
 )
 
 // BuildTypeByName is not one of the curated BuildType values above — it's
 // the sentinel for BuildDesignation's generalized name-based path (see
 // that type's doc comment below). Set BuildTypeName to a DFHack
-// building_type/workshop_type/furnace_type/trap_type enum key name (e.g.
+// building_type/workshop_type/furnace_type/trap_type/construction_type enum key name (e.g.
 // "Statue", "Jewelers", "StoneFallTrap") to reach any building type the
 // plugin can resolve by name (dfhack-plugin/buildings.cpp:
 // resolveBuildTypeByName, via DFHack's find_enum_item tried against all
-// four enums in turn) — no new BuildType byte or plugin rebuild needed for
+// five enums in turn) — no new BuildType byte or plugin rebuild needed for
 // a type DFHack already knows about. Matches dfhack-plugin/protocol.h
 // BUILD_TYPE_BY_NAME. Discover resolvable, ACTUALLY BUILDABLE names via the
 // building_types tool.
 //
 // KNOWN LIMITATION (mirrors OrderTypeByName/work_orders.cpp
 // resolveJobTypeByName): resolving a name to a real DFHack building_type/
-// workshop_type/furnace_type/trap_type does NOT by itself mean the plugin
+// workshop_type/furnace_type/trap_type/construction_type does NOT by itself mean the plugin
 // has a placement recipe (job_item filters) for it yet — only names the
 // building_types tool lists are buildable today; anything else fails with
 // a truthful "resolved but no placement recipe" error.
@@ -1065,9 +1133,17 @@ func IsBuildTypeWaterPower(t uint8) bool { return t >= 0xA0 && t < 0xB0 }
 
 // IsBuildTypeTrap reports whether the given BuildType refers to one of the
 // df::trap_type subtypes in this range (PressurePlate, StoneFallTrap,
-// WeaponTrap, TrackStop). Lever lives in the doors/hatches range instead
-// (IsBuildTypeDoor) — see BuildTypeLever's doc comment.
+// WeaponTrap, TrackStop, CageTrap). Lever lives in the doors/hatches range
+// instead (IsBuildTypeDoor) — see BuildTypeLever's doc comment.
 func IsBuildTypeTrap(t uint8) bool { return t >= 0xB0 && t < 0xC0 }
+
+// IsBuildTypeFixture reports whether the given BuildType refers to one of
+// the specific-item fixtures in the 0xC0-0xCF range (Weaponrack,
+// Armorstand, AnimalTrap, Chain, Cage, BarsVertical, BarsFloor, GrateWall,
+// GrateFloor, Weapon/retractable spike) — see BuildTypeWeaponRack's doc
+// comment. Every one is forced 1x1 by DF, so buildWireCoords passes their
+// coordinates through unchanged.
+func IsBuildTypeFixture(t uint8) bool { return t >= 0xC0 && t < 0xD0 }
 
 // Region represents a 3D bounding box for designations
 type Region struct {
@@ -1085,7 +1161,7 @@ type BuildDesignation struct {
 	Material      uint8  // MaterialClass* constraint (MaterialClassAny = no preference)
 	Quality       uint8  // QualityTier* constraint (QualityTierAny = no preference); furniture only
 	Orientation   uint8  // BuildOrientation* constraint (BuildOrientAny = no preference); water/power infra only (ScrewPump/AxleHorizontal/WaterWheel/Rollers)
-	BuildTypeName string // DFHack building_type/workshop_type/furnace_type/trap_type enum key name; only used when BuildType == BuildTypeByName
+	BuildTypeName string // DFHack building_type/workshop_type/furnace_type/trap_type/construction_type enum key name; only used when BuildType == BuildTypeByName
 }
 
 // ZoneDesignation represents a zone assignment command
@@ -1198,10 +1274,24 @@ type SetAlertDesignation struct {
 // CreateLocationDesignation targets the MeetingHall civzone at (X,Y,Z)
 // and converts it into a Location of LocationType. Profession is
 // required only when LocationType is LocationTypeGuildhall.
+//
+// HasDeity/DeityHfID are meaningful only when LocationType is
+// LocationTypeTemple: they dedicate the temple to one deity's
+// historical_figure id (the plugin writes deity_type=WORSHIP_HFID +
+// deity_data.Deity). HasDeity false leaves the temple generic, which is the
+// pre-existing behavior and the only shape DFHack's own quickfort reference
+// ever produces. The presence flag exists because historical-figure id 0 is
+// a valid deity id, so a -1 sentinel would make "absent" and "id 0"
+// indistinguishable once the struct's zero value is in play — the same
+// reason EditOrderDesignation carries HasAmount/HasFrequency and
+// EntityUpdate carries a HasWorldIdentity byte. The plugin rejects HasDeity
+// on any non-Temple type rather than silently dropping it.
 type CreateLocationDesignation struct {
 	X, Y, Z      int16
 	LocationType uint8
 	Profession   string
+	HasDeity     bool
+	DeityHfID    int32
 }
 
 // AssignLodgingDesignation links the Bedroom civzone at
@@ -1727,6 +1817,61 @@ type SetDepotTradeFlagsDesignation struct {
 	AnyoneCanTrade  bool
 }
 
+// SetStockpileContainersDesignation writes the container CEILINGS on an
+// already-placed stockpile addressed by any tile of its footprint --
+// df::building_stockpilest::storage's max_bins/max_barrels/max_wheelbarrows
+// (df.building.xml:973-976). `storage` is a sibling compound to `settings`;
+// StockpileDesignation only ever wrote the latter, so every stockpile this
+// plugin created carried all three ceilings at zero and DF's hauling AI
+// therefore assigned it no bin or barrel at all -- one loose item per tile,
+// roughly a tenth of real capacity. Creation now sets them itself
+// (dfhack-plugin/buildings.cpp computeDefaultStockpileContainers, mirroring
+// DFHack quickfort's own vanilla-derived per-category table); this command
+// retrofits piles built before that fix and overrides the defaults either
+// way.
+//
+// Each Has* gates its field independently, the same explicit-presence idiom
+// EditOrderDesignation uses rather than a magic sentinel value. Has*==false
+// means "recompute this field's vanilla-mirroring default from the pile's
+// CURRENT categories and CURRENT tile count"; Has*==true pins the paired
+// value verbatim, INCLUDING an explicit 0 ("assign no container of this
+// type"). All three false is the ordinary retrofit call and is deliberately
+// legal -- unlike EditOrderDesignation, Validate does NOT require at least
+// one Has*, because "reset this pile to auto defaults" is the whole point.
+// Negative values are rejected plugin-side (quickfort's -1 "unlimited" is a
+// settings-layer sentinel resolved to a tile count before the struct write,
+// never a stored value). MaxWheelbarrows is additionally clamped plugin-side
+// to tiles-1, because a wheelbarrow occupies a stockpile tile and a ceiling at
+// or above the tile count denies the pile all of its own storage; quickfort
+// bounds bins/barrels at ntiles and wheelbarrows at ntiles-1 for exactly that
+// asymmetry (place.lua:270-291). Bins/barrels are passed through as given --
+// a ceiling above the tile count is inert, not harmful.
+//
+// ADDRESSING, two ways. With HasStockpileNumber false, (X,Y,Z) is any tile of
+// the pile's footprint; the plugin CANNOT resolve that with
+// Buildings::findAtTile -- that call skips every building with
+// isSettingOccupancy()==false and Stockpile is abstract, hence invisible to it
+// -- so it scans collectStockpilesAtZ + Buildings::containsTile instead, and
+// reports overlapping candidates as a truthful FAILURE rather than guessing.
+// With HasStockpileNumber true, StockpileNumber (df::building_stockpilest::
+// stockpile_number, the "#N" the buildings query reports as sp_number) selects
+// the pile directly and (X,Y,Z) is ignored. That escape hatch exists because
+// tile addressing has a permanently unresolvable case: a live fort has had two
+// stockpiles sharing the exact rectangle (88,88)-(92,91), neither owning a
+// tile the other does not, so no coordinate can ever name one of them alone.
+type SetStockpileContainersDesignation struct {
+	X, Y, Z            int16
+	HasMaxBins         bool
+	MaxBins            int16 // ignored unless HasMaxBins
+	HasMaxBarrels      bool
+	MaxBarrels         int16 // ignored unless HasMaxBarrels
+	HasMaxWheelbarrows bool
+	MaxWheelbarrows    int16 // ignored unless HasMaxWheelbarrows
+
+	HasStockpileNumber bool
+	StockpileNumber    int32 // ignored unless HasStockpileNumber; when set, X/Y/Z are ignored
+}
+
 // StockpileDesignation represents a stockpile zone designation. The
 // GroupMask is a bitfield of StockpileGroup* constants identifying which
 // item categories the stockpile will accept at the top-level UI grouping.
@@ -1821,6 +1966,8 @@ type CommandMessage struct {
 	UnmarkTradeGoods   UnmarkTradeGoodsDesignation   // For UNMARK_TRADE_GOODS commands
 	SetDepotTradeFlags SetDepotTradeFlagsDesignation // For SET_DEPOT_TRADE_FLAGS commands
 
+	SetStockpileContainers SetStockpileContainersDesignation // For SET_STOCKPILE_CONTAINERS commands
+
 	CreateLocation  CreateLocationDesignation  // For CREATE_LOCATION commands
 	AssignLodging   AssignLodgingDesignation   // For ASSIGN_LODGING commands
 	UnassignLodging UnassignLodgingDesignation // For UNASSIGN_LODGING commands
@@ -1836,7 +1983,7 @@ func (m *CommandMessage) Type() uint8 { return MessageTypeCommand }
 
 func (m *CommandMessage) Validate() error {
 	// Validate CommandType
-	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeSetDepotTradeFlags {
+	if m.CommandType < CommandTypeDig || m.CommandType > CommandTypeSetStockpileContainers {
 		return fmt.Errorf("invalid command type: 0x%02X", m.CommandType)
 	}
 
@@ -1865,7 +2012,8 @@ func (m *CommandMessage) Validate() error {
 			!IsBuildTypeDepot(m.Build.BuildType) &&
 			!IsBuildTypeInfra(m.Build.BuildType) &&
 			!IsBuildTypeWaterPower(m.Build.BuildType) &&
-			!IsBuildTypeTrap(m.Build.BuildType) {
+			!IsBuildTypeTrap(m.Build.BuildType) &&
+			!IsBuildTypeFixture(m.Build.BuildType) {
 			return fmt.Errorf("invalid build type: 0x%02X", m.Build.BuildType)
 		}
 		if m.Build.BuildType == BuildTypeByName && m.Build.BuildTypeName == "" {

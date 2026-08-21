@@ -30,6 +30,13 @@ type Bridge struct {
 	Preds      *predicate.Library
 	Blueprints *blueprints.BlueprintLibrary
 	Places     *PlaceStore
+	// AlertsPath is where alert DISMISSALS are persisted, alongside
+	// Places' own file and for the same reason: a df-mcp process restart
+	// otherwise loses the model's record of what it already handled, and
+	// the plugin replays DF's whole announcement backlog on every
+	// reconnect. Empty disables persistence (a Bridge built outside
+	// NewBridge, e.g. in tests).
+	AlertsPath string
 	Logger     *logging.Logger
 	Digs       *pendingDigs // session-scoped ACKed dig rects (see digrects.go)
 	port       uint16
@@ -68,6 +75,7 @@ func NewBridge(cfgPath string) (*Bridge, error) {
 		Preds:      predicate.NewStarterLibrary(),
 		Blueprints: blueprints.NewBlueprintLibrary("blueprints"),
 		Places:     NewPlaceStore(filepath.Join("fortress", "state", "places.json")),
+		AlertsPath: filepath.Join("fortress", "state", "alerts.json"),
 		Logger:     logger,
 		Digs:       &pendingDigs{},
 		port:       cfg.ListenPort,
@@ -97,6 +105,16 @@ func NewBridge(cfgPath string) (*Bridge, error) {
 			logger.Error("places: load failed", err)
 		} else {
 			b.Places.Reconcile(topology.BuildRegionGraph(topo))
+		}
+		// Same reconnect hook, same reason as Places: restore what the model
+		// had already dismissed before the plugin replays its whole
+		// announcement backlog. The world-identity check happens later, on
+		// the first ENTITY_UPDATE (Populator) — FULL_STATE carries no world
+		// identity to check against.
+		if b.AlertsPath != "" && wm.Observed.Alerts != nil {
+			if err := wm.Observed.Alerts.Load(b.AlertsPath); err != nil {
+				logger.Error("alerts: load failed", err)
+			}
 		}
 		logger.Info("worldmodel installed")
 	})
@@ -146,6 +164,25 @@ func (b *Bridge) Mods() *modifications.ModificationOverlay {
 		return nil
 	}
 	return b.WM.Observed.Modifications
+}
+
+// persistAlertDismissals writes the current dismissal set to disk so it
+// survives a df-mcp restart (the plugin replays DF's whole announcement
+// backlog on every reconnect, so without this the model re-reads everything
+// it already handled). Returns "" on success or when persistence is
+// disabled, and a truthful suffix to append to the tool's ACK when the write
+// fails — a silent failure here would look exactly like success until the
+// next restart.
+func (b *Bridge) persistAlertDismissals() string {
+	if b == nil || b.AlertsPath == "" || b.WM == nil || b.WM.Observed.Alerts == nil {
+		return ""
+	}
+	// World identity goes through Snapshot (not a bare Observed.World read):
+	// the Populator writes that field under the world model's own lock.
+	if err := b.WM.Observed.Alerts.Save(b.AlertsPath, b.Snapshot().World); err != nil {
+		return fmt.Sprintf(" (WARNING: not persisted — %v; these will reappear if df-mcp restarts)", err)
+	}
+	return ""
 }
 
 // Query forwards a named JSON query to the plugin.
